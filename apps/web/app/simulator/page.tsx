@@ -207,6 +207,10 @@ export default function SimulatorPage() {
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <button style={{ ...box, cursor: "pointer" }} onClick={downloadCsv}>거래내역 CSV</button>
             <button style={{ ...box, cursor: "pointer" }} onClick={() => clone(job)}>이 조건으로 다시 설정</button>
+            <button style={{ ...box, cursor: "pointer" }} onClick={() => void (async () => {
+              const r = await apiFetch(`/portfolios/from-backtest/${job.id}`, { method: "POST" });
+              if (r.ok) router.push("/portfolio");
+            })()}>실전매매로 전환 →</button>
             <span style={{ opacity: 0.7 }}>오버레이(최대 4개 추가):</span>
             {history.filter((h) => h.id !== job.id).slice(0, 8).map((h) => (
               <label key={h.id} style={{ opacity: 0.85 }}>

@@ -20,6 +20,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.crypto import EncryptedBigInt
+
 
 class Base(DeclarativeBase):
     pass
@@ -211,3 +213,60 @@ class OrderSheetRow(Base):
     qty: Mapped[int] = mapped_column(BigInteger, nullable=False)
     price: Mapped[int | None] = mapped_column(BigInteger)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class TradePortfolio(TimestampMixin, Base):
+    """실전 포트 — 백테스트 전환 시 파라미터 사본·backtest_id 링크 (feature-portfolio §7)."""
+
+    __tablename__ = "portfolios"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False, default="manual")  # manual | from_backtest
+    backtest_id: Mapped[int | None] = mapped_column(ForeignKey("backtests.id"))
+    params: Mapped[dict | None] = mapped_column(JSONB)
+
+
+class TradeTransaction(TimestampMixin, Base):
+    """거래 원장 — buy|sell|deposit|withdraw. 금액 필드는 AES-GCM 암호화 (🔒)."""
+
+    __tablename__ = "trade_transactions"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    instrument_id: Mapped[int | None] = mapped_column(ForeignKey("instruments.id"))
+    qty: Mapped[int | None] = mapped_column(EncryptedBigInt)          # 🔒
+    price: Mapped[int | None] = mapped_column(EncryptedBigInt)        # 🔒
+    amount: Mapped[int | None] = mapped_column(EncryptedBigInt)       # 🔒 (deposit/withdraw)
+    realized_pnl: Mapped[int | None] = mapped_column(EncryptedBigInt) # 🔒 (sell 시 FIFO 계산)
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    memo: Mapped[str | None] = mapped_column(Text)
+    tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
+
+class PositionLot(Base):
+    """FIFO 원장 로트 — 전략·백테스트와 동일 회계 (feature-portfolio §5)."""
+
+    __tablename__ = "position_lots"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), nullable=False)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), nullable=False)
+    qty_open: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)  # 🔒 잔여 수량
+    price: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)     # 🔒 체결 단가
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PositionMeta(TimestampMixin, Base):
+    """포지션별 목표가·손절가 (feature-portfolio §5)."""
+
+    __tablename__ = "position_meta"
+    __table_args__ = (UniqueConstraint("portfolio_id", "instrument_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), nullable=False)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), nullable=False)
+    target_price: Mapped[int | None] = mapped_column(EncryptedBigInt)  # 🔒
+    stop_price: Mapped[int | None] = mapped_column(EncryptedBigInt)    # 🔒

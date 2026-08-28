@@ -53,7 +53,7 @@
 - **산출물**: 거래 등록(FIFO 원장·암호화), 수익률 카드, TWR/XIRR, 매매일지, 전환 버튼, 차트 마커 연동
 - **완료 조건**: [feature-portfolio.md §13](features/feature-portfolio.md) — FIFO·XIRR·암호화 테스트 실제 통과, 전환 e2e 1회
 - **QA 완료 조건**: 회귀 "인증·권한"·"핵심 흐름" 절 통과
-- **의존**: Phase 3 (전환 기능), Phase 2 (차트 마커) | **상태**: 대기
+- **의존**: Phase 3 (전환 기능), Phase 2 (차트 마커) | **상태**: **구현 완료** (FIFO 원장·AES-GCM·TWR/XIRR·목표/손절·전환·카드 UI·차트 평단선. 매수 시점 마커·기간 음영은 TODO)
 - **관련**: [feature-portfolio.md](features/feature-portfolio.md), [ADR-003](adr/003-auth-jwt.md)
 
 ## Phase 6 — 대시보드 + 마감 QA

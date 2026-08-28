@@ -64,6 +64,15 @@ export default function ChartPage() {
         setHlines(items.hlines ?? []);
         applyPriceLines(items.hlines ?? []);
       }
+      // 실전 포지션 평단선 (feature-chart §5)
+      const ps = await apiFetch("/portfolio/summary");
+      if (ps.ok) {
+        const positions = ((await ps.json()) as { positions: { code: string; avg_price: number; qty: number }[] }).positions;
+        const mine = positions.find((x) => x.code === c);
+        if (mine && candleRef.current) {
+          candleRef.current.createPriceLine({ price: mine.avg_price, color: "#66d9a8", lineWidth: 1, title: `평단 ${mine.qty}주` });
+        }
+      }
     }
   }, []);
 
