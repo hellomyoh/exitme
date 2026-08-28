@@ -1,6 +1,6 @@
 "use client";
 
-/** 실전매매 기록 — 수익률 카드 + 거래 등록 (feature-portfolio §9). */
+/** 실전매매 — 현황·보유·수익률 + 오늘의 주문표(체결 등록) + 일자별 매매 일지 (feature-portfolio §9, 2026-08-29 개편). */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createChart, IChartApi, LineSeries } from "lightweight-charts";
@@ -19,12 +19,15 @@ type Summary = {
   twr: number | null; xirr: number | null; positions: Position[];
 };
 type PortfolioItem = { id: number; name: string; kind: string };
-type Tx = {
-  id: number; kind: string; code: string | null; name: string | null;
-  qty: number | null; price: number | null; amount: number | null;
-  realized_pnl: number | null; executed_at: string; memo: string | null;
-};
 type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
+type JournalFill = {
+  id: number; kind: string; code: string | null; name: string | null; qty: number | null;
+  price: number | null; amount: number | null; realized_pnl: number | null; time: string; memo: string | null;
+};
+type JournalItem = {
+  date: string; regime: string | null; planned: OrderRow[] | null; gap_cancel_below: number | null;
+  fills: JournalFill[]; realized_pnl: number; day_return: number | null; equity: number | null;
+};
 type Signal = { status: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; account?: { qty_200: number; qty_lev: number; cash: number } };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
@@ -52,7 +55,8 @@ export default function PortfolioPage() {
   const [holdings, setHoldings] = useState<{ code: string; qty: string; price: string }[]>([
     { code: "069500", qty: "", price: "" },
   ]);
-  const [txs, setTxs] = useState<Tx[]>([]);
+  const [journal, setJournal] = useState<JournalItem[]>([]);
+  const [entryOpen, setEntryOpen] = useState(false);  // 체결 입력 폼 펼침 (2026-08-29 일지 개편)
   const [signal, setSignal] = useState<Signal | null>(null);
   const [curve, setCurve] = useState<{ date: string; equity: number; index: number }[]>([]);
   const eqRef = useRef<HTMLDivElement>(null);
@@ -68,11 +72,11 @@ export default function PortfolioPage() {
     }
     const pl = await apiFetch("/portfolios");
     if (pl.ok) setPortfolios(((await pl.json()) as { items: PortfolioItem[] }).items);
-    const tx = await apiFetch(`/portfolio/transactions${id ? `?portfolio_id=${id}` : ""}`);
-    if (tx.ok) setTxs(((await tx.json()) as { items: Tx[] }).items);
-    // 오늘의 주문표 — 선택된 실전 포트의 보유·현금 기준 (2026-08-28 검토 반영)
+    // 오늘의 주문표 — 선택된 실전 포트의 보유·현금 기준. 조회 시 '그날의 주문표'가 스냅샷 저장됨
     const sg = await apiFetch(`/signals/daily${sid ? `?portfolio_id=${sid}` : ""}`);
     if (sg.ok) setSignal((await sg.json()) as Signal);
+    const jr = await apiFetch(`/portfolio/journal${sid ? `?portfolio_id=${sid}` : ""}`);
+    if (jr.ok) setJournal(((await jr.json()) as { items: JournalItem[] }).items);
     const eq = await apiFetch(`/portfolio/equity${sid ? `?portfolio_id=${sid}` : ""}`);
     if (eq.ok) setCurve(((await eq.json()) as { items: { date: string; equity: number; index: number }[] }).items);
   }, []);
@@ -349,10 +353,62 @@ export default function PortfolioPage() {
         )}
       </Card>
 
-      {/* 거래 등록 */}
+      {/* 오늘의 주문표 (2026-08-28 지시 — 실전매매 중간 섹션) */}
       <Card className="mb-4">
-        <CardTitle>거래 등록</CardTitle>
-        <div className="flex flex-wrap items-end gap-3">
+        <CardTitle right={<a href="/signals" className="text-[13.5px] font-semibold normal-case text-accent">전체 주문표 →</a>}>
+          오늘의 주문표 {signal?.status === "OK" && (
+            <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}
+              {signal.basis === "portfolio" ? " · 이 포트 보유·현금 기준" : " · 모델 기준"}</span>
+          )}
+        </CardTitle>
+        {signal?.status === "OK" && signal.orders && signal.orders.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[14.5px]">
+              <thead><tr className="border-b border-line text-left text-[13px] text-faint">
+                <th className="pb-2 font-medium">구분</th><th className="pb-2 font-medium">종목</th>
+                <th className="pb-2 font-medium">방향</th>
+                <th className="pb-2 text-right font-medium">지정가</th>
+                <th className="pb-2 text-right font-medium">수량{signal?.basis === "portfolio" ? " (내 계좌 기준)" : " (모델 1억)"}</th>
+                <th className="pb-2 pl-4 font-medium">체결</th>
+              </tr></thead>
+              <tbody>
+                {signal.orders.map((o, i) => (
+                  <tr key={i} className="border-b border-line/50 last:border-0">
+                    <td className="py-2"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge></td>
+                    <td className="py-2">{o.instrument === "K200" ? "KODEX 200" : "KODEX 레버리지"}</td>
+                    <td className={`py-2 font-bold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
+                    <td className="table-num py-2 font-semibold">{o.price ? o.price.toLocaleString() : "시가"}</td>
+                    <td className="table-num py-2">{o.qty.toLocaleString()}주</td>
+                    <td className="py-2 pl-4">
+                      <button className="btn !px-2.5 !py-1 text-[12.5px]" onClick={() => {
+                        const code200 = sum?.positions.find((pp) => pp.code === "102110") ? "102110" : "069500";
+                        setForm({ kind: o.side, code: o.instrument === "LEV" ? "122630" : code200,
+                          qty: String(o.qty), price: o.price ? String(o.price) : "", amount: "",
+                          memo: ORDER_KIND_KO[o.kind] ?? o.kind });
+                        setEntryOpen(true);
+                      }}>체결 등록</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {signal.gap_cancel_below && (
+              <p className="mt-2 text-[13px] text-faint">⚠️ 시가 {signal.gap_cancel_below.toLocaleString()}원 이하 출발 시 그리드 전량 취소 — 상세는 전체 주문표 참조</p>
+            )}
+          </div>
+        ) : (
+          <p className="text-[14px] text-faint">
+            {signal?.status === "OK" ? "오늘은 신규 주문이 없습니다." : "시그널이 아직 없습니다 — 장 마감 배치(16:05) 이후 표시됩니다."}
+          </p>
+        )}
+        {/* 체결 입력 — 장 마감 후 실제 체결만 등록. 주문 행의 '체결 등록'이 값을 채워줌 (2026-08-29 일지 개편) */}
+        <details className="mt-3 rounded-xl border border-line bg-inset px-4 py-3" open={entryOpen}
+          onToggle={(e) => setEntryOpen((e.target as HTMLDetailsElement).open)}>
+          <summary className="cursor-pointer text-[13.5px] font-semibold text-accent">
+            체결·입출금 등록 <span className="font-normal text-faint">— 장 마감 후 실제 체결된 것만 입력하면 다음 주문표에 반영됩니다</span>
+          </summary>
+          <div className="mt-3">
+            <div className="flex flex-wrap items-end gap-3">
           <label className="grid gap-1 text-xs text-faint">구분
             <select className="input" value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
               <option value="buy">매수</option><option value="sell">매도</option>
@@ -382,78 +438,62 @@ export default function PortfolioPage() {
           <button className="btn btn-primary" onClick={() => void submit()}>등록</button>
           {msg && <span className="text-[13px] text-muted">{msg}</span>}
         </div>
-      </Card>
-
-      {/* 오늘의 주문표 (2026-08-28 지시 — 실전매매 중간 섹션) */}
-      <Card className="mb-4">
-        <CardTitle right={<a href="/signals" className="text-[13.5px] font-semibold normal-case text-accent">전체 주문표 →</a>}>
-          오늘의 주문표 {signal?.status === "OK" && (
-            <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}
-              {signal.basis === "portfolio" ? " · 이 포트 보유·현금 기준" : " · 모델 기준"}</span>
-          )}
-        </CardTitle>
-        {signal?.status === "OK" && signal.orders && signal.orders.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-[14.5px]">
-              <thead><tr className="border-b border-line text-left text-[13px] text-faint">
-                <th className="pb-2 font-medium">구분</th><th className="pb-2 font-medium">종목</th>
-                <th className="pb-2 font-medium">방향</th>
-                <th className="pb-2 text-right font-medium">지정가</th>
-                <th className="pb-2 text-right font-medium">수량{signal?.basis === "portfolio" ? " (내 계좌 기준)" : " (모델 1억)"}</th>
-              </tr></thead>
-              <tbody>
-                {signal.orders.map((o, i) => (
-                  <tr key={i} className="border-b border-line/50 last:border-0">
-                    <td className="py-2"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge></td>
-                    <td className="py-2">{o.instrument === "K200" ? "KODEX 200" : "KODEX 레버리지"}</td>
-                    <td className={`py-2 font-bold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
-                    <td className="table-num py-2 font-semibold">{o.price ? o.price.toLocaleString() : "시가"}</td>
-                    <td className="table-num py-2">{o.qty.toLocaleString()}주</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {signal.gap_cancel_below && (
-              <p className="mt-2 text-[13px] text-faint">⚠️ 시가 {signal.gap_cancel_below.toLocaleString()}원 이하 출발 시 그리드 전량 취소 — 상세는 전체 주문표 참조</p>
-            )}
           </div>
-        ) : (
-          <p className="text-[14px] text-faint">
-            {signal?.status === "OK" ? "오늘은 신규 주문이 없습니다." : "시그널이 아직 없습니다 — 장 마감 배치(16:05) 이후 표시됩니다."}
-          </p>
-        )}
+        </details>
       </Card>
 
-      {/* 날짜별 거래 내역 (2026-08-28 지시 — 시뮬레이터 저널과 동일 UX, 기본 닫힘) */}
-      {txs.length > 0 && (() => {
-        const byDate = new Map<string, Tx[]>();
-        for (const t of txs) {
-          const d = t.executed_at.slice(0, 10);
-          if (!byDate.has(d)) byDate.set(d, []);
-          byDate.get(d)!.push(t);
-        }
-        const days = Array.from(byDate.entries());
-        const visible = days.slice(0, txDays);
-        return (
-          <Card className="mt-4">
-            <CardTitle>날짜별 거래 내역 <span className="normal-case text-faint">· 총 {days.length}일 중 최근 {Math.min(txDays, days.length)}일</span></CardTitle>
-            <div className="grid gap-1.5">
-              {visible.map(([d, list]) => {
-                const realized = list.reduce((a, t) => a + (t.realized_pnl ?? 0), 0);
-                const hasSell = list.some((t) => t.kind === "sell");
-                return (
-                  <details key={d} className="rounded-xl border border-line bg-inset">
-                    <summary className="flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-1 rounded-xl px-4 py-3 text-[14.5px] transition-colors hover:bg-raised/60">
-                      <b className="w-24">{d}</b>
-                      <span className="text-[13.5px] text-muted">거래 {list.length}건</span>
-                      {hasSell && (
-                        <span className={`text-[13.5px] font-bold ${realized > 0 ? "text-up" : realized < 0 ? "text-down" : "text-muted"}`}>
-                          당일 실현손익 {realized >= 0 ? "+" : ""}{realized.toLocaleString()}원
+      {/* 일자별 매매 일지 — 그날의 주문표 + 체결 + 수익률 (시뮬레이터 저널과 동일 구성, 2026-08-29 지시) */}
+      {journal.length > 0 && (
+        <Card className="mt-4">
+          <CardTitle>일자별 매매 일지 <span className="normal-case text-faint">· 계획 → 체결 → 수익률 · 총 {journal.length}일 중 최근 {Math.min(txDays, journal.length)}일</span></CardTitle>
+          <div className="grid gap-1.5">
+            {journal.slice(0, txDays).map((j) => (
+              <details key={j.date} className="rounded-xl border border-line bg-inset">
+                <summary className="flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-1 rounded-xl px-4 py-3 text-[14.5px] transition-colors hover:bg-raised/60">
+                  <b className="w-24">{j.date}</b>
+                  {j.regime && (
+                    <Badge tone={j.regime === "BULL" ? "up" : j.regime === "BEAR" ? "down" : "accent"}>{REGIME_KO2[j.regime]}</Badge>
+                  )}
+                  {j.day_return !== null && (
+                    <span className={`w-20 text-right font-bold ${j.day_return > 0 ? "text-up" : j.day_return < 0 ? "text-down" : "text-muted"}`}>
+                      {(j.day_return * 100).toFixed(2)}%
+                    </span>
+                  )}
+                  {j.equity !== null && <span className="hidden text-[13px] text-muted md:inline">평가 {j.equity.toLocaleString()}원</span>}
+                  {j.realized_pnl !== 0 && (
+                    <span className={`text-[13.5px] font-bold ${j.realized_pnl > 0 ? "text-up" : "text-down"}`}>
+                      실현 {j.realized_pnl >= 0 ? "+" : ""}{j.realized_pnl.toLocaleString()}원
+                    </span>
+                  )}
+                  <span className="ml-auto text-[13px] text-faint">주문 {j.planned ? j.planned.length : "—"} · 체결 {j.fills.length}</span>
+                </summary>
+                <div className="border-t-2 border-line-strong px-4 py-3">
+                  <div className="mb-1.5 text-[12.5px] font-semibold uppercase tracking-wide text-faint">장 시작 전 주문표</div>
+                  {j.planned === null ? (
+                    <p className="text-[13px] text-faint">이날의 주문표 스냅샷이 없습니다 — 주문표를 화면에서 조회한 날부터 자동 저장됩니다.</p>
+                  ) : j.planned.length === 0 ? (
+                    <p className="text-[13px] text-faint">신규 주문 없음.</p>
+                  ) : (
+                    <div className="grid gap-1 text-[13.5px]">
+                      {j.planned.map((o, i) => (
+                        <span key={i}>
+                          <Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge>
+                          {" "}<b className={o.side === "buy" ? "text-up" : "text-down"}>{o.side === "buy" ? "매수" : "매도"}</b>
+                          {" "}{o.instrument === "K200" ? "200 ETF" : "레버리지"} {o.qty.toLocaleString()}주 @ {o.price ? `${o.price.toLocaleString()}원` : "시가"}
                         </span>
-                      )}
-                      <span className="ml-auto text-[13px] text-faint">펼치기</span>
-                    </summary>
-                    <div className="overflow-x-auto border-t-2 border-line-strong px-4 py-3">
+                      ))}
+                      {j.gap_cancel_below && <span className="text-[12.5px] text-faint">⚠️ 시가 {j.gap_cancel_below.toLocaleString()}원 이하 출발 시 그리드 취소</span>}
+                    </div>
+                  )}
+                  <div className="mb-1.5 mt-3 border-t border-line pt-3 text-[12.5px] font-semibold uppercase tracking-wide text-faint">체결 · 입출금</div>
+                  {j.fills.length === 0 ? (
+                    <p className="text-[13px] text-faint">
+                      {j.date === new Date().toISOString().slice(0, 10)
+                        ? "아직 등록된 체결이 없습니다 — 장 마감 후 위 주문표의 '체결 등록'으로 입력하세요."
+                        : "체결 없음."}
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto">
                       <table className="w-full text-[14px]">
                         <thead><tr className="text-left text-xs text-faint">
                           <th className="pb-1 font-medium">시각</th><th className="pb-1 font-medium">구분</th>
@@ -464,9 +504,9 @@ export default function PortfolioPage() {
                           <th className="pb-1 pl-3 font-medium">메모</th>
                         </tr></thead>
                         <tbody>
-                          {list.map((t) => (
+                          {j.fills.map((t) => (
                             <tr key={t.id} className="border-t border-line/40">
-                              <td className="py-1.5 text-faint">{t.executed_at.slice(11, 16)}</td>
+                              <td className="py-1.5 text-faint">{t.time}</td>
                               <td className={`py-1.5 font-semibold ${t.kind === "buy" ? "text-up" : t.kind === "sell" ? "text-down" : "text-muted"}`}>{TX_KO[t.kind]}</td>
                               <td className="py-1.5">{t.name ?? "—"}</td>
                               <td className="table-num py-1.5">{(t.price ?? t.amount ?? 0).toLocaleString()}원</td>
@@ -480,18 +520,18 @@ export default function PortfolioPage() {
                         </tbody>
                       </table>
                     </div>
-                  </details>
-                );
-              })}
-            </div>
-            {days.length > txDays && (
-              <button className="btn mt-3 w-full" onClick={() => setTxDays((v) => v + 30)}>
-                이전 내역 더 보기 ({days.length - txDays}일 남음)
-              </button>
-            )}
-          </Card>
-        );
-      })()}
+                  )}
+                </div>
+              </details>
+            ))}
+          </div>
+          {journal.length > txDays && (
+            <button className="btn mt-3 w-full" onClick={() => setTxDays((v) => v + 30)}>
+              이전 일지 더 보기 ({journal.length - txDays}일 남음)
+            </button>
+          )}
+        </Card>
+      )}
     </main>
   );
 }

@@ -278,6 +278,21 @@ class PositionLot(Base):
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class PortfolioPlan(TimestampMixin, Base):
+    """실전 포트의 '그날의 주문표' 스냅샷 — 일자별 매매 일지에서 계획 vs 체결 대조용 (2026-08-29 지시).
+
+    주문표 조회 시점의 보유·현금 기준 계산 결과를 (portfolio_id, trade_date) 로 upsert 보존.
+    """
+
+    __tablename__ = "portfolio_plans"
+    __table_args__ = (UniqueConstraint("portfolio_id", "trade_date"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
 class PositionMeta(TimestampMixin, Base):
     """포지션별 목표가·손절가 (feature-portfolio §5)."""
 

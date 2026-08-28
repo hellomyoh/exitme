@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch, ensureSession } from "../../lib/api";
-import { Badge, Callout, Card, CardTitle, EmptyState, fmtNum, fmtPct, GaugeBar, PageTitle, RegimeTip } from "../../components/ui";
+import { Badge, Callout, Card, CardTitle, EmptyState, fmtNum, fmtPct, GaugeBar, PageTitle, RegimeTip, Tip } from "../../components/ui";
 
 type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
 type Signal = {
@@ -170,18 +170,42 @@ export default function SignalsPage() {
               </details>
             </Card>
             <Card>
-              <CardTitle>목표 배분 <span className="normal-case text-faint">· E = {fmtPct(sig.e_target)}</span></CardTitle>
-              <GaugeBar ratio={(sig.e_target ?? 0) / 1.3} color={r.color} height={10} />
-              <div className="mt-4 flex h-3 w-full overflow-hidden rounded-full">
-                <div style={{ width: `${(sig.w_200 ?? 0) * 100}%`, background: "var(--color-accent)" }} />
-                <div style={{ width: `${(sig.w_lev ?? 0) * 100}%`, background: "var(--color-up)" }} />
-                <div style={{ width: `${cashRatio * 100}%`, background: "var(--color-raised)" }} />
-              </div>
-              <div className="mt-2 grid gap-1.5 text-[14px] text-muted">
-                <span><i className="mr-1.5 inline-block h-2 w-2 rounded-full bg-accent" />KODEX 200 {fmtPct(sig.w_200)}</span>
-                <span><i className="mr-1.5 inline-block h-2 w-2 rounded-full bg-up" />레버리지 {fmtPct(sig.w_lev)}</span>
-                <span><i className="mr-1.5 inline-block h-2 w-2 rounded-full bg-raised" style={{ outline: "1px solid var(--color-line-strong)" }} />현금 {fmtPct(cashRatio)}</span>
-              </div>
+              <CardTitle>목표 배분 <span className="normal-case text-faint">· 자산을 어떻게 나눌지의 목표치</span></CardTitle>
+              {(() => {
+                const emax = sig.regime === "BULL" ? 1.3 : sig.regime === "BEAR" ? 0.2 : 0.65;
+                const seg = [
+                  { name: "KODEX 200", v: sig.w_200 ?? 0, bg: "var(--color-accent)", fg: "#fff" },
+                  { name: "레버리지", v: sig.w_lev ?? 0, bg: "var(--color-up)", fg: "#fff" },
+                  { name: "현금", v: cashRatio, bg: "var(--color-raised)", fg: "var(--color-muted)" },
+                ];
+                return (
+                  <>
+                    <div className="mb-1 flex items-baseline justify-between text-[13.5px]">
+                      <span className="text-muted">실효 노출 E <Tip tip={<span>위험(변동성)을 반영해 계산한 주식 투입 비율. 변동성이 클수록 자동으로 줄어듭니다. 100%를 넘는 부분은 레버리지로 채웁니다.</span>}><span className="text-faint">ⓘ</span></Tip></span>
+                      <span><b className="text-[16px]" style={{ color: r.color }}>{fmtPct(sig.e_target)}</b>
+                        <span className="text-faint"> / 한도({r.ko}) {fmtPct(emax)}</span></span>
+                    </div>
+                    <GaugeBar ratio={(sig.e_target ?? 0) / emax} color={r.color} height={10} />
+                    <div className="mb-1 mt-4 text-[13.5px] text-muted">자산 구성 <span className="text-faint">— 평가액을 이 비율로 맞추는 것이 주문의 목표</span></div>
+                    <div className="flex h-7 w-full overflow-hidden rounded-lg text-[12px] font-bold">
+                      {seg.filter((x) => x.v > 0.001).map((x) => (
+                        <div key={x.name} className="flex items-center justify-center overflow-hidden whitespace-nowrap"
+                          style={{ width: `${x.v * 100}%`, background: x.bg, color: x.fg,
+                                   outline: x.name === "현금" ? "1px solid var(--color-line-strong)" : undefined }}>
+                          {x.v >= 0.14 ? `${x.name} ${(x.v * 100).toFixed(1)}%` : x.v >= 0.06 ? `${(x.v * 100).toFixed(0)}%` : ""}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[13.5px] text-muted">
+                      {seg.map((x) => (
+                        <span key={x.name}><i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-sm align-[-1px]"
+                          style={{ background: x.bg, outline: x.name === "현금" ? "1px solid var(--color-line-strong)" : undefined }} />
+                          {x.name} <b className="text-ink">{(x.v * 100).toFixed(1)}%</b></span>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
             </Card>
             <Card>
               <CardTitle>{sig.basis === "portfolio" ? "내 계좌 현황" : "모델 포트 현황"} <span className="normal-case text-faint">· 주문 수량의 기준</span></CardTitle>
@@ -193,9 +217,14 @@ export default function SignalsPage() {
               </div>
               {sig.basis !== "portfolio" && (
                 <div className="mt-3 border-t border-line pt-3">
-                  <label className="text-[13px] text-faint">내 투자금(원) — 비례 환산용 (정확한 계산은 위 기준 선택 사용)</label>
+                  <label className="text-[13.5px] font-semibold text-muted">내 투자금으로 어림 환산(원)</label>
                   <input className="input mt-1 w-full" placeholder="예: 50000000" value={myCapital}
                     onChange={(e) => saveCapital(e.target.value)} />
+                  <p className="mt-1.5 text-[12.5px] leading-relaxed text-faint">
+                    위 주문 수량은 가상 모델 계좌(현재 평가 {fmtNum(modelEquity)}원) 기준입니다. 여기에 내 투자금을 입력하면
+                    <b className="text-muted"> 내 투자금 ÷ 모델 평가액</b> 비율로 줄인 &quot;내 수량&quot; 열이 주문표에 추가됩니다.
+                    보유·현금이 반영되지 않은 어림값이므로, 실제 주문은 위 &quot;주문 기준&quot;에서 내 실전매매 포트를 선택해 계산하세요.
+                  </p>
                 </div>
               )}
             </Card>
@@ -214,7 +243,7 @@ export default function SignalsPage() {
                       <th className="pb-2 font-medium">방향</th>
                       <th className="pb-2 text-right font-medium">지정가</th>
                       <th className="pb-2 text-right font-medium">수량</th>
-                      {sig.basis !== "portfolio" && scale && <th className="pb-2 text-right font-medium text-accent">내 수량<div className="font-normal">({fmtNum(cap)}원)</div></th>}
+                      {sig.basis !== "portfolio" && scale && <th className="pb-2 text-right font-medium text-accent">내 수량<div className="font-normal">(투자금 {fmtNum(cap)}원 어림)</div></th>}
                       <th className="pb-2 pl-4 font-medium">실행 조건</th>
                     </tr>
                   </thead>

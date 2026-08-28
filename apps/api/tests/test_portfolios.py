@@ -315,3 +315,32 @@ def test_daily_series_buy_without_deposit_counts_as_flow():
     assert items, "입금 기록 없어도 곡선 산출"
     assert all(i["equity"] > 0 for i in items)          # 현금 음수로 평가액 붕괴 금지
     assert all(0 < i["index"] < 1000 for i in items)    # 지수 폭주 없음 (순수 시장 수익 범위)
+
+
+def test_portfolio_journal_plan_and_fills():
+    """2026-08-29 일지 개편: 주문표 조회 → 계획 스냅샷 저장 → /portfolio/journal 에 계획+체결 동반."""
+    from tests.test_backtest_api import seed_synthetic
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _u
+    token = client.post("/auth/register", json={"email": f"jn{_u.uuid4().hex[:8]}@stocklab.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "journal"}, headers=h).json()["id"]
+    ts = datetime(2025, 1, 10, tzinfo=timezone.utc).isoformat()
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 10_000_000,
+                                    "executed_at": ts}, headers=h)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500",
+                                    "qty": 100, "price": 70000, "executed_at": ts}, headers=h)
+    # 주문표 조회 → 다음 거래일 키로 계획 스냅샷 저장
+    sg = client.get(f"/signals/daily?portfolio_id={pid}", headers=h)
+    assert sg.status_code == 200 and sg.json()["basis"] == "portfolio"
+    jr = client.get(f"/portfolio/journal?portfolio_id={pid}", headers=h).json()
+    items = jr["items"]
+    assert items, "일지가 비어 있으면 안 됨"
+    planned_days = [i for i in items if i["planned"] is not None]
+    assert planned_days, "주문표 조회일의 계획 스냅샷이 일지에 있어야 함"
+    fill_days = [i for i in items if i["fills"]]
+    assert fill_days and any(f["kind"] == "buy" for f in fill_days[0]["fills"])

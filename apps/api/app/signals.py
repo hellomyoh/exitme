@@ -154,7 +154,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
 
     user_pf = Portfolio(cash=float(cash), lots=lots)
     p = plan(last, m200, mlev, regime, user_pf, params)
-    return {
+    out = {
         "basis": "portfolio", "portfolio": {"id": pf_row.id, "name": pf_row.name},
         "account": {"cash": cash, "qty_200": qty_200, "qty_lev": qty_lev,
                     "equity": round(user_pf.equity(m200.closes[last], mlev.closes[last]))},
@@ -164,6 +164,26 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
         ],
         "gap_cancel_below": p.gap_cancel_below,
     }
+    # '그날의 주문표' 보존 — 일자별 매매 일지의 계획 vs 체결 대조 (2026-08-29 지시).
+    # 주문표는 기준일(bars[last]) 종가 계획 = 다음 거래일 실행분이라 다음 거래일 키로 저장.
+    from datetime import timedelta as _td
+
+    from app.models import PortfolioPlan
+    base_day = date.fromisoformat(bars_200[last]["date"])
+    exec_day = base_day + _td(days=1)
+    while exec_day.weekday() >= 5:
+        exec_day += _td(days=1)
+    row = session.scalar(select(PortfolioPlan).where(
+        PortfolioPlan.portfolio_id == pid, PortfolioPlan.trade_date == exec_day))
+    payload = {"regime": regime.value, "signal_date": base_day.isoformat(),
+               "orders": out["orders"], "gap_cancel_below": p.gap_cancel_below,
+               "account": out["account"]}
+    if row is None:
+        session.add(PortfolioPlan(portfolio_id=pid, trade_date=exec_day, payload=payload))
+    else:
+        row.payload = payload
+    session.commit()
+    return out
 
 
 @router.get("/signals/journal")

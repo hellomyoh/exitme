@@ -527,3 +527,72 @@ def portfolio_equity(portfolio_id: int | None = None,
         items.append({"date": d.isoformat(), "equity": round(v), "index": round(index, 4)})
         prev_v = v
     return {"portfolio_id": pf.id, "items": items}
+
+
+@router.get("/portfolio/journal")
+def portfolio_journal(portfolio_id: int | None = None, days: int = 60,
+                      user_id: int = Depends(current_user_id),
+                      session: Session = Depends(get_session)) -> dict:
+    """일자별 매매 일지 — 그날의 주문표(계획 스냅샷) + 체결(등록 거래) + 일간 수익률 (2026-08-29 지시).
+
+    시뮬레이터 저널과 동일한 형태. 계획은 주문표 조회 시점에 보존된 스냅샷(PortfolioPlan)이며,
+    조회한 적 없는 과거 날짜는 계획 없이 체결·수익률만 표시된다.
+    """
+    from app.models import PortfolioPlan
+
+    pf = (_owned_portfolio(session, portfolio_id, user_id)
+          if portfolio_id else _default_portfolio(session, user_id))
+    session.commit()
+    txs = session.scalars(select(TradeTransaction).where(TradeTransaction.portfolio_id == pf.id)
+                          .order_by(TradeTransaction.executed_at, TradeTransaction.id)).all()
+    plans = session.scalars(select(PortfolioPlan).where(PortfolioPlan.portfolio_id == pf.id)).all()
+    daily = _daily_series(session, pf.id, txs)
+
+    # 일간 수익률: TWR 지수 체인과 동일 규약 (기시흐름)
+    ret_by_date: dict[str, float] = {}
+    eq_by_date: dict[str, float] = {}
+    prev_v = 0.0
+    for d, v, f in daily:
+        denom = prev_v + f
+        if denom > 0:
+            ret_by_date[d.isoformat()] = v / denom - 1.0
+        eq_by_date[d.isoformat()] = v
+        prev_v = v
+
+    tx_by_date: dict[str, list[TradeTransaction]] = {}
+    for t in txs:
+        tx_by_date.setdefault(t.executed_at.date().isoformat(), []).append(t)
+    plan_by_date = {r.trade_date.isoformat(): r.payload for r in plans}
+
+    code_cache: dict[int, Instrument] = {}
+
+    def inst_of(iid):
+        if iid not in code_cache:
+            code_cache[iid] = session.get(Instrument, iid)
+        return code_cache[iid]
+
+    all_dates = sorted(set(tx_by_date) | set(plan_by_date), reverse=True)[: min(days, 365)]
+    items = []
+    for d in all_dates:
+        pl = plan_by_date.get(d)
+        fills = tx_by_date.get(d, [])
+        realized = sum(t.realized_pnl or 0 for t in fills)
+        items.append({
+            "date": d,
+            "regime": pl.get("regime") if pl else None,
+            "planned": pl.get("orders", []) if pl else None,   # None = 스냅샷 없음(주문표 미조회일)
+            "gap_cancel_below": pl.get("gap_cancel_below") if pl else None,
+            "fills": [
+                {"id": t.id, "kind": t.kind,
+                 "code": inst_of(t.instrument_id).code if t.instrument_id else None,
+                 "name": inst_of(t.instrument_id).name if t.instrument_id else None,
+                 "qty": t.qty, "price": t.price, "amount": t.amount,
+                 "realized_pnl": t.realized_pnl, "time": t.executed_at.isoformat()[11:16],
+                 "memo": t.memo}
+                for t in fills
+            ],
+            "realized_pnl": realized,
+            "day_return": ret_by_date.get(d),
+            "equity": round(eq_by_date[d]) if d in eq_by_date else None,
+        })
+    return {"portfolio_id": pf.id, "items": items}
