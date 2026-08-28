@@ -62,5 +62,5 @@
 - **산출물**: 벤토 대시보드(총자산·도넛·추이·캘린더·레짐 게이지), 자산 스냅샷 배치, 다크/라이트·반응형·접근성 마감, 분석 이벤트 3종
 - **완료 조건**: [feature-dashboard.md §13](features/feature-dashboard.md) — 자동 테스트 실제 통과 + 접근성 수동 QA
 - **QA 완료 조건**: [release-checklist.md](qa/release-checklist.md) 전 항목
-- **의존**: Phase 5 | **상태**: 대기
+- **의존**: Phase 5 | **상태**: **구현 완료** (벤토 대시보드·스냅샷 배치·기타 자산·이벤트 3종. 접근성 수동 QA·릴리즈 체크는 실데이터 확보 후 릴리즈 시점에)
 - **관련**: [feature-dashboard.md](features/feature-dashboard.md)

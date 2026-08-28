@@ -22,6 +22,10 @@
 - [2026-08-28] compose 익명 볼륨(`/srv/web/node_modules`)은 이미지를 재빌드해도 기존 컨테이너의 것을 재사용한다 — 의존성 추가 후에는 `docker compose up -d -V <svc>`로 익명 볼륨을 갱신해야 한다. (근거: lightweight-charts 미해석 500 재현 후 -V로 해결)
 - [2026-08-28] email-validator(pydantic EmailStr)는 `.local` 등 특수 도메인을 기본 거부한다 — 테스트 계정은 실 TLD 형태 사용. `Secure` 쿠키는 http TestClient로 전송되지 않는다 — `base_url="https://testserver"` 사용. (근거: 테스트 실패 재현)
 
+## Docker / compose (추가)
+
+- [2026-08-28] compose 서비스 재생성 시 nginx가 업스트림 IP를 캐시해 502를 반환한다 — api/web 재생성 후에는 `docker compose restart nginx` 필요. (근거: /api/health 502 재현 후 재시작으로 해소. 운영 개선: resolver + 변수 proxy_pass 는 TODO)
+
 ## KIS Open API
 
 - [2026-08-28] 일봉 API(FHKST03010100)는 호출당 최대 100건 — 140 달력일 창으로 페이지네이션하면 안전하다. 모의(vps)에서 TR ID V-치환은 주문 계열(T…)만 적용되고 시세 TR(FHKST…)은 공통. (근거: 공식 GitHub https://github.com/koreainvestment/open-trading-api 예제 분석; 실 호출 검증은 키 기입 후 예정)

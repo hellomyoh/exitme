@@ -13,6 +13,7 @@ from app.models import Instrument, OhlcvDaily
 from app.auth import router as auth_router
 from app.backtests import router as backtests_router
 from app.charts import router as charts_router
+from app.dashboard import router as dashboard_router
 from app.portfolios import router as portfolios_router
 from app.quotes import router as quotes_router
 from app.signals import router as signals_router
@@ -24,6 +25,7 @@ app.include_router(charts_router)
 app.include_router(backtests_router)
 app.include_router(signals_router)
 app.include_router(portfolios_router)
+app.include_router(dashboard_router)
 
 
 def problem(status: int, title: str, detail: str, instance: str) -> JSONResponse:

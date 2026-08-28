@@ -38,6 +38,11 @@ celery_app.conf.update(
             "task": "app.worker.poll_quotes",
             "schedule": 10.0,
         },
+        # 일별 자산 스냅샷 — KST 16:40 (시그널 배치 후)
+        "daily-snapshot": {
+            "task": "app.worker.daily_asset_snapshot",
+            "schedule": crontab(hour=16, minute=40, day_of_week="mon-fri"),
+        },
     },
 )
 
@@ -238,3 +243,20 @@ def daily_signal(target: str | None = None) -> dict:
             finish_batch(session, run, "failed", {"error": str(exc)[:500]})
             session.commit()
             raise
+
+
+@celery_app.task(name="app.worker.daily_asset_snapshot")
+def daily_asset_snapshot() -> dict:
+    """전 사용자 자산 스냅샷 적재 (feature-dashboard §5 — 추이·캘린더 원천)."""
+    from datetime import date as _date
+
+    from app.dashboard import compute_user_snapshot
+    from app.db import SessionLocal
+    from app.models import User
+
+    with SessionLocal() as session:
+        users = session.scalars(select(User)).all()
+        for u in users:
+            compute_user_snapshot(session, u.id, _date.today())
+        session.commit()
+        return {"users": len(users)}

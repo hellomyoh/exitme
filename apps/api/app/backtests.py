@@ -97,6 +97,8 @@ def create_backtest(body: BacktestIn, user_id: int = Depends(current_user_id),
         raise HTTPException(status_code=422, detail="date_from must be before date_to")
     bt = Backtest(user_id=user_id, params=json.loads(body.model_dump_json()), status="QUEUED")
     session.add(bt)
+    from app.dashboard import record_event
+    record_event(session, "backtest_run", user_id)
     session.commit()
     from app.worker import run_backtest_job
 

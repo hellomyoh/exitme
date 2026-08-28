@@ -184,6 +184,8 @@ def create_from_backtest(bt_id: int, user_id: int = Depends(current_user_id),
     pf = TradePortfolio(user_id=user_id, name=f"실전 (백테스트 #{bt_id})",
                         kind="from_backtest", backtest_id=bt_id, params=bt.params)
     session.add(pf)
+    from app.dashboard import record_event
+    record_event(session, "portfolio_created_from_backtest", user_id)
     session.commit()
     return {"id": pf.id, "name": pf.name, "backtest_id": bt_id}
 

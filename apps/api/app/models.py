@@ -270,3 +270,41 @@ class PositionMeta(TimestampMixin, Base):
     instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), nullable=False)
     target_price: Mapped[int | None] = mapped_column(EncryptedBigInt)  # 🔒
     stop_price: Mapped[int | None] = mapped_column(EncryptedBigInt)    # 🔒
+
+
+class AssetSnapshot(Base):
+    """일별 자산 스냅샷 — 추이·캘린더의 원천 (feature-dashboard §7). 배치 적재."""
+
+    __tablename__ = "asset_snapshots"
+    __table_args__ = (UniqueConstraint("user_id", "snap_date"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    snap_date: Mapped[date] = mapped_column(Date, nullable=False)
+    total: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)   # 🔒
+    stock: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)   # 🔒
+    cash: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)    # 🔒
+    other: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)   # 🔒
+
+
+class ManualAsset(TimestampMixin, Base):
+    """기타 자산 수동 등록 — 채권/펀드/금/코인/부동산 등 (feature-dashboard §5)."""
+
+    __tablename__ = "manual_assets"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(Text, nullable=False)
+    value: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)   # 🔒
+
+
+class AnalyticsEvent(Base):
+    """성공 지표 이벤트 — backtest_run / portfolio_created_from_backtest / visit (ARCHITECTURE §7)."""
+
+    __tablename__ = "analytics_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
