@@ -251,3 +251,74 @@ def test_sell_orders_never_exceed_holdings():
         reduce_q = next(o.qty for o in sells if o.kind == "reduce")
         tp_q = next(o.qty for o in sells if o.kind == "tp")
         assert reduce_q + tp_q <= 680
+
+
+# ── 2026-08-28 공식 검증 소견 회귀 고정 (discussion/review-formulas 참조)
+def test_leverage_liquidated_when_e_drops_below_one():
+    """검증 ①① 치명: BULL 유지 중 E≤1.0 이 되면 레버리지 전량 매도 (정본 §5.2 '자동 0')."""
+    m = mk_market(sigma_down=0.20, sigma_ref=0.20, sigma20=0.15)  # E=0.825 → w_lev=0
+    lots = [Lot(LEV, 500, 20000, "lev_strat", None, 0), Lot(LEV, 100, 20000, "lev_tact1", None, 0)]
+    p = plan(I, m, mk_lev(close=21500.0, ema20=21000.0), Regime.BULL, pf_with(5e7, lots), P)
+    assert p.regime is Regime.BULL and p.w_lev == 0.0
+    liq = [o for o in p.orders if o.instrument == LEV and o.side == "sell"]
+    assert sum(o.qty for o in liq) == 600  # 전량
+
+
+def test_tactical_exit_fires_even_when_wlev_zero_band():
+    """검증 ①①: EMA20 회복 시 전술 이탈은 w_lev 값과 무관하게 발행."""
+    m = mk_market(sigma_down=0.118, sigma_ref=0.118)  # E≈1.05 → w_lev≈0.05 (밴드 미만)
+    lots = [Lot(LEV, 100, 20000, "lev_tact1", None, 0)]
+    p = plan(I, m, mk_lev(close=21500.0, ema20=21000.0), Regime.BULL, pf_with(1e8, lots), P)
+    assert [o for o in p.orders if o.kind == "lev_tact_exit"]
+
+
+def test_reduce_bypasses_band_on_regime_change_and_bear():
+    """검증 ①② 치명: 레짐 전환·하락장은 밴드 무시 즉시 축소 (정본 §5.3·§6.2)."""
+    # BULL→BEAR 전환일, 초과 4.1%p(밴드 5%p 미만)
+    m = mk_market(ma20=68000.0, ma60=69000.0, ma200=75000.0, sigma_down=0.26, sigma_ref=0.26)
+    lots = [Lot(K200, 343, 70000, "core", None, 0)]  # 24.0M
+    p = plan(I, m, mk_lev(), Regime.BULL, pf_with(100_000_000 - 24_010_000, lots), P)
+    assert p.regime is Regime.BEAR
+    assert [o for o in p.orders if o.kind == "reduce"], "전환일 밴드 우회 축소 필요"
+    # BEAR 정착 상태(전환 아님)에서도 초과분은 축소
+    p2 = plan(I, m, mk_lev(), Regime.BEAR, pf_with(100_000_000 - 24_010_000, [Lot(K200, 343, 70000, "grid", 71000, 0)]), P)
+    assert [o for o in p2.orders if o.kind == "reduce"]
+
+
+def test_core_lot_gets_tp_on_transition_day():
+    """검증 ①③: BULL→NEUTRAL 전환일에 core 로트도 전환일 종가 기준 익절 발행 (feature §5.6)."""
+    m = mk_market(ma20=67000.0, ma60=69000.0, ma200=65000.0)  # ma20 < ma60×0.98 → NEUTRAL 전이
+    lots = [Lot(K200, 300, 70000, "core", None, 0)]
+    p = plan(I, m, mk_lev(), Regime.BULL, pf_with(8e7, lots), P)
+    assert p.regime is Regime.NEUTRAL
+    tp = [o for o in p.orders if o.kind == "tp"]
+    assert tp and tp[0].qty == 300
+    assert tp[0].price == round_tick(70000 * (1 + p.indicators["grid"]), P.tick, up=True)
+
+
+def test_strategic_track_enters_at_small_wlev():
+    """검증 ①④: 전략 트랙 신규 진입은 밴드 예외 — 소액 w_lev 에서도 70:30 유지."""
+    m = mk_market(sigma_down=0.118181, sigma_ref=0.118181)  # E≈1.05, w_lev≈0.05
+    p = plan(I, m, mk_lev(close=20000.0, ema20=21000.0, atr=500.0), Regime.BULL, pf_with(1e8), P)
+    kinds = {o.kind for o in p.orders if o.instrument == LEV and o.side == "buy"}
+    assert "lev_strat" in kinds, "신규 진입이 밴드에 막히면 안 됨"
+
+
+def test_effective_exposure_targets_equal_e():
+    """검증 D2: 목표는 equity 기준 — target_200/equity = w_200 정확 (버퍼 미침식)."""
+    m = mk_market(sigma_down=0.05, sigma_ref=0.05)  # E=1.3, w_200=0.7
+    p = plan(I, m, mk_lev(), Regime.BULL, pf_with(1e8), P)
+    grid_amt = sum(o.qty * o.price for o in p.orders if o.kind.startswith("grid"))
+    # 잔여예산 = 0.7×1e8 (버퍼 미차감) — 그리드 합이 65~70M 구간 (수량 floor 손실만)
+    assert 65_000_000 < grid_amt <= 70_000_000
+
+
+def test_gap_exact_threshold_boundary():
+    """검증 D1·B3: 갭 판정은 정확 임계값 — 표시값 내림과 무관."""
+    m = mk_market(close=99712.0, atr=780.006)
+    p = plan(I, m, mk_lev(), Regime.BULL, pf_with(1e8), P)
+    exact = 99712.0 - 1.5 * 780.006  # 98541.991
+    assert p.gap_cancel_exact == pytest.approx(exact)
+    assert p.gap_cancel_below == int(exact)
+    # 경계: 98,541 ≤ exact → 발동 / 98,542 > exact → 미발동
+    assert 98541 <= p.gap_cancel_exact and not (98542 <= p.gap_cancel_exact)

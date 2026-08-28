@@ -228,7 +228,8 @@ def test_portfolio_equity_curve():
     body = client.get(f"/portfolio/equity?portfolio_id={pid}", headers=h).json()
     items = body["items"]
     assert len(items) > 10
-    assert items[0]["index"] == 100.0
+    # 기시흐름 규약(검증 H-2): 첫날 지수 = 100 × V0/입금액 — 시작일 성과도 지수에 반영
+    assert items[0]["index"] == pytest.approx(100.0 * items[0]["equity"] / 10_000_000, abs=0.02)
     assert all(i["equity"] > 0 for i in items)
     # 중간 입금 → 평가액은 점프하지만 지수는 연속 (입금일 지수 변화 = 시장 수익만)
     mid = items[len(items)//2]["date"]
@@ -236,3 +237,81 @@ def test_portfolio_equity_curve():
                                     "executed_at": mid + "T10:00:00+09:00"}, headers=h)
     body2 = client.get(f"/portfolio/equity?portfolio_id={pid}", headers=h).json()
     assert len(body2["items"]) == len(items)
+
+
+# ── 2026-08-28 공식 검증 소견 회귀 고정
+def test_twr_day_zero_and_prestart_flow_convention():
+    """검증 H-1·H-2: 기시흐름 규약 V_t/(V_{t−1}+F_t), 첫날도 (0+F_0) 분모로 포함."""
+    # 첫날 입금 100 → 종가 평가 102 (+2%), 이튿날 112.2 (+10%) → TWR = 12.2%
+    daily = [(date(2025, 1, 1), 102.0, 100.0), (date(2025, 1, 2), 112.2, 0.0)]
+    assert twr(daily) == pytest.approx(0.122, abs=1e-9)
+
+
+def test_xirr_wide_bracket():
+    """검증 M-1: 단기 초고수익 흐름 — 브래킷 자동 확장으로 해 산출 (기존 [−0.99,10] 은 None)."""
+    r = xirr([(date(2025, 1, 1), -100.0), (date(2025, 2, 1), 150.0)])
+    assert r is not None and r > 10.0
+
+
+def test_withdraw_exceeding_cash_rejected():
+    """검증 M-4: 현금 초과 출금 409."""
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _u
+    token = client.post("/auth/register", json={"email": f"wd{_u.uuid4().hex[:8]}@stocklab.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "wd"}, headers=h).json()["id"]
+    ts = datetime(2025, 1, 10, tzinfo=timezone.utc).isoformat()
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 1_000_000,
+                                    "executed_at": ts}, headers=h)
+    r = client.post("/positions", json={"portfolio_id": pid, "kind": "withdraw", "amount": 2_000_000,
+                                        "executed_at": ts}, headers=h)
+    assert r.status_code == 409
+
+
+def test_sell_ignores_lots_opened_after_execution():
+    """검증 H-4: 매도 시점 이후 취득 로트는 매도 대상 아님 — 소급 매도 409."""
+    from tests.test_backtest_api import seed_synthetic
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _u
+    token = client.post("/auth/register", json={"email": f"h4{_u.uuid4().hex[:8]}@stocklab.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "h4"}, headers=h).json()["id"]
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 10_000_000,
+                                    "executed_at": datetime(2025, 3, 10, tzinfo=timezone.utc).isoformat()},
+                headers=h)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500",
+                                    "qty": 50, "price": 70000,
+                                    "executed_at": datetime(2025, 3, 10, tzinfo=timezone.utc).isoformat()},
+                headers=h)
+    # 매수(3/10) 이전 날짜(3/5)로 소급 매도 → 그 시점 보유 0 → 409
+    r = client.post("/positions", json={"portfolio_id": pid, "kind": "sell", "code": "069500",
+                                        "qty": 10, "price": 71000,
+                                        "executed_at": datetime(2025, 3, 5, tzinfo=timezone.utc).isoformat()},
+                    headers=h)
+    assert r.status_code == 409
+
+
+def test_daily_series_buy_without_deposit_counts_as_flow():
+    """검증 C-2: 입금 없이 매수 → 암묵 유입을 흐름으로 계상, TWR 은 시장수익만."""
+    from tests.test_backtest_api import seed_synthetic
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _u
+    token = client.post("/auth/register", json={"email": f"c2{_u.uuid4().hex[:8]}@stocklab.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "c2"}, headers=h).json()["id"]
+    client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500",
+                                    "qty": 100, "price": 70000,
+                                    "executed_at": datetime(2025, 1, 10, tzinfo=timezone.utc).isoformat()},
+                headers=h)
+    body = client.get(f"/portfolio/equity?portfolio_id={pid}", headers=h).json()
+    items = body["items"]
+    assert items, "입금 기록 없어도 곡선 산출"
+    assert all(i["equity"] > 0 for i in items)          # 현금 음수로 평가액 붕괴 금지
+    assert all(0 < i["index"] < 1000 for i in items)    # 지수 폭주 없음 (순수 시장 수익 범위)

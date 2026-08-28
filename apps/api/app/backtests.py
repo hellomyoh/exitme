@@ -206,13 +206,14 @@ def get_backtest_journal(bt_id: int, user_id: int = Depends(current_user_id),
             for o in (plan_i.orders if plan_i and plan_i.status == "OK" else [])
         ]
         prev_eq = r.equity[i - 1] if i > 0 else capital
+        eq_r, prev_r = round(r.equity[i]), round(prev_eq)
         items.append({
             "date": d,
             "regime": r.regimes[i],
             "exposure": r.exposures[i],
-            "equity": round(r.equity[i]),
+            "equity": eq_r,
             "day_return": (r.equity[i] / prev_eq - 1.0) if prev_eq else 0.0,
-            "day_pnl": round(r.equity[i] - prev_eq),
+            "day_pnl": eq_r - prev_r,  # 표시 equity 증분과 일치 (검증 B10)
             "total_return": r.equity[i] / capital - 1.0,
             "cash": round(r.cash_curve[i]),
             "qty_200": r.qty_200[i],

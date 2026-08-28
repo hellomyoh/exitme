@@ -28,6 +28,7 @@ class Lot:
     kind: str                # grid | core | lev_strat | lev_tact1 | lev_tact2
     tp_price: int | None     # 중립 익절가 — 체결 시점 스냅샷 (grid만)
     buy_index: int           # 체결 바 인덱스 (거래일지용)
+    fee_ps: float = 0.0      # 매수 수수료(주당) — 라운드트립 손익 귀속용 (검증 B1)
 
 
 @dataclass
@@ -61,8 +62,9 @@ class Plan:
     w_200: float
     w_lev: float
     orders: tuple[Order, ...]
-    gap_cancel_below: int | None    # 시가가 이 값 이하면 그리드 매수 전량 취소 (조건부 지시문)
+    gap_cancel_below: int | None    # 표시용(원 단위 내림) — 시가가 이하면 그리드 취소
     indicators: dict
+    gap_cancel_exact: float | None = None  # 체결 판정용 정확 임계 (close − 1.5×ATR)
 
 
 @dataclass
@@ -166,56 +168,68 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
 
     lev_close = mlev.closes[i]
     equity = pf.equity(close, lev_close)
-    usable = equity * (1 - params.cash_buffer)
     value_200 = pf.value(K200, close)
-    target_200 = w_200 * usable
+    # 목표는 equity 기준 — 정본 §5.2 "실효노출 = E" 성립. 현금버퍼는 매수 현금 예약으로만 적용 (검증 D2·⑤)
+    target_200 = w_200 * equity
+    cash_reserve = equity * params.cash_buffer
 
     orders: list[Order] = []
     grid = grid_ratio(atr, close, params)
+    regime_changed = regime is not prev_regime  # 레짐 전환 트리거 — 밴드 무시 (정본 §5.3, 검증 ①②)
 
-    # ── 레버리지 청산 최우선 (정본 §9 / §7): 레짐 이탈 또는 σ20 초과
+    # ── 레버리지 강제청산 최우선 (정본 §9 / §7): 레짐 이탈 또는 σ20 초과
     lev_lots = [l for l in pf.lots if l.instrument == LEV]
     force_liq = (regime is not Regime.BULL) or (sigma20 is not None and sigma20 > params.sigma20_liquidate)
     if lev_lots and f.f4_leverage and force_liq:
         qty = sum(l.qty for l in lev_lots)
         orders.append(Order(LEV, "sell", "market", qty, None, "lev_liq"))
         lev_lots = []
+    # E ≤ 1.0 → 레버리지 자동 0 (정본 §5.2, 검증 ①① 치명): 상승장이어도 목표 0이면 전량 매도
+    if lev_lots and f.f4_leverage and w_lev == 0.0:
+        qty = sum(l.qty for l in lev_lots)
+        orders.append(Order(LEV, "sell", "market", qty, None, "lev_liq"))
+        lev_lots = []
 
-    # ── K200 매도 — 축소를 먼저 확정하고, 익절은 축소분을 제외한 잔여 보유에만 발행
-    #    (주문 합계가 보유를 초과하는 이중 계상 방지 — 2026-08-28 사용자 검증 반영.
-    #     축소는 시장가라 반드시 체결되므로, 축소에 배정된 물량은 FIFO 순서로 익절 대상에서 제외)
+    # ── K200 매도 — 축소 선확정, 익절은 축소분(FIFO 선점) 제외 잔여에만 (이중 계상 금지)
     planned_sell_value = 0.0
     reduce_qty = 0
     excess = value_200 - target_200
-    if excess > params.band * equity:
-        # 축소 매도(하락장 신속 축소 / E 하락 리밸런싱) — 밴드 초과 시에만 (§5.5)
+    # 레짐 전환·하락장은 밴드 무시하고 즉시 목표로 축소 (정본 §5.3·§6.2, 검증 ①② 치명)
+    if excess > 0 and (regime_changed or regime is Regime.BEAR or excess > params.band * equity):
         reduce_qty = int(excess / close)
         if reduce_qty > 0:
             orders.append(Order(K200, "sell", "market", reduce_qty, None, "reduce"))
             planned_sell_value += reduce_qty * close
-    if regime is Regime.NEUTRAL or not f.f1_no_tp_in_bull:
+    if (regime is Regime.NEUTRAL or not f.f1_no_tp_in_bull) and regime is not Regime.BEAR:
         # 중립 왕복 익절 (f1 off 이면 v1: 상승장에도 익절)
-        if regime is not Regime.BEAR:
-            earmarked = reduce_qty  # 축소가 FIFO 로 소진할 물량
-            for idx, l in enumerate(pf.lots):
-                if l.instrument != K200:
-                    continue
-                consumed = min(earmarked, l.qty)
-                earmarked -= consumed
-                available = l.qty - consumed
-                if l.kind == "grid" and l.tp_price and available > 0:
-                    orders.append(Order(K200, "sell", "limit", available, l.tp_price, "tp", lot_id=idx))
+        # 전환일의 core 로트도 전환일 종가 기준 익절가로 즉시 발행 (feature §5.6, 검증 ①③)
+        core_tp = round_tick(close * (1 + grid), params.tick, up=True)
+        earmarked = reduce_qty  # 축소가 FIFO 로 소진할 물량
+        for idx, l in enumerate(pf.lots):
+            if l.instrument != K200:
+                continue
+            consumed = min(earmarked, l.qty)
+            earmarked -= consumed
+            available = l.qty - consumed
+            if available <= 0:
+                continue
+            if l.kind == "grid" and l.tp_price:
+                orders.append(Order(K200, "sell", "limit", available, l.tp_price, "tp", lot_id=idx))
+            elif l.kind == "core":
+                orders.append(Order(K200, "sell", "limit", available, core_tp, "tp", lot_id=idx))
 
     # ── K200 그리드 매수 (하락장 정지)
     gap_cancel_below: int | None = None
+    gap_cancel_exact: float | None = None
     if regime is not Regime.BEAR:
         if f.f5_gap_filter:
             remaining = max(0.0, target_200 - value_200)   # 잔여예산 규칙
-            gap_cancel_below = round_tick(close - params.gap_atr_mult * atr, params.tick, up=False)
+            gap_cancel_exact = close - params.gap_atr_mult * atr  # 체결 판정은 정확값 (검증 D1·B3)
+            gap_cancel_below = int(gap_cancel_exact)               # 표시용 원 단위 내림
         else:
             remaining = target_200                          # v1: 예산 규칙 없음
         per_step = remaining / params.grid_steps
-        cash_left = pf.cash + planned_sell_value
+        cash_left = pf.cash + planned_sell_value - cash_reserve   # 현금버퍼 = 예약 (feature §5.5)
         for k in range(1, params.grid_steps + 1):
             price = round_tick(close * (1 - grid * k), params.tick, up=False)
             qty = int(per_step // price)
@@ -225,23 +239,24 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
             orders.append(Order(K200, "buy", "limit", qty, price, f"grid{k}"))
 
     # ── 레버리지 (상승장 & E>1, §7 — 2트랙)
-    if f.f4_leverage and regime is Regime.BULL and w_lev > 0 and not force_liq:
-        strat_target = w_lev * params.lev_strategic_ratio * usable
+    if f.f4_leverage and regime is Regime.BULL and not force_liq and w_lev > 0:
+        strat_target = w_lev * params.lev_strategic_ratio * equity
         strat_value = sum(l.qty * lev_close for l in lev_lots if l.kind == "lev_strat")
         diff = strat_target - strat_value
-        if diff > params.band * equity:
+        # 전략 트랙 신규 진입은 밴드 예외 — "E>1 충족 시 상시 보유" (정본 §7, 검증 ①④)
+        if diff > 0 and (strat_value == 0.0 or diff > params.band * equity):
             qty = int(diff / lev_close)
             if qty > 0:
                 orders.append(Order(LEV, "buy", "market", qty, None, "lev_strat"))
-        elif -diff > params.band * equity:
+        elif diff < 0 and -diff > params.band * equity:
             qty = int(-diff / lev_close)
             if qty > 0:
                 orders.append(Order(LEV, "sell", "market", qty, None, "lev_strat"))
 
-        # 전술 트랙 — 레버리지 자체 시계열 EMA20/ATR20 (§5.1 예외)
+        # 전술 트랙 진입 — 레버리지 자체 시계열 EMA20/ATR20 (§5.1 예외)
         lev_ema, lev_atr = mlev.ema20[i], mlev.atr20[i]
         if lev_ema is not None and lev_atr is not None:
-            tact_budget_each = w_lev * (1 - params.lev_strategic_ratio) * usable / 2
+            tact_budget_each = w_lev * (1 - params.lev_strategic_ratio) * equity / 2
             has1 = any(l.kind == "lev_tact1" for l in lev_lots)
             has2 = any(l.kind == "lev_tact2" for l in lev_lots)
             if lev_close < lev_ema - params.lev_tact1_mult * lev_atr and not has1:
@@ -252,10 +267,14 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
                 qty = int(tact_budget_each / lev_close)
                 if qty > 0:
                     orders.append(Order(LEV, "buy", "market", qty, None, "lev_tact2"))
-            if lev_close >= lev_ema and (has1 or has2):
-                qty = sum(l.qty for l in lev_lots if l.kind in ("lev_tact1", "lev_tact2"))
-                if qty > 0:
-                    orders.append(Order(LEV, "sell", "market", qty, None, "lev_tact_exit"))
+
+    # ── 전술 이탈(EMA20 회복)은 w_lev 와 무관하게 평가 (정본 §7 청산 규칙, 검증 ①①)
+    if f.f4_leverage and regime is Regime.BULL and not force_liq and lev_lots:
+        lev_ema_exit = mlev.ema20[i]
+        if lev_ema_exit is not None and lev_close >= lev_ema_exit:
+            qty = sum(l.qty for l in lev_lots if l.kind in ("lev_tact1", "lev_tact2"))
+            if qty > 0:
+                orders.append(Order(LEV, "sell", "market", qty, None, "lev_tact_exit"))
 
     return Plan(
         "OK", regime, e, w_200, w_lev, tuple(orders), gap_cancel_below,
@@ -265,4 +284,5 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
             "sigma20": sigma20, "sigma_down": m200.sigma_down[i], "sigma_ref": m200.sigma_ref[i],
             "equity": equity, "lev_close": lev_close,
         },
+        gap_cancel_exact=gap_cancel_exact,
     )

@@ -150,3 +150,33 @@ def test_trade_ledger_quantity_conservation(bars):
     assert r.kpi["trades"] == len(r.trades)
     for t in r.trades:
         assert t.qty > 0 and t.sell_index > t.buy_index
+
+
+# ── 2026-08-28 공식 검증 소견 회귀 고정
+def test_trade_pnl_includes_buy_commission(bars):
+    """검증 B1: 라운드트립 pnl = (매도−매수)×수량 − 매도수수료 − 매수수수료 − 세금."""
+    b200, blev = bars
+    r = run_backtest(b200, blev, 100_000_000, P)
+    t = next(t for t in r.trades if t.instrument == "K200")
+    expected = ((t.sell_price - t.buy_price) * t.qty
+                - t.sell_price * t.qty * P.commission
+                - t.buy_price * t.qty * P.commission)
+    # 매수 fee_ps 는 체결가(float) 기준이라 로트가 반올림과 ±0.5원/주 이내 오차 허용
+    assert abs(t.pnl - expected) <= t.qty * 0.5 + 1e-6
+
+
+def test_kpi_excludes_warmup_flat_period():
+    """검증 B4: 워밍업(무거래 flat) 구간은 KPI 산출에서 제외 — 280봉(활동 8일)이면 CAGR None."""
+    b200 = make_bars(n=280)
+    blev = make_bars(n=280, ratio=0.3)
+    r = run_backtest(b200, blev, 100_000_000, P)
+    assert r.kpi["cagr"] is None  # 활동일 < 252 — 워밍업 271일이 n 을 부풀리면 안 됨
+    assert "open_lots" in r.kpi   # 검증 B6: 미청산 표기
+
+
+def test_cagr_none_on_total_loss():
+    """검증 B7: final ≤ 0 이면 CAGR None (complex 방지)."""
+    kpi = compute_kpi([100.0] * 299 + [-5.0], 100.0, [])
+    assert kpi["cagr"] is None
+    import json
+    json.dumps(kpi)  # 직렬화 가능해야 함

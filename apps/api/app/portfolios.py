@@ -35,8 +35,11 @@ def xirr(cashflows: list[tuple[date, float]]) -> float | None:
     def npv(rate: float) -> float:
         return sum(cf / (1 + rate) ** ((d - t0).days / 365.0) for d, cf in cashflows)
 
-    lo, hi = -0.99, 10.0
+    lo, hi = -0.999999, 10.0
     f_lo, f_hi = npv(lo), npv(hi)
+    while f_lo * f_hi > 0 and hi < 1e6:  # 초고수익 단기 흐름 대응 — 브래킷 확장 (검증 M-1)
+        hi *= 10.0
+        f_hi = npv(hi)
     if f_lo * f_hi > 0:
         return None
     for _ in range(200):
@@ -54,15 +57,22 @@ def xirr(cashflows: list[tuple[date, float]]) -> float | None:
 def twr(daily: list[tuple[date, float, float]]) -> float | None:
     """TWR 일별 체인 — daily: (일자, 그날 종가 평가액, 그날 외부 현금흐름 합(입금+)).
 
-    수익률_t = (V_t − F_t) / V_{t−1}. V_{t−1} = 0 인 구간은 건너뛴다.
+    기시흐름 규약: 수익률_t = V_t / (V_{t−1} + F_t) — 흐름은 당일 수익 계산의 분모에
+    들어가며(입금 당일 성과 반영), 첫날도 (0 + F_0) 분모로 포함한다 (검증 H-1·H-2).
+    분모 ≤ 0 인 날은 건너뛴다.
     """
-    if len(daily) < 2:
+    if not daily:
         return None
     acc = 1.0
-    for (_, v_prev, _), (_, v, f) in zip(daily, daily[1:]):
-        if v_prev > 0:
-            acc *= (v - f) / v_prev
-    return acc - 1.0
+    prev_v = 0.0
+    linked = False
+    for _, v, f in daily:
+        denom = prev_v + f
+        if denom > 0:
+            acc *= v / denom
+            linked = True
+        prev_v = v
+    return acc - 1.0 if linked else None
 
 
 def latest_close(session: Session, instrument_id: int) -> tuple[float, date] | None:
@@ -118,6 +128,22 @@ def register_transaction(body: TransactionIn, user_id: int = Depends(current_use
             raise HTTPException(status_code=404, detail=f"unknown code {body.code}")
     if body.kind in ("deposit", "withdraw") and not body.amount:
         raise HTTPException(status_code=422, detail="deposit/withdraw requires amount")
+    if body.kind == "withdraw":
+        # 현금 잔고 초과 출금 방지 — 음수 현금은 TWR/평가를 왜곡 (검증 M-4)
+        cash_now = 0
+        for t in session.scalars(select(TradeTransaction).where(
+                TradeTransaction.portfolio_id == pf.id)).all():
+            if t.kind == "deposit":
+                cash_now += t.amount
+            elif t.kind == "withdraw":
+                cash_now -= t.amount
+            elif t.kind == "buy":
+                cash_now -= t.qty * t.price
+            elif t.kind == "sell":
+                cash_now += t.qty * t.price
+        if body.amount > cash_now:
+            raise HTTPException(status_code=409,
+                                detail=f"withdraw {body.amount} exceeds cash {cash_now}")
 
     realized: int | None = None
     if body.kind == "buy":
@@ -126,11 +152,15 @@ def register_transaction(body: TransactionIn, user_id: int = Depends(current_use
     elif body.kind == "sell":
         lots = session.scalars(
             select(PositionLot).where(PositionLot.portfolio_id == pf.id,
-                                      PositionLot.instrument_id == inst.id).order_by(PositionLot.id)
+                                      PositionLot.instrument_id == inst.id)
+            .order_by(PositionLot.opened_at, PositionLot.id)  # 취득 시각 FIFO (검증 H-3)
         ).all()
+        # 매도 시점 이후 취득 로트는 매도 대상이 아님 — 소급 입력 시 원장 왜곡 방지 (검증 H-4)
+        lots = [l for l in lots if l.opened_at <= body.executed_at]
         held = sum(l.qty_open for l in lots)
         if body.qty > held:
-            raise HTTPException(status_code=409, detail=f"sell qty {body.qty} exceeds holding {held}")
+            raise HTTPException(status_code=409,
+                                detail=f"sell qty {body.qty} exceeds holding {held} as of executed_at")
         remaining, realized = body.qty, 0
         for l in lots:  # FIFO (feature-portfolio §5 — 전략·백테스트와 동일 회계)
             if remaining <= 0:
@@ -345,15 +375,42 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
         annualized = ((1 + ret) ** (365.0 / held_days) - 1) if held_days >= ANNUALIZE_MIN_DAYS and avg else None
         meta = session.scalar(select(PositionMeta).where(
             PositionMeta.portfolio_id == pf.id, PositionMeta.instrument_id == inst_id))
-        # 최고·최저 도달 수익률 — 매수 이후 일별 종가 기준
+        # 최고·최저 도달 수익률 — 시점별 평단(FIFO 재생) 대비 그날 종가 (검증 H-5:
+        # 현재 평단을 과거 전 구간에 적용하면 부분 매도 이력이 있는 종목이 왜곡됨)
+        inst_txs = [t for t in txs if t.instrument_id == inst_id and t.kind in ("buy", "sell")]
+        events: list[tuple[date, float | None]] = []
+        fifo: list[list[int]] = []
+        for t in inst_txs:
+            if t.kind == "buy":
+                fifo.append([t.qty, t.price])
+            else:
+                rem = t.qty
+                while rem > 0 and fifo:
+                    take = min(fifo[0][0], rem)
+                    fifo[0][0] -= take
+                    rem -= take
+                    if fifo[0][0] == 0:
+                        fifo.pop(0)
+            q_ev = sum(x[0] for x in fifo)
+            events.append((t.executed_at.date(),
+                           (sum(x[0] * x[1] for x in fifo) / q_ev) if q_ev else None))
+        hist_from = inst_txs[0].executed_at.date() if inst_txs else first_buy.date()
         hist = session.execute(
             select(OhlcvDaily).where(OhlcvDaily.instrument_id == inst_id,
-                                     OhlcvDaily.trade_date >= first_buy.date())
+                                     OhlcvDaily.trade_date >= hist_from)
             .order_by(OhlcvDaily.trade_date)
         ).scalars().all()
-        closes = [r.close_raw * float(r.adj_factor) for r in hist]
-        best = max(((c - avg) / avg for c in closes), default=ret) if avg else 0.0
-        worst = min(((c - avg) / avg for c in closes), default=ret) if avg else 0.0
+        best = worst = ret
+        ei = 0
+        cur_avg: float | None = None
+        for r in hist:
+            while ei < len(events) and events[ei][0] <= r.trade_date:
+                cur_avg = events[ei][1]
+                ei += 1
+            if cur_avg:
+                rr = (r.close_raw * float(r.adj_factor) - cur_avg) / cur_avg
+                best = max(best, rr)
+                worst = min(worst, rr)
         positions.append({
             "code": inst.code, "name": inst.name, "qty": qty, "avg_price": round(avg),
             "price": round(price), "value": round(value),
@@ -374,7 +431,8 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
     xirr_val = None
     if flows:
         cfs = [(d, -f) for d, f in flows]  # 입금 = 투자(−)
-        cfs.append((date.today(), total_equity))
+        from app.dashboard import kst_today
+        cfs.append((kst_today(), total_equity))
         xirr_val = xirr(sorted(cfs, key=lambda x: x[0]))
     twr_val = _compute_twr(session, pf.id, txs)
 
@@ -425,10 +483,15 @@ def _daily_series(session: Session, pid: int, txs: list[TradeTransaction]) -> li
             elif tx.kind == "buy":
                 cash -= tx.qty * tx.price
                 qty[tx.instrument_id] = qty.get(tx.instrument_id, 0) + tx.qty
+                last_px.setdefault(tx.instrument_id, float(tx.price))  # 시세 결측 폴백 (검증 C-1)
             elif tx.kind == "sell":
                 cash += tx.qty * tx.price
                 qty[tx.instrument_id] = qty.get(tx.instrument_id, 0) - tx.qty
             tx = next(tx_iter, None)
+        if cash < 0:
+            # 입금 기록 없이 매수한 자본 = 암묵 외부 유입 — 흐름으로 계상해 TWR 왜곡 방지 (검증 C-2)
+            flow += -cash
+            cash = 0.0
         value = cash
         for iid, q in qty.items():
             px = price_map.get(iid, {}).get(d)
@@ -456,10 +519,11 @@ def portfolio_equity(portfolio_id: int | None = None,
     daily = _daily_series(session, pf.id, txs)
     items = []
     index = 100.0
-    prev_v = None
+    prev_v = 0.0
     for d, v, f in daily:
-        if prev_v and prev_v > 0:
-            index *= (v - f) / prev_v
+        denom = prev_v + f  # 기시흐름 규약 — twr() 와 동일 (검증 H-1)
+        if denom > 0:
+            index *= v / denom
         items.append({"date": d.isoformat(), "equity": round(v), "index": round(index, 4)})
         prev_v = v
     return {"portfolio_id": pf.id, "items": items}

@@ -119,7 +119,8 @@ class _Ledger:
             if instrument == LEV:  # 보유기간과세 단순화 — 실현이익 × 15.4% (손실 0)
                 gain = (price - l.price) * take
                 tax = max(gain, 0.0) * self.params.lev_tax
-            pnl = (price - l.price) * take - commission - tax
+            # 매수 수수료(주당)도 라운드트립에 귀속 — §5.2 양방향 수수료 (검증 B1)
+            pnl = (price - l.price) * take - commission - take * l.fee_ps - tax
             self.closed.append(ClosedTrade(instrument, l.kind, take, l.price, price, l.buy_index, i, pnl))
             proceeds += gross - commission - tax
             l.qty -= take
@@ -169,6 +170,7 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
     bench_cash = capital
 
     prev_grid = 0.0
+    active_start: int | None = None  # 첫 OK 계획 시점 — KPI 는 활동 구간 기준 (검증 B4)
     total = max(len(dates) - 1 - first, 1)
     for i in range(first, len(dates) - 1):
         if progress_cb is not None and (i - first) % max(total // 100, 1) == 0:
@@ -182,15 +184,17 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
         lo_, lh_, ll_ = mlev.opens[nxt], mlev.highs[nxt], mlev.lows[nxt]
 
         if p.status == "OK":
+            if active_start is None:
+                active_start = len(equity_curve)
             # 레짐 전환 → 로트 재분류 (전환일 종가 기준)
             grid_today = grid_ratio(m200.atr20[i], m200.closes[i], params)
             apply_regime_conversion(pf, regime, p.regime, grid_today, m200.closes[i], params)
             regime = p.regime
             prev_grid = grid_today
 
-            # 벤치마크 최초 진입
+            # 벤치마크 최초 진입 — 전략과 동일하게 익일 시가 체결 (§5.1, 검증 B5)
             if bench_qty == 0.0 and bench_cash > 0:
-                bench_qty = bench_cash / m200.closes[i]
+                bench_qty = bench_cash / m200.opens[nxt]
                 bench_cash = 0.0
 
             lot_snapshot = list(pf.lots)  # tp lot_id 참조 안정화
@@ -209,20 +213,21 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
                 pf.cash += ledger.sell(pf, od.instrument, od.qty, px, nxt, kinds=kinds)
                 fills.append(Fill(dates[nxt], od.instrument, "sell", od.kind, round(px), od.qty))
 
-            # ② 시장가 매수 (레버리지)
+            # ② 시장가 매수 (레버리지) — 슬리피지는 시장가성 '청산'에만 적용 (§5.2, 검증 B8)
             for od in p.orders:
                 if od.otype != "market" or od.side != "buy":
                     continue
-                px = _fill_market(lo_, "buy", params.slippage_market)
+                px = lo_
                 cost = od.qty * px * (1 + params.commission)
                 if cost <= pf.cash and od.qty > 0:
                     pf.cash -= cost
-                    pf.lots.append(Lot(LEV, od.qty, int(px), od.kind, None, nxt))
+                    pf.lots.append(Lot(LEV, od.qty, int(round(px)), od.kind, None, nxt,
+                                       fee_ps=px * params.commission))
                     fills.append(Fill(dates[nxt], LEV, "buy", od.kind, round(px), od.qty))
 
             # ③ 그리드 지정가 매수 — 갭 필터 우선 (§5.1)
-            gap_hit = (params.flags.f5_gap_filter and p.gap_cancel_below is not None
-                       and o_ <= p.gap_cancel_below)
+            gap_hit = (params.flags.f5_gap_filter and p.gap_cancel_exact is not None
+                       and o_ <= p.gap_cancel_exact)
             if not gap_hit:
                 for od in p.orders:
                     if od.otype != "limit" or od.side != "buy":
@@ -242,20 +247,21 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
                     else:
                         from app.strategy.params import round_tick
                         tp = round_tick(px * (1 + prev_grid), params.tick, up=True)
-                    pf.lots.append(Lot(K200, od.qty, int(px), kind, tp, nxt))
+                    pf.lots.append(Lot(K200, od.qty, int(round(px)), kind, tp, nxt,
+                                       fee_ps=px * params.commission))
 
             # ④ 익절 지정가 매도
             for od in p.orders:
                 if od.otype != "limit" or od.side != "sell" or od.lot_id is None:
                     continue
                 lot = lot_snapshot[od.lot_id]
-                if lot not in pf.lots or lot.qty <= 0:
+                if not any(l is lot for l in pf.lots) or lot.qty <= 0:  # identity 비교 (검증 B13)
                     continue
                 px = _fill_limit_sell(od.price, o_, h_)
                 if px is None:
                     continue
-                qty_sold = lot.qty
-                pf.cash += ledger.sell(pf, K200, lot.qty, px, nxt, lot=lot)
+                qty_sold = min(od.qty, lot.qty)  # 주문 수량 존중 — earmark 초과 매도 방지 (검증 ⑦)
+                pf.cash += ledger.sell(pf, K200, qty_sold, px, nxt, lot=lot)
                 fills.append(Fill(dates[nxt], K200, "sell", "tp", round(px), qty_sold))
         else:
             regime = Regime.NEUTRAL
@@ -289,7 +295,8 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
         p_final = plan(last, m200, mlev, regime, pf, params)
         plans.append(p_final)
 
-    kpi = compute_kpi(equity_curve, capital, ledger.closed)
+    kpi = compute_kpi(equity_curve[active_start or 0:], capital, ledger.closed)
+    kpi["open_lots"] = len(pf.lots)  # 미청산 별도 표기 (§5.3, 검증 B6)
     final_lots = [
         {"instrument": l.instrument, "qty": l.qty, "price": l.price,
          "date": dates[min(l.buy_index, len(dates) - 1)]}
@@ -315,7 +322,10 @@ def compute_kpi(equity: list[float], capital: float, trades: list[ClosedTrade]) 
     final = equity[-1]
     total_return = final / capital - 1.0
     n = len(equity)
-    cagr = (final / capital) ** (252.0 / n) - 1.0 if n >= 252 else None  # 1년 미만 → 누적만 (§5.3)
+    if final <= 0:
+        cagr = None  # 전액 손실 이하 — 거듭제곱이 복소수가 됨 (검증 B7)
+    else:
+        cagr = (final / capital) ** (252.0 / n) - 1.0 if n >= 252 else None  # 1년 미만 → 누적만 (§5.3)
 
     peak = capital
     mdd = 0.0

@@ -126,11 +126,19 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
         elif t.kind == "sell":
             cash += t.qty * t.price
 
-    lots_rows = session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pid)).all()
+    lots_rows = session.scalars(
+        select(PositionLot).where(PositionLot.portfolio_id == pid)
+        .order_by(PositionLot.opened_at, PositionLot.id)  # FIFO 결정론 (검증 ①⑧)
+    ).all()
     lots: list[Lot] = []
     qty_200 = qty_lev = 0
+    SUPPORTED = {"069500", "102110", "122630"}
     for l in lots_rows:
         code = session.get(Instrument, l.instrument_id).code
+        if code not in SUPPORTED:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=409,
+                                detail=f"전략 대상 외 종목({code}) 보유 — 이 포트 기준 주문표를 계산할 수 없습니다")
         if code == "122630":
             lots.append(Lot(LEV, l.qty_open, l.price, "lev_strat", None, 0))
             qty_lev += l.qty_open
@@ -178,11 +186,12 @@ def get_signal_journal(days: int = 20, _user: int = Depends(current_user_id),
     for i in range(max(0, n - min(days, 120)), n):
         plan_i = r.plans[i] if i < len(r.plans) else None
         prev_eq = r.equity[i - 1] if i > 0 else MODEL_CAPITAL
+        eq_r, prev_r = round(r.equity[i]), round(prev_eq)
         items.append({
             "date": r.dates[i], "regime": r.regimes[i],
-            "equity": round(r.equity[i]),
+            "equity": eq_r,
             "day_return": (r.equity[i] / prev_eq - 1.0) if prev_eq else 0.0,
-            "day_pnl": round(r.equity[i] - prev_eq),
+            "day_pnl": eq_r - prev_r,
             "qty_200": r.qty_200[i], "qty_lev": r.qty_lev[i], "cash": round(r.cash_curve[i]),
             "planned": [
                 {"instrument": o.instrument, "side": o.side, "kind": o.kind, "price": o.price, "qty": o.qty}

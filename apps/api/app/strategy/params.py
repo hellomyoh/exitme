@@ -57,7 +57,12 @@ class Params:
 
 
 def round_tick(price: float, tick: int, up: bool) -> int:
-    """호가 정규화 — 매수 내림 / 매도 올림 (feature-strategy-engine §5.5)."""
+    """호가 정규화 — 매수 내림 / 매도 올림 (feature-strategy-engine §5.5).
+
+    이진 부동소수로 정확한 배수가 64,389.999…로 표현되는 하강을 방지하기 위해
+    몫을 소수 9자리로 먼저 반올림한다 (2026-08-28 검증 D4).
+    """
     import math
 
-    return int((math.ceil(price / tick) if up else math.floor(price / tick)) * tick)
+    q = round(price / tick, 9)
+    return int((math.ceil(q) if up else math.floor(q)) * tick)
