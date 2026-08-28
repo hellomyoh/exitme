@@ -390,10 +390,10 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
     }
 
 
-def _compute_twr(session: Session, pid: int, txs: list[TradeTransaction]) -> float | None:
-    """일별 평가액 체인 재구성 — 거래일별 보유수량 × 종가 + 현금."""
+def _daily_series(session: Session, pid: int, txs: list[TradeTransaction]) -> list[tuple[date, float, float]]:
+    """일별 (일자, 종가 평가액, 외부 현금흐름) 재구성 — TWR·수익률 그래프 공용."""
     if not txs:
-        return None
+        return []
     start = min(t.executed_at for t in txs).date()
     inst_ids = {t.instrument_id for t in txs if t.instrument_id}
     price_map: dict[int, dict[date, float]] = {}
@@ -405,7 +405,7 @@ def _compute_twr(session: Session, pid: int, txs: list[TradeTransaction]) -> flo
         price_map[iid] = {r.trade_date: r.close_raw * float(r.adj_factor) for r in rows}
         all_dates.update(price_map[iid])
     if not all_dates:
-        return None
+        return []
     days = sorted(all_dates)
     daily: list[tuple[date, float, float]] = []
     cash = 0.0
@@ -436,4 +436,30 @@ def _compute_twr(session: Session, pid: int, txs: list[TradeTransaction]) -> flo
                 last_px[iid] = px
             value += q * last_px.get(iid, 0.0)
         daily.append((d, value, flow))
-    return twr(daily)
+    return daily
+
+
+def _compute_twr(session: Session, pid: int, txs: list[TradeTransaction]) -> float | None:
+    return twr(_daily_series(session, pid, txs))
+
+
+@router.get("/portfolio/equity")
+def portfolio_equity(portfolio_id: int | None = None,
+                     user_id: int = Depends(current_user_id),
+                     session: Session = Depends(get_session)) -> dict:
+    """실전 포트 수익률 곡선 — TWR 지수(시작=100, 입출금 왜곡 제거) + 평가액 (2026-08-28 지시)."""
+    pf = (_owned_portfolio(session, portfolio_id, user_id)
+          if portfolio_id else _default_portfolio(session, user_id))
+    session.commit()
+    txs = session.scalars(select(TradeTransaction).where(TradeTransaction.portfolio_id == pf.id)
+                          .order_by(TradeTransaction.executed_at, TradeTransaction.id)).all()
+    daily = _daily_series(session, pf.id, txs)
+    items = []
+    index = 100.0
+    prev_v = None
+    for d, v, f in daily:
+        if prev_v and prev_v > 0:
+            index *= (v - f) / prev_v
+        items.append({"date": d.isoformat(), "equity": round(v), "index": round(index, 4)})
+        prev_v = v
+    return {"portfolio_id": pf.id, "items": items}

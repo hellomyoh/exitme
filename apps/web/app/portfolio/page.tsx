@@ -1,8 +1,9 @@
 "use client";
 
 /** 실전매매 기록 — 수익률 카드 + 거래 등록 (feature-portfolio §9). */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { createChart, IChartApi, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { Badge, Card, CardTitle, EmptyState, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone, Stat } from "../../components/ui";
 
@@ -24,7 +25,7 @@ type Tx = {
   realized_pnl: number | null; executed_at: string; memo: string | null;
 };
 type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
-type Signal = { status: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number };
+type Signal = { status: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; account?: { qty_200: number; qty_lev: number; cash: number } };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -52,16 +53,27 @@ export default function PortfolioPage() {
   ]);
   const [txs, setTxs] = useState<Tx[]>([]);
   const [signal, setSignal] = useState<Signal | null>(null);
+  const [curve, setCurve] = useState<{ date: string; equity: number; index: number }[]>([]);
+  const eqRef = useRef<HTMLDivElement>(null);
+  const eqApi = useRef<IChartApi | null>(null);
 
   const load = useCallback(async (id: number | null) => {
+    let sid: number | null = id;
     const res = await apiFetch(`/portfolio/summary${id ? `?portfolio_id=${id}` : ""}`);
-    if (res.ok) setSum((await res.json()) as Summary);
+    if (res.ok) {
+      const sm = (await res.json()) as Summary;
+      setSum(sm);
+      sid = sm.portfolio.id;  // 기본 계좌 포함 — 주문표를 이 포트 기준으로
+    }
     const pl = await apiFetch("/portfolios");
     if (pl.ok) setPortfolios(((await pl.json()) as { items: PortfolioItem[] }).items);
     const tx = await apiFetch(`/portfolio/transactions${id ? `?portfolio_id=${id}` : ""}`);
     if (tx.ok) setTxs(((await tx.json()) as { items: Tx[] }).items);
-    const sg = await apiFetch("/signals/daily");
+    // 오늘의 주문표 — 선택된 실전 포트의 보유·현금 기준 (2026-08-28 검토 반영)
+    const sg = await apiFetch(`/signals/daily${sid ? `?portfolio_id=${sid}` : ""}`);
     if (sg.ok) setSignal((await sg.json()) as Signal);
+    const eq = await apiFetch(`/portfolio/equity${sid ? `?portfolio_id=${sid}` : ""}`);
+    if (eq.ok) setCurve(((await eq.json()) as { items: { date: string; equity: number; index: number }[] }).items);
   }, []);
 
   useEffect(() => {
@@ -147,6 +159,27 @@ export default function PortfolioPage() {
     const res = await apiFetch(`/portfolios/${sum.portfolio.id}`, { method: "DELETE" });
     if (res.ok) { setPid(null); void load(null); }
   }
+
+  useEffect(() => {
+    if (!eqRef.current) return;
+    try { eqApi.current?.remove(); } catch { /* already disposed */ }
+    eqApi.current = null;
+    if (curve.length < 2) return;  // 1일 이하 → 차트 대신 안내 문구 (오늘 시작 케이스)
+    const chart = createChart(eqRef.current, {
+      layout: { background: { color: "transparent" }, textColor: "#858c9b", attributionLogo: false, fontSize: 12 },
+      grid: { vertLines: { visible: false }, horzLines: { color: "rgba(18,24,40,0.07)" } },
+      rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
+      autoSize: true,
+    });
+    eqApi.current = chart;
+    chart.addSeries(LineSeries, {
+      color: "#b45309", lineWidth: 2, title: "수익률 지수",
+      // 데이터가 짧아도(시작 직후) 점이 잘 보이도록 마커 표시
+      pointMarkersVisible: curve.length <= 30,
+    }).setData(curve.map((c) => ({ time: c.date, value: c.index })));
+    chart.timeScale().fitContent();
+    return () => { try { eqApi.current?.remove(); } catch { /* noop */ } eqApi.current = null; };
+  }, [curve]);
 
   const net = sum ? sum.unrealized_pnl + sum.realized_pnl - (includeCosts ? sum.estimated_costs : 0) : 0;
 
@@ -247,6 +280,28 @@ export default function PortfolioPage() {
         </div>
       )}
 
+      {/* 수익률 추이 (2026-08-28 지시 — 시뮬레이터와 동일 스타일, TWR 지수) */}
+      <Card className="mb-4">
+        <CardTitle right={curve.length > 0 ? (
+          <span className={`text-[15px] font-bold normal-case ${curve[curve.length - 1].index >= 100 ? "text-up" : "text-down"}`}>
+            {(curve[curve.length - 1].index - 100).toFixed(2)}%
+          </span>
+        ) : undefined}>수익률 추이 <span className="normal-case text-faint">· 시작 = 100 · 입출금 왜곡 제거(TWR)</span></CardTitle>
+        {curve.length >= 2 ? (
+          <div ref={eqRef} className="h-64" />
+        ) : curve.length === 1 ? (
+          <div className="flex items-center gap-4 rounded-xl bg-inset px-5 py-6">
+            <span className="text-3xl">🌱</span>
+            <div>
+              <div className="text-[16px] font-bold">오늘 시작한 실전매매입니다 — 현재 수익률 {(curve[0].index - 100).toFixed(2)}%</div>
+              <div className="mt-1 text-[13.5px] text-muted">평가액 {curve[0].equity.toLocaleString()}원 · 내일 종가부터 추이 그래프가 그려집니다.</div>
+            </div>
+          </div>
+        ) : (
+          <p className="text-[14px] text-faint">거래를 등록하면 수익률 추이가 표시됩니다.</p>
+        )}
+      </Card>
+
       {/* 거래 등록 */}
       <Card className="mb-4">
         <CardTitle>거래 등록</CardTitle>
@@ -286,7 +341,8 @@ export default function PortfolioPage() {
       <Card className="mb-4">
         <CardTitle right={<a href="/signals" className="text-[13.5px] font-semibold normal-case text-accent">전체 주문표 →</a>}>
           오늘의 주문표 {signal?.status === "OK" && (
-            <span className="normal-case text-faint">· {signal.trade_date} 종가 기준 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}</span>
+            <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}
+              {signal.basis === "portfolio" ? " · 이 포트 보유·현금 기준" : " · 모델 기준"}</span>
           )}
         </CardTitle>
         {signal?.status === "OK" && signal.orders && signal.orders.length > 0 ? (
@@ -296,7 +352,7 @@ export default function PortfolioPage() {
                 <th className="pb-2 font-medium">구분</th><th className="pb-2 font-medium">종목</th>
                 <th className="pb-2 font-medium">방향</th>
                 <th className="pb-2 text-right font-medium">지정가</th>
-                <th className="pb-2 text-right font-medium">수량 (모델 1억)</th>
+                <th className="pb-2 text-right font-medium">수량{signal?.basis === "portfolio" ? " (내 계좌 기준)" : " (모델 1억)"}</th>
               </tr></thead>
               <tbody>
                 {signal.orders.map((o, i) => (

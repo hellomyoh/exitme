@@ -204,3 +204,35 @@ def test_multi_portfolio_create_delete_cascade():
     email2 = f"mp{_uuid.uuid4().hex[:8]}@stocklab.dev"
     t2 = client.post("/auth/register", json={"email": email2, "password": "password123"}).json()["access_token"]
     assert client.delete(f"/portfolios/{b}", headers={"Authorization": f"Bearer {t2}"}).status_code == 404
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DB_UP, reason="database not reachable")
+def test_portfolio_equity_curve():
+    """실전 수익률 곡선 (2026-08-28 지시): TWR 지수 100 시작, 입금은 지수에 무영향."""
+    from tests.test_backtest_api import seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _u
+    token = client.post("/auth/register", json={"email": f"eq{_u.uuid4().hex[:8]}@stocklab.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "curve"}, headers=h).json()["id"]
+    ts = datetime(2025, 1, 10, tzinfo=timezone.utc).isoformat()
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 10_000_000,
+                                    "executed_at": ts}, headers=h)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500",
+                                    "qty": 100, "price": 70000, "executed_at": ts}, headers=h)
+    body = client.get(f"/portfolio/equity?portfolio_id={pid}", headers=h).json()
+    items = body["items"]
+    assert len(items) > 10
+    assert items[0]["index"] == 100.0
+    assert all(i["equity"] > 0 for i in items)
+    # 중간 입금 → 평가액은 점프하지만 지수는 연속 (입금일 지수 변화 = 시장 수익만)
+    mid = items[len(items)//2]["date"]
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 5_000_000,
+                                    "executed_at": mid + "T10:00:00+09:00"}, headers=h)
+    body2 = client.get(f"/portfolio/equity?portfolio_id={pid}", headers=h).json()
+    assert len(body2["items"]) == len(items)
