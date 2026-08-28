@@ -3,7 +3,7 @@
 /** 실전매매 기록 — 수익률 카드 + 거래 등록 (feature-portfolio §9). */
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiFetch, hasToken } from "../../lib/api";
+import { apiFetch, ensureSession } from "../../lib/api";
 import { Badge, Card, CardTitle, EmptyState, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone, Stat } from "../../components/ui";
 
 type Position = {
@@ -38,8 +38,10 @@ export default function PortfolioPage() {
   }, []);
 
   useEffect(() => {
-    if (!hasToken()) { router.push("/login"); return; }
-    void load(pid);
+    void ensureSession().then((ok) => {
+      if (!ok) { router.push("/login"); return; }
+      void load(pid);
+    });
   }, [pid, load, router]);
 
   async function submit() {
@@ -143,7 +145,7 @@ export default function PortfolioPage() {
               <Card key={p.code}>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <b className="text-[15px]">{p.name}</b>
+                    <b className="text-[17px]">{p.name}</b>
                     <span className="text-xs text-faint">{p.code}</span>
                     <Badge tone="default">{p.held_days}일 보유</Badge>
                   </div>
@@ -151,7 +153,7 @@ export default function PortfolioPage() {
                     {fmtPct(p.return, 2)} <span className="text-[13px] font-semibold">({fmtWon(p.unrealized)})</span>
                   </div>
                 </div>
-                <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-[13px] text-muted sm:grid-cols-4 lg:grid-cols-6">
+                <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-[14.5px] text-muted sm:grid-cols-4 lg:grid-cols-6">
                   <span>보유 <b className="text-ink">{p.qty.toLocaleString()}주</b></span>
                   <span>평단 <b className="text-ink">{fmtWon(p.avg_price)}</b></span>
                   <span>현재가 <b className="text-ink">{fmtWon(p.price)}</b></span>

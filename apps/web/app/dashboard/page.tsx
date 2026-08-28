@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createChart, IChartApi, AreaSeries } from "lightweight-charts";
-import { apiFetch, hasToken } from "../../lib/api";
+import { apiFetch, ensureSession } from "../../lib/api";
 import { Badge, Card, CardTitle, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone } from "../../components/ui";
 
 type Dash = {
@@ -51,24 +51,26 @@ export default function DashboardPage() {
     disposeChart();
     if (items.length < 2) return;
     const chart = createChart(trendRef.current, {
-      layout: { background: { color: "transparent" }, textColor: "#71717e", attributionLogo: false, fontSize: 11 },
-      grid: { vertLines: { visible: false }, horzLines: { color: "rgba(255,255,255,0.06)" } },
+      layout: { background: { color: "transparent" }, textColor: "#858c9b", attributionLogo: false, fontSize: 12 },
+      grid: { vertLines: { visible: false }, horzLines: { color: "rgba(18,24,40,0.07)" } },
       rightPriceScale: { borderVisible: false },
       timeScale: { borderVisible: false },
       autoSize: true,
     });
     chartApi.current = chart;
     chart.addSeries(AreaSeries, {
-      lineColor: "#f0b429", lineWidth: 2,
-      topColor: "rgba(240,180,41,0.25)", bottomColor: "rgba(240,180,41,0.0)",
+      lineColor: "#b45309", lineWidth: 2,
+      topColor: "rgba(180,83,9,0.16)", bottomColor: "rgba(180,83,9,0.0)",
       priceLineVisible: false,
     }).setData(items.map((i) => ({ time: i.date, value: i.total })));
     chart.timeScale().fitContent();
   }, [disposeChart]);
 
   useEffect(() => {
-    if (!hasToken()) { router.push("/login"); return; }
-    void load().then(() => loadTrend(range));
+    void ensureSession().then((ok) => {
+      if (!ok) { router.push("/login"); return; }
+      void load().then(() => loadTrend(range));
+    });
     return () => disposeChart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -81,7 +83,7 @@ export default function DashboardPage() {
   }
 
   const donut = dash && dash.total > 0
-    ? `conic-gradient(var(--color-accent) 0 ${(dash.stock / dash.total) * 360}deg, var(--color-down) ${(dash.stock / dash.total) * 360}deg ${((dash.stock + dash.cash) / dash.total) * 360}deg, #8b7cf6 ${((dash.stock + dash.cash) / dash.total) * 360}deg 360deg)`
+    ? `conic-gradient(var(--color-accent) 0 ${(dash.stock / dash.total) * 360}deg, var(--color-down) ${(dash.stock / dash.total) * 360}deg ${((dash.stock + dash.cash) / dash.total) * 360}deg, #7c3aed ${((dash.stock + dash.cash) / dash.total) * 360}deg 360deg)`
     : "var(--color-raised)";
   const ct = pnlTone(dash?.change_amount ?? 0);
 
@@ -92,9 +94,9 @@ export default function DashboardPage() {
         {/* 히어로 — 총자산 */}
         <Card className="md:col-span-4">
           <CardTitle>총자산</CardTitle>
-          <div className="text-4xl font-extrabold tracking-tight">{dash ? fmtWon(dash.total) : "—"}</div>
+          <div className="text-5xl font-extrabold tracking-tight">{dash ? fmtWon(dash.total) : "—"}</div>
           {dash && (
-            <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[13.5px]">
+            <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[15px]">
               <span className={`font-semibold ${toneCls[ct]}`}>
                 {dash.change_amount >= 0 ? "▲" : "▼"} 전일대비 {fmtWon(Math.abs(dash.change_amount))} ({fmtPct(dash.change_pct, 2)})
               </span>
@@ -142,10 +144,10 @@ export default function DashboardPage() {
             <div className="relative h-24 w-24 shrink-0 rounded-full" style={{ background: donut }}>
               <div className="absolute inset-3.5 rounded-full bg-surface" />
             </div>
-            <div className="grid gap-1.5 text-[13px]">
+            <div className="grid gap-2 text-[14.5px]">
               <span><i className="mr-2 inline-block h-2 w-2 rounded-full bg-accent" />주식 <b>{dash ? fmtWon(dash.stock) : "—"}</b></span>
               <span><i className="mr-2 inline-block h-2 w-2 rounded-full bg-down" />현금 <b>{dash ? fmtWon(dash.cash) : "—"}</b></span>
-              <span><i className="mr-2 inline-block h-2 w-2 rounded-full" style={{ background: "#8b7cf6" }} />기타 <b>{dash ? fmtWon(dash.other) : "—"}</b></span>
+              <span><i className="mr-2 inline-block h-2 w-2 rounded-full" style={{ background: "#7c3aed" }} />기타 <b>{dash ? fmtWon(dash.other) : "—"}</b></span>
             </div>
           </div>
         </Card>

@@ -4,8 +4,8 @@ import type { ReactNode } from "react";
 export function PageTitle({ title, sub }: { title: string; sub?: string }) {
   return (
     <div className="mb-5">
-      <h1 className="text-xl font-bold tracking-tight">{title}</h1>
-      {sub && <p className="mt-1 text-[13px] text-muted">{sub}</p>}
+      <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
+      {sub && <p className="mt-1.5 text-[14.5px] text-muted">{sub}</p>}
     </div>
   );
 }
@@ -17,7 +17,7 @@ export function Card({ children, className = "" }: { children: ReactNode; classN
 export function CardTitle({ children, right }: { children: ReactNode; right?: ReactNode }) {
   return (
     <div className="mb-4 flex items-center justify-between">
-      <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted">{children}</h2>
+      <h2 className="text-[13.5px] font-semibold uppercase tracking-wide text-muted">{children}</h2>
       {right}
     </div>
   );
@@ -29,8 +29,8 @@ export function Stat({ label, value, tone = "default", hint }: {
   const color = { default: "text-ink", up: "text-up", down: "text-down", accent: "text-accent" }[tone];
   return (
     <div className="card px-4 py-3.5">
-      <div className="text-xs text-faint">{label}</div>
-      <div className={`mt-1 text-lg font-bold ${color}`}>{value}</div>
+      <div className="text-[13px] text-faint">{label}</div>
+      <div className={`mt-1 text-[21px] font-bold ${color}`}>{value}</div>
       {hint && <div className="mt-0.5 text-[11px] text-faint">{hint}</div>}
     </div>
   );
@@ -45,7 +45,7 @@ export function Badge({ children, tone = "default" }: { children: ReactNode; ton
     ok: "bg-[rgba(53,194,143,0.13)] text-ok border-transparent",
   }[tone];
   return (
-    <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold ${cls}`}>
+    <span className={`inline-flex items-center rounded-md border px-2.5 py-1 text-[13px] font-semibold ${cls}`}>
       {children}
     </span>
   );
@@ -53,7 +53,7 @@ export function Badge({ children, tone = "default" }: { children: ReactNode; ton
 
 export function Callout({ icon, children }: { icon: string; children: ReactNode }) {
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-line bg-inset px-4 py-3 text-[13.5px] leading-relaxed text-muted">
+    <div className="flex items-start gap-3 rounded-xl border border-line bg-inset px-4 py-3 text-[14.5px] leading-relaxed text-muted">
       <span className="mt-0.5 shrink-0">{icon}</span>
       <span>{children}</span>
     </div>

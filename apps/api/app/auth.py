@@ -22,7 +22,7 @@ router = APIRouter(prefix="/auth")
 bearer = HTTPBearer(auto_error=False)
 
 ACCESS_TTL = timedelta(minutes=15)
-REFRESH_TTL = timedelta(days=14)
+REFRESH_TTL = timedelta(hours=1)  # 세션 1시간 유지(사용자 지시) — refresh 회전 시마다 연장(롤링)
 ALGO = "HS256"
 
 

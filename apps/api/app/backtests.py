@@ -168,6 +168,61 @@ def get_backtest(bt_id: int, user_id: int = Depends(current_user_id),
     return body
 
 
+@router.get("/backtests/{bt_id}/journal")
+def get_backtest_journal(bt_id: int, user_id: int = Depends(current_user_id),
+                         session: Session = Depends(get_session)) -> dict:
+    """일자별 매매 저널 — 장 시작 전 주문표(계획) + 체결 + 수익률·보유량.
+
+    저장 파라미터로 결정론 재계산한다(수 백 ms). 시세가 갱신됐으면 stale=true.
+    plans[i] 는 dates[i] 종가 기준 계획 = 다음 거래일(dates[i+1]) 장 시작 전 주문표.
+    """
+    from app.strategy.backtest import run_backtest
+    from app.strategy.params import AblationFlags, Params
+
+    bt = _get_owned(session, bt_id, user_id)
+    if bt.status != "DONE":
+        raise HTTPException(status_code=409, detail=f"journal available only for DONE jobs (status={bt.status})")
+    p = bt.params
+    bars_200, bars_lev, fp = load_aligned_bars(
+        session, date.fromisoformat(p["date_from"]), date.fromisoformat(p["date_to"]),
+        codes=pair_from_params(p),
+    )
+    params = Params(**p.get("costs", {}), flags=AblationFlags(**p.get("flags", {})))
+    r = run_backtest(bars_200, bars_lev, float(p["capital"]), params, collect_plans=True)
+
+    fills_by_date: dict[str, list] = {}
+    for f in r.fills:
+        fills_by_date.setdefault(f.date, []).append(
+            {"instrument": f.instrument, "side": f.side, "kind": f.kind, "price": f.price, "qty": f.qty})
+
+    capital = float(p["capital"])
+    items = []
+    for i, d in enumerate(r.dates):
+        plan_i = r.plans[i] if i < len(r.plans) else None  # dates[i] 체결일의 계획 = plans[i-?]... 아래 주석 참조
+        # r.dates[i] = bars[i+1] 체결일이고 r.plans[i] 는 bars[i] 종가 계획 → 인덱스 일치
+        planned = [
+            {"instrument": o.instrument, "side": o.side, "otype": o.otype,
+             "kind": o.kind, "price": o.price, "qty": o.qty}
+            for o in (plan_i.orders if plan_i and plan_i.status == "OK" else [])
+        ]
+        prev_eq = r.equity[i - 1] if i > 0 else capital
+        items.append({
+            "date": d,
+            "regime": r.regimes[i],
+            "exposure": r.exposures[i],
+            "equity": round(r.equity[i]),
+            "day_return": (r.equity[i] / prev_eq - 1.0) if prev_eq else 0.0,
+            "total_return": r.equity[i] / capital - 1.0,
+            "cash": round(r.cash_curve[i]),
+            "qty_200": r.qty_200[i],
+            "qty_lev": r.qty_lev[i],
+            "planned": planned,
+            "fills": fills_by_date.get(d, []),
+        })
+    stale = fp != bt.data_fingerprint
+    return {"id": bt_id, "stale": stale, "items": items}
+
+
 @router.post("/backtests/{bt_id}/cancel")
 def cancel_backtest(bt_id: int, user_id: int = Depends(current_user_id),
                     session: Session = Depends(get_session)) -> dict:

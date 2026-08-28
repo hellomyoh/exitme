@@ -3,7 +3,7 @@
 /** 주문표 — 레짐·노출 히어로 + 주문 테이블 + 조건부 지시문 + 계산 근거 (feature-strategy-engine §9). */
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiFetch, hasToken } from "../../lib/api";
+import { apiFetch, ensureSession } from "../../lib/api";
 import { Badge, Callout, Card, CardTitle, EmptyState, fmtNum, fmtPct, GaugeBar, PageTitle } from "../../components/ui";
 
 type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
@@ -45,11 +45,11 @@ export default function SignalsPage() {
   const [sig, setSig] = useState<Signal | null>(null);
 
   useEffect(() => {
-    if (!hasToken()) { router.push("/login"); return; }
-    void (async () => {
+    void ensureSession().then(async (ok) => {
+      if (!ok) { router.push("/login"); return; }
       const res = await apiFetch("/signals/daily");
       if (res.ok) setSig((await res.json()) as Signal);
-    })();
+    });
   }, [router]);
 
   if (!sig) return <main><PageTitle title="주문표" /><p className="text-muted">불러오는 중…</p></main>;
@@ -76,7 +76,7 @@ export default function SignalsPage() {
                 <span className="text-2xl font-extrabold" style={{ color: r.color }}>{r.ko}</span>
                 <Badge tone={r.tone}>v{sig.version}</Badge>
               </div>
-              <p className="mt-2 text-[13px] text-muted">{r.desc}</p>
+              <p className="mt-2 text-[14.5px] text-muted">{r.desc}</p>
             </Card>
             <Card className="md:col-span-2">
               <CardTitle>목표 노출 E = {fmtPct(sig.e_target)}</CardTitle>
@@ -86,7 +86,7 @@ export default function SignalsPage() {
                 <div style={{ width: `${(sig.w_lev ?? 0) * 100}%`, background: "var(--color-up)" }} />
                 <div style={{ width: `${cashRatio * 100}%`, background: "var(--color-raised)" }} />
               </div>
-              <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-[12.5px] text-muted">
+              <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1.5 text-[14px] text-muted">
                 <span><i className="mr-1.5 inline-block h-2 w-2 rounded-full bg-accent" />KODEX 200 {fmtPct(sig.w_200)}</span>
                 <span><i className="mr-1.5 inline-block h-2 w-2 rounded-full bg-up" />레버리지 {fmtPct(sig.w_lev)}</span>
                 <span><i className="mr-1.5 inline-block h-2 w-2 rounded-full bg-raised" style={{ outline: "1px solid var(--color-line-strong)" }} />현금 {fmtPct(cashRatio)}</span>
@@ -99,7 +99,7 @@ export default function SignalsPage() {
             <CardTitle>다음 거래일 주문 <span className="normal-case text-faint">· 모델 자본 1억 기준 수량</span></CardTitle>
             {sig.orders && sig.orders.length > 0 ? (
               <div className="overflow-x-auto">
-                <table className="w-full text-[13.5px]">
+                <table className="w-full text-[15px]">
                   <thead>
                     <tr className="border-b border-line text-left text-xs text-faint">
                       <th className="pb-2 font-medium">구분</th>
@@ -151,12 +151,12 @@ export default function SignalsPage() {
 
           {/* 계산 근거 */}
           <details className="card group">
-            <summary className="cursor-pointer select-none px-5 py-4 text-[13px] font-semibold uppercase tracking-wide text-muted transition-colors hover:text-ink">
+            <summary className="cursor-pointer select-none px-5 py-4 text-[13.5px] font-semibold uppercase tracking-wide text-muted transition-colors hover:text-ink">
               계산 근거 (지표값) <span className="ml-1 text-faint group-open:hidden">펼치기</span>
             </summary>
             <div className="grid gap-x-8 gap-y-1 border-t border-line px-5 py-4 sm:grid-cols-2 lg:grid-cols-3">
               {IND_ROWS.filter((row) => sig.indicators?.[row.key] !== undefined).map((row) => (
-                <div key={row.key} className="flex items-baseline justify-between border-b border-line/40 py-1.5 text-[13px]">
+                <div key={row.key} className="flex items-baseline justify-between border-b border-line/40 py-2 text-[14.5px]">
                   <span className="text-faint">{row.label}</span>
                   <span className="font-semibold">{row.fmt(sig.indicators![row.key])}</span>
                 </div>

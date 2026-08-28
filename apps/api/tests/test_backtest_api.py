@@ -156,3 +156,31 @@ def test_tiger_etf_selection():
     assert fps["KODEX"] != fps["TIGER"]  # 다른 데이터 세트
     # 잘못된 값 거부
     assert client.post("/backtests", json={**base, "etf": "ARIRANG"}, headers=h).status_code == 422
+
+
+def test_journal_daily_records():
+    """일자별 매매 저널(2026-08-28 지시): 계획·체결·보유·수익률 필드 검증."""
+    client = TestClient(app, base_url="https://testserver")
+    token = make_user(client)
+    h = {"Authorization": f"Bearer {token}"}
+    bt_id = client.post("/backtests", json={"capital": 100_000_000, "date_from": "2024-01-02",
+                                            "date_to": "2025-08-01"}, headers=h).json()["id"]
+    run_job_inline(bt_id)
+    got = client.get(f"/backtests/{bt_id}/journal", headers=h).json()
+    assert got["stale"] is False and len(got["items"]) > 100
+    first = got["items"][0]
+    assert {"date", "regime", "equity", "day_return", "total_return",
+            "cash", "qty_200", "qty_lev", "planned", "fills"} <= set(first)
+    # 체결이 있는 날이 존재하고, 체결 필드 형태 검증
+    fill_days = [it for it in got["items"] if it["fills"]]
+    assert fill_days, "체결 기록이 있어야 함"
+    f = fill_days[0]["fills"][0]
+    assert f["side"] in ("buy", "sell") and f["qty"] > 0 and f["price"] > 0
+    # 계획(주문표)이 있는 날 존재
+    assert any(it["planned"] for it in got["items"])
+    # 보유량·현금은 음수 불가
+    assert all(it["qty_200"] >= 0 and it["qty_lev"] >= 0 for it in got["items"])
+    # 미완료 잡 저널 409
+    q_id = client.post("/backtests", json={"capital": 100_000_000, "date_from": "2024-01-02",
+                                           "date_to": "2025-08-01"}, headers=h).json()["id"]
+    assert client.get(f"/backtests/{q_id}/journal", headers=h).status_code == 409

@@ -39,6 +39,18 @@ class ClosedTrade:
 
 
 @dataclass
+class Fill:
+    """개별 체결 기록 — 일자별 매매 저널용."""
+
+    date: str
+    instrument: str
+    side: str      # buy | sell
+    kind: str
+    price: int
+    qty: int
+
+
+@dataclass
 class BacktestResult:
     dates: list[str]
     equity: list[float]
@@ -49,6 +61,10 @@ class BacktestResult:
     open_lots: int
     kpi: dict
     plans: list[Plan] = field(default_factory=list)   # 재현성 검증용 (시그널 엔진 대조)
+    fills: list[Fill] = field(default_factory=list)   # 일자별 체결 저널
+    cash_curve: list[float] = field(default_factory=list)
+    qty_200: list[int] = field(default_factory=list)
+    qty_lev: list[int] = field(default_factory=list)
 
 
 def _fee(value: float, annual_rate: float, days: float) -> float:
@@ -142,6 +158,10 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
     exposures: list[float] = []
     plans: list[Plan] = []
     out_dates: list[str] = []
+    fills: list[Fill] = []
+    cash_curve: list[float] = []
+    qty_200_curve: list[int] = []
+    qty_lev_curve: list[int] = []
 
     # 벤치마크: KODEX 200 매수보유 (보수 반영, feature-backtest §5.3)
     bench_qty = 0.0
@@ -186,6 +206,7 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
                 elif od.kind == "lev_strat":
                     kinds = ("lev_strat",)
                 pf.cash += ledger.sell(pf, od.instrument, od.qty, px, nxt, kinds=kinds)
+                fills.append(Fill(dates[nxt], od.instrument, "sell", od.kind, round(px), od.qty))
 
             # ② 시장가 매수 (레버리지)
             for od in p.orders:
@@ -196,6 +217,7 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
                 if cost <= pf.cash and od.qty > 0:
                     pf.cash -= cost
                     pf.lots.append(Lot(LEV, od.qty, int(px), od.kind, None, nxt))
+                    fills.append(Fill(dates[nxt], LEV, "buy", od.kind, round(px), od.qty))
 
             # ③ 그리드 지정가 매수 — 갭 필터 우선 (§5.1)
             gap_hit = (params.flags.f5_gap_filter and p.gap_cancel_below is not None
@@ -211,6 +233,7 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
                     if cost > pf.cash:
                         continue
                     pf.cash -= cost
+                    fills.append(Fill(dates[nxt], K200, "buy", od.kind, round(px), od.qty))
                     tp = None
                     kind = "grid"
                     if regime is Regime.BULL and params.flags.f1_no_tp_in_bull:
@@ -230,7 +253,9 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
                 px = _fill_limit_sell(od.price, o_, h_)
                 if px is None:
                     continue
+                qty_sold = lot.qty
                 pf.cash += ledger.sell(pf, K200, lot.qty, px, nxt, lot=lot)
+                fills.append(Fill(dates[nxt], K200, "sell", "tp", round(px), qty_sold))
         else:
             regime = Regime.NEUTRAL
 
@@ -252,6 +277,9 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
         regimes.append(regime.value)
         exposures.append(p.e_target if p.status == "OK" else 0.0)
         out_dates.append(dates[nxt])
+        cash_curve.append(pf.cash)
+        qty_200_curve.append(sum(l.qty for l in pf.lots if l.instrument == K200))
+        qty_lev_curve.append(sum(l.qty for l in pf.lots if l.instrument == LEV))
 
     if plan_final:
         # 마지막 바(최신 종가) 기준 계획 — 일일 시그널 엔진용. 체결은 하지 않는다.
@@ -262,7 +290,8 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
 
     kpi = compute_kpi(equity_curve, capital, ledger.closed)
     return BacktestResult(out_dates, equity_curve, bench_curve, regimes, exposures,
-                          ledger.closed, len(pf.lots), kpi, plans)
+                          ledger.closed, len(pf.lots), kpi, plans,
+                          fills, cash_curve, qty_200_curve, qty_lev_curve)
 
 
 def _calendar_days(d1: str, d2: str) -> float:

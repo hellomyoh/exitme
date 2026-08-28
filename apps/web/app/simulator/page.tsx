@@ -4,13 +4,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createChart, IChartApi, LineSeries } from "lightweight-charts";
-import { apiFetch, hasToken } from "../../lib/api";
+import { apiFetch, ensureSession } from "../../lib/api";
 import { Badge, Callout, Card, CardTitle, fmtPct, GaugeBar, PageTitle, Stat } from "../../components/ui";
 
 type Flags = Record<string, boolean>;
 type Kpi = { total_return: number; cagr: number | null; mdd: number; sharpe: number | null; trades: number; win_rate: number | null; profit_factor: number | null };
 type EquityPoint = { date: string; equity: number; benchmark: number; regime: string; exposure: number };
 type Job = { id: number; status: string; progress: number; params: Record<string, unknown>; kpi: Kpi | null; equity?: EquityPoint[]; trades?: Record<string, unknown>[]; stale?: boolean };
+type JournalOrder = { instrument: string; side: string; otype?: string; kind: string; price: number | null; qty: number };
+type JournalDay = {
+  date: string; regime: string; exposure: number; equity: number; day_return: number; total_return: number;
+  cash: number; qty_200: number; qty_lev: number; planned: JournalOrder[]; fills: JournalOrder[];
+};
 
 const FLAG_LABELS: [string, string, string][] = [
   ["f1_no_tp_in_bull", "① 상승장 익절 제거", "체결분을 코어로 보유 — 기여도 최대"],
@@ -38,12 +43,18 @@ export default function SimulatorPage() {
   const [error, setError] = useState("");
   const [history, setHistory] = useState<Job[]>([]);
   const [overlay, setOverlay] = useState<number[]>([]);
+  const [journal, setJournal] = useState<JournalDay[] | null>(null);
+  const [journalBusy, setJournalBusy] = useState(false);
+  const [tradedOnly, setTradedOnly] = useState(true);
+  const [visibleDays, setVisibleDays] = useState(30);
   const chartRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
 
   useEffect(() => {
-    if (!hasToken()) router.push("/login");
-    void loadHistory();
+    void ensureSession().then((ok) => {
+      if (!ok) { router.push("/login"); return; }
+      void loadHistory();
+    });
     return () => disposeChart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -88,8 +99,16 @@ export default function SimulatorPage() {
     if (!res.ok) return;
     const j = (await res.json()) as Job;
     setJob(j); setStep(3); setOverlay([]);
+    setJournal(null); setVisibleDays(30);
     void loadHistory();
     setTimeout(() => drawEquity(j, []), 60);
+  }
+
+  async function loadJournal(id: number) {
+    setJournalBusy(true);
+    const res = await apiFetch(`/backtests/${id}/journal`);
+    if (res.ok) setJournal(((await res.json()) as { items: JournalDay[] }).items.reverse()); // 최근이 위
+    setJournalBusy(false);
   }
 
   async function drawOverlay(ids: number[]) {
@@ -106,8 +125,8 @@ export default function SimulatorPage() {
     if (!chartRef.current || !main.equity) return;
     disposeChart();
     const chart = createChart(chartRef.current, {
-      layout: { background: { color: "transparent" }, textColor: "#71717e", attributionLogo: false, fontSize: 11 },
-      grid: { vertLines: { visible: false }, horzLines: { color: "rgba(255,255,255,0.06)" } },
+      layout: { background: { color: "transparent" }, textColor: "#858c9b", attributionLogo: false, fontSize: 12 },
+      grid: { vertLines: { visible: false }, horzLines: { color: "rgba(18,24,40,0.07)" } },
       rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
       autoSize: true,
     });
@@ -116,9 +135,9 @@ export default function SimulatorPage() {
       const base = pts[0][key];
       return pts.map((p) => ({ time: p.date, value: (p[key] / base) * 100 }));
     };
-    chart.addSeries(LineSeries, { color: "#f0b429", lineWidth: 2, title: "전략" }).setData(norm(main.equity, "equity"));
-    chart.addSeries(LineSeries, { color: "#71717e", lineWidth: 1, title: "매수보유" }).setData(norm(main.equity, "benchmark"));
-    const colors = ["#4d8df6", "#8b7cf6", "#35c28f", "#f2495c"];
+    chart.addSeries(LineSeries, { color: "#b45309", lineWidth: 2, title: "전략" }).setData(norm(main.equity, "equity"));
+    chart.addSeries(LineSeries, { color: "#858c9b", lineWidth: 1, title: "매수보유" }).setData(norm(main.equity, "benchmark"));
+    const colors = ["#2563eb", "#7c3aed", "#0e9f6e", "#d92f45"];
     others.forEach((o, idx) => {
       if (o.equity) chart.addSeries(LineSeries, { color: colors[idx % 4], lineWidth: 1, title: `#${o.id}` }).setData(norm(o.equity, "equity"));
     });
@@ -156,7 +175,7 @@ export default function SimulatorPage() {
           <div key={label} className="flex items-center gap-2">
             {i > 0 && <span className="h-px w-8 bg-line-strong" />}
             <span className={`flex items-center gap-2 rounded-full px-3 py-1 font-semibold ${
-              step === i + 1 ? "bg-accent text-[#16130a]" : step > i + 1 ? "bg-raised text-ink" : "bg-raised/50 text-faint"}`}>
+              step === i + 1 ? "bg-accent text-white" : step > i + 1 ? "bg-raised text-ink" : "bg-raised/50 text-faint"}`}>
               <span>{i + 1}</span>{label}
             </span>
           </div>
@@ -195,7 +214,7 @@ export default function SimulatorPage() {
                 <label key={key} className={`flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 transition-colors hover:bg-raised ${
                   key !== "f4_leverage" || flags.f4_leverage ? "" : "opacity-60"}`}>
                   <span className="flex items-center gap-3">
-                    <input type="checkbox" className="accent-[#f0b429]" checked={flags[key]}
+                    <input type="checkbox" className="accent-[#b45309]" checked={flags[key]}
                       onChange={(e) => setFlags({ ...flags, [key]: e.target.checked })} />
                     <span className="font-medium">{label}</span>
                   </span>
@@ -273,7 +292,7 @@ export default function SimulatorPage() {
                 오버레이:
                 {history.filter((h) => h.id !== job.id).slice(0, 8).map((h) => (
                   <label key={h.id} className="flex cursor-pointer items-center gap-1">
-                    <input type="checkbox" className="accent-[#f0b429]" checked={overlay.includes(h.id)}
+                    <input type="checkbox" className="accent-[#b45309]" checked={overlay.includes(h.id)}
                       disabled={!overlay.includes(h.id) && overlay.length >= 4}
                       onChange={(e) => {
                         const next = e.target.checked ? [...overlay, h.id] : overlay.filter((x) => x !== h.id);
@@ -284,8 +303,101 @@ export default function SimulatorPage() {
               </span>
             </div>
           </Card>
+
+          {/* 일자별 매매 기록 (2026-08-28 지시) — 장 시작 전 주문표 + 체결 + 수익률·보유 */}
+          <Card>
+            <CardTitle right={journal ? (
+              <label className="flex items-center gap-1.5 text-[13px] font-normal normal-case text-muted">
+                <input type="checkbox" className="accent-[#b45309]" checked={tradedOnly}
+                  onChange={(e) => { setTradedOnly(e.target.checked); setVisibleDays(30); }} />
+                거래 있는 날만
+              </label>
+            ) : undefined}>일자별 매매 기록</CardTitle>
+            {!journal ? (
+              <button className="btn" disabled={journalBusy} onClick={() => void loadJournal(job.id)}>
+                {journalBusy ? "불러오는 중…" : "매매 기록 불러오기"}
+              </button>
+            ) : (() => {
+              const rows = journal.filter((d) => !tradedOnly || d.planned.length > 0 || d.fills.length > 0);
+              const shown = rows.slice(0, visibleDays);
+              return (
+                <div className="grid gap-1.5">
+                  {shown.map((d) => (
+                    <details key={d.date} className="rounded-xl border border-line bg-inset">
+                      <summary className="flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-1 rounded-xl px-4 py-3 text-[14.5px] transition-colors hover:bg-raised/60">
+                        <b className="w-24">{d.date}</b>
+                        <Badge tone={d.regime === "BULL" ? "up" : d.regime === "BEAR" ? "down" : "accent"}>
+                          {d.regime === "BULL" ? "상승" : d.regime === "BEAR" ? "하락" : "중립"}
+                        </Badge>
+                        <span className={`w-20 text-right font-bold ${d.day_return > 0 ? "text-up" : d.day_return < 0 ? "text-down" : "text-muted"}`}>
+                          {(d.day_return * 100).toFixed(2)}%
+                        </span>
+                        <span className="hidden text-[13px] text-faint sm:inline">누적 {(d.total_return * 100).toFixed(1)}%</span>
+                        <span className="hidden text-[13px] text-muted md:inline">평가 {Math.round(d.equity).toLocaleString()}원</span>
+                        <span className="hidden text-[13px] text-faint lg:inline">보유 200ETF {d.qty_200.toLocaleString()} · 레버 {d.qty_lev.toLocaleString()}</span>
+                        <span className="ml-auto text-[13px] text-faint">주문 {d.planned.length} · 체결 {d.fills.length}</span>
+                      </summary>
+                      <div className="grid gap-4 border-t border-line px-4 py-4 lg:grid-cols-2">
+                        <JournalOrders title="장 시작 전 주문표 (계획)" orders={d.planned} fill={false} />
+                        <JournalOrders title="체결 내역" orders={d.fills} fill={true} />
+                        <div className="col-span-full flex flex-wrap gap-x-6 gap-y-1 text-[13.5px] text-muted">
+                          <span>노출 E <b className="text-ink">{(d.exposure * 100).toFixed(1)}%</b></span>
+                          <span>현금 <b className="text-ink">{d.cash.toLocaleString()}원</b></span>
+                          <span>보유 200 ETF <b className="text-ink">{d.qty_200.toLocaleString()}주</b></span>
+                          <span>레버리지 <b className="text-ink">{d.qty_lev.toLocaleString()}주</b></span>
+                        </div>
+                      </div>
+                    </details>
+                  ))}
+                  {rows.length > visibleDays && (
+                    <button className="btn mt-1" onClick={() => setVisibleDays(visibleDays + 60)}>
+                      더 보기 ({rows.length - visibleDays}일 남음)
+                    </button>
+                  )}
+                  {rows.length === 0 && <p className="text-[13.5px] text-faint">표시할 기록이 없습니다.</p>}
+                </div>
+              );
+            })()}
+          </Card>
         </div>
       )}
     </main>
+  );
+}
+
+const KIND_KO_J: Record<string, string> = {
+  grid1: "그리드 1차", grid2: "그리드 2차", grid3: "그리드 3차", tp: "익절", reduce: "축소",
+  lev_strat: "레버 전략", lev_tact1: "레버 전술1", lev_tact2: "레버 전술2",
+  lev_tact_exit: "전술 이탈", lev_liq: "레버 청산",
+};
+
+function JournalOrders({ title, orders, fill }: { title: string; orders: JournalOrder[]; fill: boolean }) {
+  return (
+    <div>
+      <div className="mb-1.5 text-[13px] font-semibold text-muted">{title} ({orders.length}건)</div>
+      {orders.length === 0 ? <p className="text-[13px] text-faint">없음</p> : (
+        <table className="w-full text-[14px]">
+          <thead><tr className="text-left text-xs text-faint">
+            <th className="pb-1 font-medium">구분</th><th className="pb-1 font-medium">종목</th>
+            <th className="pb-1 font-medium">방향</th>
+            <th className="pb-1 text-right font-medium">{fill ? "체결가" : "지정가"}</th>
+            <th className="pb-1 text-right font-medium">수량</th>
+            <th className="pb-1 text-right font-medium">금액</th>
+          </tr></thead>
+          <tbody>
+            {orders.map((o, i) => (
+              <tr key={i} className="border-t border-line/40">
+                <td className="py-1.5 text-muted">{KIND_KO_J[o.kind] ?? o.kind}</td>
+                <td className="py-1.5">{o.instrument === "K200" ? "200 ETF" : "레버리지"}</td>
+                <td className={`py-1.5 font-semibold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
+                <td className="table-num py-1.5">{o.price ? o.price.toLocaleString() : "시가"}</td>
+                <td className="table-num py-1.5">{o.qty.toLocaleString()}</td>
+                <td className="table-num py-1.5 text-muted">{o.price ? (o.price * o.qty).toLocaleString() : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }

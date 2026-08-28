@@ -12,6 +12,16 @@ export function hasToken(): boolean {
   return accessToken !== null;
 }
 
+/** 새로고침 후 세션 복원 — refresh 쿠키(1시간 롤링)로 access 재발급. */
+export async function ensureSession(): Promise<boolean> {
+  if (accessToken) return true;
+  try {
+    return await tryRefresh();
+  } catch {
+    return false;
+  }
+}
+
 async function tryRefresh(): Promise<boolean> {
   const res = await fetch("/api/auth/refresh", { method: "POST", credentials: "include" });
   if (!res.ok) return false;

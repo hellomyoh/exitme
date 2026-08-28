@@ -177,6 +177,9 @@ def run_backtest_job(bt_id: int) -> dict:
         bt = session.get(Backtest, bt_id)
         if bt is None:
             return {"error": "not found"}
+        if bt.status == "DONE":
+            # acks_late 재전달로 완료 잡이 다시 들어올 수 있음 — 결과 보존, 재실행 금지 (멱등)
+            return {"status": "already-done"}
         try:
             p = bt.params
             bars_200, bars_lev, fp = load_aligned_bars(
@@ -199,7 +202,8 @@ def run_backtest_job(bt_id: int) -> dict:
 
             result = run_backtest(bars_200, bars_lev, float(p["capital"]), params, progress_cb=progress_cb)
 
-            # 단일 트랜잭션 저장 (부분 저장 없음 → 재시도 멱등)
+            # 단일 트랜잭션 저장 — 재시도 멱등: 이전 시도의 잔여 행을 먼저 제거
+            session.query(BacktestEquity).filter(BacktestEquity.backtest_id == bt_id).delete()
             bt.kpi = result.kpi
             bt.trades = [asdict(t) for t in result.trades]
             bt.status = "DONE"

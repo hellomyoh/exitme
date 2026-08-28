@@ -9,7 +9,7 @@ import {
   CandlestickSeries, createChart, HistogramSeries, IChartApi, IPriceLine, ISeriesApi, LineSeries,
 } from "lightweight-charts";
 import { ema, rsi, sma } from "../../lib/indicators";
-import { apiFetch, hasToken } from "../../lib/api";
+import { apiFetch, ensureSession, hasToken } from "../../lib/api";
 
 
 type Bar = { date: string; open: number; high: number; low: number; close: number; volume: number };
@@ -20,7 +20,7 @@ const PRESETS = [
   { code: "122630", label: "KODEX 레버리지" },
 ];
 const MA_STYLES: [string, string, string][] = [
-  ["ma20", "MA20", "#f0b429"], ["ma60", "MA60", "#4d8df6"], ["ma200", "MA200", "#8b7cf6"], ["ema20", "EMA20", "#35c28f"],
+  ["ma20", "MA20", "#b45309"], ["ma60", "MA60", "#2563eb"], ["ma200", "MA200", "#7c3aed"], ["ema20", "EMA20", "#0e9f6e"],
 ];
 
 export default function ChartPage() {
@@ -64,7 +64,7 @@ export default function ChartPage() {
         const positions = ((await ps.json()) as { positions: { code: string; avg_price: number; qty: number }[] }).positions;
         const mine = positions.find((x) => x.code === c);
         if (mine && candleRef.current) {
-          candleRef.current.createPriceLine({ price: mine.avg_price, color: "#35c28f", lineWidth: 1, title: `평단 ${mine.qty}주` });
+          candleRef.current.createPriceLine({ price: mine.avg_price, color: "#0e9f6e", lineWidth: 1, title: `평단 ${mine.qty}주` });
         }
       }
     }
@@ -76,7 +76,7 @@ export default function ChartPage() {
     if (!candle) return;
     priceLinesRef.current.forEach((l) => candle.removePriceLine(l));
     priceLinesRef.current = prices.map((p) =>
-      candle.createPriceLine({ price: p, color: "#f2495c", lineWidth: 1, title: p.toLocaleString() }),
+      candle.createPriceLine({ price: p, color: "#d92f45", lineWidth: 1, title: p.toLocaleString() }),
     );
   }
 
@@ -84,8 +84,8 @@ export default function ChartPage() {
     if (!containerRef.current) return;
     disposeChart();
     const chart = createChart(containerRef.current, {
-      layout: { background: { color: "transparent" }, textColor: "#71717e", attributionLogo: false, fontSize: 11 },
-      grid: { vertLines: { color: "rgba(255,255,255,0.05)" }, horzLines: { color: "rgba(255,255,255,0.05)" } },
+      layout: { background: { color: "transparent" }, textColor: "#858c9b", attributionLogo: false, fontSize: 12 },
+      grid: { vertLines: { color: "rgba(18,24,40,0.06)" }, horzLines: { color: "rgba(18,24,40,0.06)" } },
       rightPriceScale: { borderVisible: false },
       timeScale: { borderVisible: false },
       autoSize: true,
@@ -96,8 +96,8 @@ export default function ChartPage() {
 
     // 국내 관례: 상승=적 / 하락=청 (REQUIREMENTS §7)
     const candle = chart.addSeries(CandlestickSeries, {
-      upColor: "#f2495c", wickUpColor: "#f2495c", borderUpColor: "#f2495c",
-      downColor: "#4d8df6", wickDownColor: "#4d8df6", borderDownColor: "#4d8df6",
+      upColor: "#d92f45", wickUpColor: "#d92f45", borderUpColor: "#d92f45",
+      downColor: "#2563eb", wickDownColor: "#2563eb", borderDownColor: "#2563eb",
     });
     candle.setData(bars.map((b) => ({ time: b.date, open: b.open, high: b.high, low: b.low, close: b.close })));
     candleRef.current = candle;
@@ -111,11 +111,11 @@ export default function ChartPage() {
         .setData(values.flatMap((v, i) => (v === null ? [] : [{ time: times[i], value: v }])));
     }
 
-    const vol = chart.addSeries(HistogramSeries, { priceScaleId: "vol", color: "rgba(255,255,255,0.12)" });
+    const vol = chart.addSeries(HistogramSeries, { priceScaleId: "vol", color: "rgba(18,24,40,0.18)" });
     chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
     vol.setData(bars.map((b) => ({ time: b.date, value: b.volume })));
 
-    chart.addSeries(LineSeries, { color: "#f0b429", lineWidth: 1 }, 1)
+    chart.addSeries(LineSeries, { color: "#b45309", lineWidth: 1 }, 1)
       .setData(rsi(closes, 14).flatMap((v, i) => (v === null ? [] : [{ time: times[i], value: v }])));
 
     chart.timeScale().fitContent();
@@ -130,7 +130,7 @@ export default function ChartPage() {
   }
 
   useEffect(() => {
-    void load(code);
+    void ensureSession().then(() => load(code));  // 세션 복원 후 로드 — 평단선·드로잉 표시
     return () => disposeChart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
@@ -141,7 +141,7 @@ export default function ChartPage() {
         <div className="flex overflow-hidden rounded-lg border border-line">
           {PRESETS.map((p) => (
             <button key={p.code} onClick={() => setCode(p.code)}
-              className={`px-3.5 py-2 text-[13px] font-semibold transition-colors ${
+              className={`px-3.5 py-2 text-[15px] font-semibold transition-colors ${
                 code === p.code ? "bg-raised text-ink" : "bg-surface text-muted hover:text-ink"}`}>
               {p.label}
             </button>
