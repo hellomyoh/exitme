@@ -83,8 +83,118 @@ def _record(session: Session, trade_date: date, status: str, regime=None, e=None
     return snap
 
 
+def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
+    """내 실전 포트 기준 주문표 — 보유 로트·현금을 플래너 Portfolio 로 변환해 plan() 직접 실행 (ADR-005).
+
+    근사 규칙(ASSUMPTIONS): 실전 로트의 익절가는 '오늘 Grid' 기준 매수가×(1+Grid)로 부여,
+    상승장이면 코어로 간주. 200 ETF 는 KODEX/TIGER 모두 K200 레그로 매핑.
+    """
+    from app.backtests import load_aligned_bars
+    from app.models import Instrument, PositionLot, TradePortfolio, TradeTransaction
+    from app.strategy.planner import K200, LEV, Lot, Portfolio, grid_ratio, plan, prepare
+    from app.strategy.params import round_tick
+    from app.strategy.regime import Regime
+
+    pf_row = session.get(TradePortfolio, pid)
+    if pf_row is None or pf_row.user_id != user_id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="portfolio not found")
+
+    bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1))
+    params = Params()
+    result = run_backtest(bars_200, bars_lev, MODEL_CAPITAL, params)
+    regime = Regime(result.regimes[-1])  # 시장 레짐은 가격만의 함수 — 포트와 무관
+
+    def to_market(bars):
+        return prepare([float(b["open"]) for b in bars], [float(b["high"]) for b in bars],
+                       [float(b["low"]) for b in bars], [float(b["close"]) for b in bars], params)
+
+    m200, mlev = to_market(bars_200), to_market(bars_lev)
+    last = len(bars_200) - 1
+    grid_today = grid_ratio(m200.atr20[last], m200.closes[last], params)
+
+    # 현금 원장
+    txs = session.scalars(select(TradeTransaction).where(TradeTransaction.portfolio_id == pid)).all()
+    cash = 0
+    for t in txs:
+        if t.kind == "deposit":
+            cash += t.amount
+        elif t.kind == "withdraw":
+            cash -= t.amount
+        elif t.kind == "buy":
+            cash -= t.qty * t.price
+        elif t.kind == "sell":
+            cash += t.qty * t.price
+
+    lots_rows = session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pid)).all()
+    lots: list[Lot] = []
+    qty_200 = qty_lev = 0
+    for l in lots_rows:
+        code = session.get(Instrument, l.instrument_id).code
+        if code == "122630":
+            lots.append(Lot(LEV, l.qty_open, l.price, "lev_strat", None, 0))
+            qty_lev += l.qty_open
+        else:  # 069500 / 102110 → 200 레그
+            if regime is Regime.BULL and params.flags.f1_no_tp_in_bull:
+                lots.append(Lot(K200, l.qty_open, l.price, "core", None, 0))
+            else:
+                tp = round_tick(l.price * (1 + grid_today), params.tick, up=True)
+                lots.append(Lot(K200, l.qty_open, l.price, "grid", tp, 0))
+            qty_200 += l.qty_open
+
+    user_pf = Portfolio(cash=float(cash), lots=lots)
+    p = plan(last, m200, mlev, regime, user_pf, params)
+    return {
+        "basis": "portfolio", "portfolio": {"id": pf_row.id, "name": pf_row.name},
+        "account": {"cash": cash, "qty_200": qty_200, "qty_lev": qty_lev,
+                    "equity": round(user_pf.equity(m200.closes[last], mlev.closes[last]))},
+        "orders": [
+            {"instrument": o.instrument, "side": o.side, "otype": o.otype,
+             "qty": o.qty, "price": o.price, "kind": o.kind} for o in p.orders
+        ],
+        "gap_cancel_below": p.gap_cancel_below,
+    }
+
+
+@router.get("/signals/journal")
+def get_signal_journal(days: int = 20, _user: int = Depends(current_user_id),
+                       session: Session = Depends(get_session)) -> dict:
+    """모델 포트의 최근 매매 이력 — 주문표 신호의 맥락 (계획·체결·수익률·보유)."""
+    from app.backtests import load_aligned_bars
+
+    try:
+        bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1))
+    except Exception:
+        return {"items": []}
+    r = run_backtest(bars_200, bars_lev, MODEL_CAPITAL, Params(), collect_plans=True)
+    fills_by_date: dict[str, list] = {}
+    for f in r.fills:
+        fills_by_date.setdefault(f.date, []).append(
+            {"instrument": f.instrument, "side": f.side, "kind": f.kind, "price": f.price, "qty": f.qty})
+    items = []
+    n = len(r.dates)
+    for i in range(max(0, n - min(days, 120)), n):
+        plan_i = r.plans[i] if i < len(r.plans) else None
+        prev_eq = r.equity[i - 1] if i > 0 else MODEL_CAPITAL
+        items.append({
+            "date": r.dates[i], "regime": r.regimes[i],
+            "equity": round(r.equity[i]),
+            "day_return": (r.equity[i] / prev_eq - 1.0) if prev_eq else 0.0,
+            "day_pnl": round(r.equity[i] - prev_eq),
+            "qty_200": r.qty_200[i], "qty_lev": r.qty_lev[i], "cash": round(r.cash_curve[i]),
+            "planned": [
+                {"instrument": o.instrument, "side": o.side, "kind": o.kind, "price": o.price, "qty": o.qty}
+                for o in (plan_i.orders if plan_i and plan_i.status == "OK" else [])
+            ],
+            "fills": fills_by_date.get(r.dates[i], []),
+        })
+    items.reverse()
+    return {"items": items}
+
+
 @router.get("/signals/daily")
 def get_daily_signal(date_: date | None = Query(default=None, alias="date"),
+                     portfolio_id: int | None = None,
                      _user: int = Depends(current_user_id),
                      session: Session = Depends(get_session)) -> dict:
     q = select(SignalSnapshot).where(SignalSnapshot.is_current)
@@ -96,6 +206,19 @@ def get_daily_signal(date_: date | None = Query(default=None, alias="date"),
     orders = session.scalars(
         select(OrderSheetRow).where(OrderSheetRow.signal_id == snap.id).order_by(OrderSheetRow.id)
     ).all()
+    extra: dict = {"basis": "model"}
+    if portfolio_id is not None and snap.status == "OK":
+        # 내 실전 포트 기준 주문표 (2026-08-28 검토 반영) — 주문·계좌 현황을 내 포트 기준으로 교체
+        extra = _portfolio_orders(session, portfolio_id, _user)
+        return {
+            "status": snap.status, "trade_date": snap.trade_date.isoformat(), "version": snap.version,
+            "regime": snap.regime, "e_target": float(snap.e_target) if snap.e_target is not None else None,
+            "w_200": float(snap.w_200) if snap.w_200 is not None else None,
+            "w_lev": float(snap.w_lev) if snap.w_lev is not None else None,
+            "gap_cancel_below": extra["gap_cancel_below"] or snap.gap_cancel_below,
+            "indicators": snap.indicators, "detail": snap.detail,
+            **extra,
+        }
     return {
         "status": snap.status, "trade_date": snap.trade_date.isoformat(), "version": snap.version,
         "regime": snap.regime, "e_target": float(snap.e_target) if snap.e_target is not None else None,
@@ -107,6 +230,7 @@ def get_daily_signal(date_: date | None = Query(default=None, alias="date"),
             {"instrument": o.instrument, "side": o.side, "otype": o.otype,
              "qty": o.qty, "price": o.price, "kind": o.kind} for o in orders
         ],
+        **extra,
     }
 
 

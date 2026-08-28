@@ -35,7 +35,7 @@ export default function SimulatorPage() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [etf, setEtf] = useState<"KODEX" | "TIGER">("KODEX");
   const [capital, setCapital] = useState("100000000");
-  const [dateFrom, setDateFrom] = useState("2017-01-02");
+  const [dateFrom, setDateFrom] = useState(new Date(Date.now() - 365 * 86400e3).toISOString().slice(0, 10)); // 기본 1년 전 (2026-08-28 지시)
   const [dateTo, setDateTo] = useState(new Date().toISOString().slice(0, 10));
   const [flags, setFlags] = useState<Flags>(Object.fromEntries(FLAG_LABELS.map(([k]) => [k, true])));
   const [jobId, setJobId] = useState<number | null>(null);

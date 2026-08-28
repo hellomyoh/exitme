@@ -98,3 +98,42 @@ class TestSignalBatch:
         assert body["status"] in ("OK", "INSUFFICIENT_HISTORY")
         if body["status"] == "OK":
             assert isinstance(body["orders"], list)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DB_UP, reason="database not reachable")
+def test_portfolio_basis_orders_respect_holdings():
+    """내 실전 포트 기준 주문표 (2026-08-28 검토): 보유 로트 → 익절 주문 생성, 잔여예산 반영."""
+    from tests.test_backtest_api import seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+        from app.signals import run_signal_batch
+        snap = run_signal_batch(s)
+        if snap.status != "OK":
+            pytest.skip("synthetic data insufficient for OK signal")
+
+    client = TestClient(app, base_url="https://testserver")
+    email = f"pb{uuid.uuid4().hex[:8]}@stocklab.dev"
+    token = client.post("/auth/register", json={"email": email, "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    pid = client.post("/portfolios", json={"name": "내 계좌 검증"}, headers=h).json()["id"]
+    now = "2026-08-28T10:00:00+09:00"
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 100_000_000,
+                                    "executed_at": now}, headers=h)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500",
+                                    "qty": 200, "price": 60000, "executed_at": now}, headers=h)
+
+    body = client.get(f"/signals/daily?portfolio_id={pid}", headers=h).json()
+    assert body["basis"] == "portfolio" and body["account"]["qty_200"] == 200
+    kinds = {o["kind"] for o in body["orders"]}
+    if body["regime"] == "NEUTRAL":
+        assert "tp" in kinds  # 보유 로트 → 익절 매도 생성 (모델 기준에는 없던 주문)
+    # 모델 기준과 다른 주문 구성이어야 함 (보유 반영)
+    model = client.get("/signals/daily", headers=h).json()
+    assert body["orders"] != model["orders"]
+    # 신호 이력 엔드포인트
+    j = client.get("/signals/journal?days=10", headers=h).json()
+    assert len(j["items"]) > 0 and {"date", "planned", "fills", "day_pnl"} <= set(j["items"][0])

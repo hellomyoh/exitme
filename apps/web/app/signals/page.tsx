@@ -14,8 +14,16 @@ type Signal = {
   status: string; reason?: string; trade_date?: string; version?: number; regime?: string;
   e_target?: number; w_200?: number; w_lev?: number; gap_cancel_below?: number;
   indicators?: Record<string, number>; orders?: OrderRow[];
+  basis?: "model" | "portfolio";
+  account?: { cash: number; qty_200: number; qty_lev: number; equity: number };
   detail?: { model_capital?: number; model_equity?: number; model_cash?: number;
              model_qty_200?: number; model_qty_lev?: number; error?: string };
+};
+type PortfolioItem = { id: number; name: string };
+type JournalOrder = { instrument: string; side: string; kind: string; price: number | null; qty: number };
+type JournalDay = {
+  date: string; regime: string; equity: number; day_return: number; day_pnl: number;
+  qty_200: number; qty_lev: number; cash: number; planned: JournalOrder[]; fills: JournalOrder[];
 };
 
 const REGIME = {
@@ -66,15 +74,25 @@ export default function SignalsPage() {
   const router = useRouter();
   const [sig, setSig] = useState<Signal | null>(null);
   const [myCapital, setMyCapital] = useState("");
+  const [portfolios, setPortfolios] = useState<PortfolioItem[]>([]);
+  const [basisPid, setBasisPid] = useState<number | null>(null);
+  const [journal, setJournal] = useState<JournalDay[] | null>(null);
+
+  async function loadSignal(pid: number | null) {
+    const res = await apiFetch(`/signals/daily${pid ? `?portfolio_id=${pid}` : ""}`);
+    if (res.ok) setSig((await res.json()) as Signal);
+  }
 
   useEffect(() => {
     void ensureSession().then(async (ok) => {
       if (!ok) { router.push("/login"); return; }
-      const res = await apiFetch("/signals/daily");
-      if (res.ok) setSig((await res.json()) as Signal);
+      await loadSignal(basisPid);
+      const pl = await apiFetch("/portfolios");
+      if (pl.ok) setPortfolios(((await pl.json()) as { items: PortfolioItem[] }).items);
     });
     try { setMyCapital(localStorage.getItem("myCapital") ?? ""); } catch { /* ignore */ }
-  }, [router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router, basisPid]);
 
   function saveCapital(v: string) {
     setMyCapital(v);
@@ -101,12 +119,30 @@ export default function SignalsPage() {
             : String(d.error ?? "장 마감 후 배치(16:05)가 실행되면 표시됩니다."))} />
       ) : (
         <div className="grid gap-4">
-          {/* 기준 안내 */}
-          <Callout icon="ℹ️">
-            이 주문표의 수량은 <b className="text-ink">모델 포트폴리오</b> 기준입니다 — 데이터 시작일부터 전략을 그대로 따라왔다고
-            가정한 가상 계좌(초기 1억 → 현재 평가 <b className="text-ink">{fmtNum(modelEquity)}원</b>).
-            아래에 <b className="text-ink">내 투자금</b>을 입력하면 내 계좌 기준 수량으로 환산해 보여줍니다.
-          </Callout>
+          {/* 기준 선택 + 안내 (2026-08-28 검토 반영) */}
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-[14px] font-semibold text-muted">주문 기준</span>
+            <select className="input !py-2" value={basisPid ?? ""}
+              onChange={(e) => setBasisPid(e.target.value ? Number(e.target.value) : null)}>
+              <option value="">모델 포트폴리오 (전략 참고 신호)</option>
+              {portfolios.map((p) => <option key={p.id} value={p.id}>내 실전매매: {p.name}</option>)}
+            </select>
+          </div>
+          {sig.basis === "portfolio" && sig.account ? (
+            <Callout icon="🎯">
+              <b className="text-ink">내 실전 포트 기준</b> 주문표입니다 — 내 보유
+              (200 ETF <b className="text-ink">{fmtNum(sig.account.qty_200)}주</b> · 레버리지 <b className="text-ink">{fmtNum(sig.account.qty_lev)}주</b>)와
+              현금 <b className="text-ink">{fmtNum(sig.account.cash)}원</b>을 전략 규칙에 그대로 넣어 계산했습니다.
+              {sig.account.qty_200 === 0 && sig.account.qty_lev === 0 && " 현재 보유가 없어 신규 매수 그리드만 발주됩니다."}
+            </Callout>
+          ) : (
+            <Callout icon="ℹ️">
+              <b className="text-ink">모델 포트폴리오</b>(데이터 시작일부터 전략을 따라온 가상 계좌, 초기 1억 → 현재 평가
+              <b className="text-ink"> {fmtNum(modelEquity)}원</b>) 기준의 참고 신호입니다.
+              {(d.model_qty_200 ?? 0) === 0 && (d.model_qty_lev ?? 0) === 0 && " 모델 포트는 현재 전량 현금(직전 익절 완료) 상태라 신규 매수 그리드만 발주됩니다."}
+              {" "}위에서 <b className="text-ink">내 실전매매</b>를 선택하면 내 보유·현금 기준 주문으로 바뀝니다.
+            </Callout>
+          )}
 
           {/* 히어로: 레짐 + 배분 + 모델 포트 상태 */}
           <div className="grid gap-4 md:grid-cols-3">
@@ -137,24 +173,26 @@ export default function SignalsPage() {
               </div>
             </Card>
             <Card>
-              <CardTitle>모델 포트 현황 <span className="normal-case text-faint">· 주문 수량의 기준</span></CardTitle>
+              <CardTitle>{sig.basis === "portfolio" ? "내 계좌 현황" : "모델 포트 현황"} <span className="normal-case text-faint">· 주문 수량의 기준</span></CardTitle>
               <div className="grid gap-1.5 text-[14.5px]">
-                <div className="flex justify-between"><span className="text-faint">평가액</span><b>{fmtNum(modelEquity)}원</b></div>
-                <div className="flex justify-between"><span className="text-faint">현금</span><b>{fmtNum(d.model_cash ?? 0)}원</b></div>
-                <div className="flex justify-between"><span className="text-faint">보유 KODEX 200</span><b>{fmtNum(d.model_qty_200 ?? 0)}주</b></div>
-                <div className="flex justify-between"><span className="text-faint">보유 레버리지</span><b>{fmtNum(d.model_qty_lev ?? 0)}주</b></div>
+                <div className="flex justify-between"><span className="text-faint">평가액</span><b>{fmtNum(sig.basis === "portfolio" ? (sig.account?.equity ?? 0) : modelEquity)}원</b></div>
+                <div className="flex justify-between"><span className="text-faint">현금</span><b>{fmtNum(sig.basis === "portfolio" ? (sig.account?.cash ?? 0) : (d.model_cash ?? 0))}원</b></div>
+                <div className="flex justify-between"><span className="text-faint">보유 200 ETF</span><b>{fmtNum(sig.basis === "portfolio" ? (sig.account?.qty_200 ?? 0) : (d.model_qty_200 ?? 0))}주</b></div>
+                <div className="flex justify-between"><span className="text-faint">보유 레버리지</span><b>{fmtNum(sig.basis === "portfolio" ? (sig.account?.qty_lev ?? 0) : (d.model_qty_lev ?? 0))}주</b></div>
               </div>
-              <div className="mt-3 border-t border-line pt-3">
-                <label className="text-[13px] text-faint">내 투자금(원) — 수량 환산용</label>
-                <input className="input mt-1 w-full" placeholder="예: 50000000" value={myCapital}
-                  onChange={(e) => saveCapital(e.target.value)} />
-              </div>
+              {sig.basis !== "portfolio" && (
+                <div className="mt-3 border-t border-line pt-3">
+                  <label className="text-[13px] text-faint">내 투자금(원) — 비례 환산용 (정확한 계산은 위 기준 선택 사용)</label>
+                  <input className="input mt-1 w-full" placeholder="예: 50000000" value={myCapital}
+                    onChange={(e) => saveCapital(e.target.value)} />
+                </div>
+              )}
             </Card>
           </div>
 
           {/* 주문 테이블 */}
           <Card>
-            <CardTitle>다음 거래일 주문</CardTitle>
+            <CardTitle>다음 거래일 주문 <span className="normal-case text-faint">· {sig.basis === "portfolio" ? "내 계좌 기준 수량" : "모델 1억 기준 수량"}</span></CardTitle>
             {sig.orders && sig.orders.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-[15px]">
@@ -164,8 +202,8 @@ export default function SignalsPage() {
                       <th className="pb-2 font-medium">종목</th>
                       <th className="pb-2 font-medium">방향</th>
                       <th className="pb-2 text-right font-medium">지정가</th>
-                      <th className="pb-2 text-right font-medium">수량<div className="font-normal">(모델 1억)</div></th>
-                      {scale && <th className="pb-2 text-right font-medium text-accent">내 수량<div className="font-normal">({fmtNum(cap)}원)</div></th>}
+                      <th className="pb-2 text-right font-medium">수량</th>
+                      {sig.basis !== "portfolio" && scale && <th className="pb-2 text-right font-medium text-accent">내 수량<div className="font-normal">({fmtNum(cap)}원)</div></th>}
                       <th className="pb-2 pl-4 font-medium">실행 조건</th>
                     </tr>
                   </thead>
@@ -177,13 +215,13 @@ export default function SignalsPage() {
                         <td className={`py-3 font-bold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
                         <td className="table-num py-3 font-semibold">{o.price ? fmtNum(o.price) : "시가"}</td>
                         <td className="table-num py-3">{fmtNum(o.qty)}주</td>
-                        {scale && <td className="table-num py-3 font-bold text-accent">{fmtNum(Math.floor(o.qty * scale))}주</td>}
+                        {sig.basis !== "portfolio" && scale && <td className="table-num py-3 font-bold text-accent">{fmtNum(Math.floor(o.qty * scale))}주</td>}
                         <td className="py-3 pl-4 text-[13.5px] text-muted">{orderDesc(o, sig)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-                {!scale && <p className="mt-3 text-[13px] text-faint">💡 우측 상단 &quot;내 투자금&quot;을 입력하면 내 계좌 기준 수량 열이 추가됩니다.</p>}
+                {sig.basis !== "portfolio" && !scale && <p className="mt-3 text-[13px] text-faint">💡 &quot;내 투자금&quot;을 입력하면 비례 환산 열이, 위 기준 선택에서 실전매매를 고르면 보유 반영 주문이 나옵니다.</p>}
               </div>
             ) : <p className="py-4 text-center text-muted">오늘은 신규 주문이 없습니다.</p>}
           </Card>
@@ -206,6 +244,45 @@ export default function SignalsPage() {
                 레짐이 상승에서 이탈하면 목표가를 기다리지 않고 레버리지를 <b className="text-ink">즉시 전량 청산</b>합니다.
               </Callout>
             </div>
+          </Card>
+
+          {/* 최근 신호 이력 (모델 포트) — 신호의 맥락 (2026-08-28 검토 반영) */}
+          <Card>
+            <CardTitle>최근 신호 이력 <span className="normal-case text-faint">· 모델 포트 기준 — 어떤 매매를 해왔는지</span></CardTitle>
+            {!journal ? (
+              <button className="btn" onClick={() => void (async () => {
+                const res = await apiFetch("/signals/journal?days=20");
+                if (res.ok) setJournal(((await res.json()) as { items: JournalDay[] }).items);
+              })()}>최근 20 거래일 이력 불러오기</button>
+            ) : (
+              <div className="grid gap-1.5">
+                {journal.map((dj) => (
+                  <details key={dj.date} className="rounded-xl border border-line bg-inset">
+                    <summary className="flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-1 rounded-xl px-4 py-2.5 text-[14px] transition-colors hover:bg-raised/60">
+                      <b className="w-24">{dj.date}</b>
+                      <Badge tone={dj.regime === "BULL" ? "up" : dj.regime === "BEAR" ? "down" : "accent"}>
+                        {dj.regime === "BULL" ? "상승" : dj.regime === "BEAR" ? "하락" : "중립"}
+                      </Badge>
+                      <span className={`w-20 text-right font-bold ${dj.day_return > 0 ? "text-up" : dj.day_return < 0 ? "text-down" : "text-muted"}`}>
+                        {(dj.day_return * 100).toFixed(2)}%
+                      </span>
+                      <span className="hidden text-[13px] text-muted md:inline">보유 {dj.qty_200.toLocaleString()}주 · 현금 {Math.round(dj.cash / 10000).toLocaleString()}만</span>
+                      <span className="ml-auto text-[13px] text-faint">주문 {dj.planned.length} · 체결 {dj.fills.length}</span>
+                    </summary>
+                    <div className="grid gap-1 border-t border-line px-4 py-3 text-[13.5px]">
+                      {dj.fills.length === 0 && <span className="text-faint">체결 없음</span>}
+                      {dj.fills.map((f, i) => (
+                        <span key={i}>
+                          <b className={f.side === "buy" ? "text-up" : "text-down"}>{f.side === "buy" ? "매수" : "매도"}</b>
+                          {" "}{f.instrument === "K200" ? "200 ETF" : "레버리지"} {f.qty.toLocaleString()}주 @ {(f.price ?? 0).toLocaleString()}원
+                          <span className="text-faint"> ({f.kind})</span>
+                        </span>
+                      ))}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            )}
           </Card>
 
           {/* 계산 근거 */}
