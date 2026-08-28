@@ -11,7 +11,7 @@ Phase 1 (시세 데이터 파이프라인) — 진행 중 (Phase 0 완료). 브�
 
 ## 진행 중인 작업
 
-- Phase 1 잔여: **KIS 키 기입 대기** → 실 10년 시딩, beat 스케줄 KST 16:00 crontab 확정, 일일 배치 3거래일 검증, WS /ws/quotes(장중 폴링)
+- [자율 모드 2026-08-28] Phase 1 잔여 중 WS /ws/quotes·crontab 확정 구현 중. 실 시딩·3거래일 배치는 KIS 키 대기. 이후 Phase 2~6 순차 진행 예정
 
 ## 남은 작업
 

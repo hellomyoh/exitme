@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.db import get_session
 from app.models import Instrument, OhlcvDaily
+from app.quotes import router as quotes_router
 
 app = FastAPI(title="StockLab API", version="0.1.0")
+app.include_router(quotes_router)
 
 
 def problem(status: int, title: str, detail: str, instance: str) -> JSONResponse:

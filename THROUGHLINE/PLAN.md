@@ -17,7 +17,7 @@
 - **산출물**: 스키마(ohlcv_daily/intraday·instruments·status_history·corporate_actions·calendar·batch_runs), 10년 시딩, 일일 배치, KIS/pykrx 클라이언트, `GET /ohlcv`·종목 검색·`WS /ws/quotes`
 - **완료 조건**: [feature-market-data.md §13](features/feature-market-data.md) — 자동 테스트 실제 통과 + 시딩 완주 + 배치 3거래일 연속 성공
 - **QA 완료 조건**: 회귀 체크리스트 "데이터 파이프라인" 절 통과
-- **의존**: Phase 0 | **상태**: **진행 중** (스키마·KIS 클라이언트·시딩·/ohlcv 완료. 남은 것: KIS 키 기입 후 실 시딩, 일일 배치 crontab 확정·3거래일 검증, WS /ws/quotes, 종목 검색 확장)
+- **의존**: Phase 0 | **상태**: **구현 완료 / 검증 대기** (코드 전체 완료 — WS /ws/quotes·crontab KST 16:05 포함. 완료 조건 중 "실 10년 시딩 완주"와 "배치 3거래일 연속 성공"만 KIS 키 기입 대기)
 - **관련**: [feature-market-data.md](features/feature-market-data.md), [ADR-002](adr/002-timescaledb.md), [ADR-004](adr/004-market-data-source.md)
 
 ## Phase 2 — 주식 차트
