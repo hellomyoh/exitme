@@ -44,6 +44,7 @@ export default function PortfolioPage() {
   const [includeCosts, setIncludeCosts] = useState(true);
   const [form, setForm] = useState({ kind: "buy", code: "069500", qty: "", price: "", amount: "", memo: "" });
   const [msg, setMsg] = useState("");
+  const [txDays, setTxDays] = useState(15);  // 거래 내역 기본 표시 일수 — 무한 나열 방지 (2026-08-29 검토)
   const [newName, setNewName] = useState("");
   const [showStart, setShowStart] = useState(false);
   const [startMode, setStartMode] = useState<"fresh" | "holdings">("fresh");
@@ -432,11 +433,12 @@ export default function PortfolioPage() {
           byDate.get(d)!.push(t);
         }
         const days = Array.from(byDate.entries());
+        const visible = days.slice(0, txDays);
         return (
           <Card className="mt-4">
-            <CardTitle>날짜별 거래 내역</CardTitle>
+            <CardTitle>날짜별 거래 내역 <span className="normal-case text-faint">· 총 {days.length}일 중 최근 {Math.min(txDays, days.length)}일</span></CardTitle>
             <div className="grid gap-1.5">
-              {days.map(([d, list]) => {
+              {visible.map(([d, list]) => {
                 const realized = list.reduce((a, t) => a + (t.realized_pnl ?? 0), 0);
                 const hasSell = list.some((t) => t.kind === "sell");
                 return (
@@ -482,6 +484,11 @@ export default function PortfolioPage() {
                 );
               })}
             </div>
+            {days.length > txDays && (
+              <button className="btn mt-3 w-full" onClick={() => setTxDays((v) => v + 30)}>
+                이전 내역 더 보기 ({days.length - txDays}일 남음)
+              </button>
+            )}
           </Card>
         );
       })()}
