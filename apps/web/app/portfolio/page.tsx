@@ -106,16 +106,32 @@ export default function PortfolioPage() {
           portfolio_id: id, kind: "deposit", amount: cash, executed_at: now, memo: "시작 입금" }) });
       }
     } else {
-      // 현재 보유분 입력하고 시작 — 입금(현금+보유 원가) 후 보유분을 오늘자 매수로 등록
-      const rows = holdings.filter((h) => Number(h.qty) > 0 && Number(h.price) > 0);
-      const cost = rows.reduce((a, h) => a + Number(h.qty) * Number(h.price), 0);
+      // 현재 보유분 입력하고 시작 — 평단 미입력 시 최근 종가로 등록(수익률 0% 시작, 2026-08-28 지시)
+      const withPrice: { code: string; qty: number; price: number }[] = [];
+      for (const h of holdings) {
+        const qty = Number(h.qty);
+        if (qty <= 0) continue;
+        let price = Number(h.price);
+        if (!price) {
+          const to = new Date().toISOString().slice(0, 10);
+          const from = new Date(Date.now() - 15 * 86400e3).toISOString().slice(0, 10);
+          const r = await fetch(`/api/ohlcv?code=${h.code}&from=${from}&to=${to}`);
+          if (r.ok) {
+            const items = ((await r.json()) as { items: { close: number }[] }).items;
+            if (items.length) price = items[items.length - 1].close;
+          }
+        }
+        if (price > 0) withPrice.push({ code: h.code, qty, price });
+      }
+      const rows = withPrice;
+      const cost = rows.reduce((a, h) => a + h.qty * h.price, 0);
       if (cash + cost > 0) {
         await apiFetch("/positions", { method: "POST", body: JSON.stringify({
           portfolio_id: id, kind: "deposit", amount: cash + cost, executed_at: now, memo: "시작 입금 (현금+보유 원가)" }) });
       }
       for (const h of rows) {
         await apiFetch("/positions", { method: "POST", body: JSON.stringify({
-          portfolio_id: id, kind: "buy", code: h.code, qty: Number(h.qty), price: Number(h.price),
+          portfolio_id: id, kind: "buy", code: h.code, qty: h.qty, price: h.price,
           executed_at: now, memo: "보유분 등록" }) });
       }
     }
@@ -180,6 +196,10 @@ export default function PortfolioPage() {
             {startMode === "holdings" && (
               <div className="grid gap-2">
                 <div className="text-[13px] font-semibold text-muted">보유 종목 (수량 · 평균단가)</div>
+                <p className="text-[12.5px] leading-relaxed text-faint">
+                  💡 <b className="text-muted">실제 매입 평단</b>을 입력하면 지금까지의 수익이 반영되고,
+                  <b className="text-muted"> 비워두면 오늘 종가</b>로 등록되어 <b className="text-muted">수익률 0%부터</b> 추적을 시작합니다.
+                </p>
                 {holdings.map((h, i) => (
                   <div key={i} className="flex flex-wrap items-center gap-2">
                     <select className="input !py-2" value={h.code}
@@ -190,7 +210,7 @@ export default function PortfolioPage() {
                     </select>
                     <input className="input w-28 !py-2" placeholder="수량(주)" value={h.qty}
                       onChange={(e) => setHoldings(holdings.map((x, j) => j === i ? { ...x, qty: e.target.value } : x))} />
-                    <input className="input w-36 !py-2" placeholder="평균단가(원)" value={h.price}
+                    <input className="input w-44 !py-2" placeholder="평단(비우면 오늘 종가)" value={h.price}
                       onChange={(e) => setHoldings(holdings.map((x, j) => j === i ? { ...x, price: e.target.value } : x))} />
                     {holdings.length > 1 && (
                       <button className="btn-ghost btn !px-2 !py-1.5 !text-up" onClick={() => setHoldings(holdings.filter((_, j) => j !== i))}>✕</button>
@@ -215,7 +235,7 @@ export default function PortfolioPage() {
       )}
 
       {sum && (
-        <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+        <div className="mb-4 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
           <Stat label="총자산" value={fmtWon(sum.total_equity)} />
           <Stat label="현금" value={fmtWon(sum.cash)} />
           <Stat label="주식" value={fmtWon(sum.stock_value)} />

@@ -30,7 +30,7 @@ export function Stat({ label, value, tone = "default", hint }: {
   return (
     <div className="card px-4 py-3.5">
       <div className="text-[13px] text-faint">{label}</div>
-      <div className={`mt-1 text-[21px] font-bold ${color}`}>{value}</div>
+      <div className={`mt-1 whitespace-nowrap text-[19px] font-bold ${color}`}>{value}</div>
       {hint && <div className="mt-0.5 text-[11px] text-faint">{hint}</div>}
     </div>
   );
