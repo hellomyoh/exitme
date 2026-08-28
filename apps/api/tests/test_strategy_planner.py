@@ -233,3 +233,21 @@ def test_gap_cancel_threshold():
     m = mk_market(atr=1400.0)
     p = plan(I, m, mk_lev(), Regime.BULL, pf_with(1e8), P)
     assert p.gap_cancel_below == round_tick(70000 - 1.5 * 1400, P.tick, up=False)  # 67,900
+
+
+def test_sell_orders_never_exceed_holdings():
+    """익절+축소 이중 계상 방지 (2026-08-28 사용자 검증): 매도 합계 ≤ 보유."""
+    # 보유 680주(tp 부여) + 큰 초과 비중 → 축소와 익절이 같은 물량을 겹쳐 팔면 안 됨
+    lot = Lot(K200, 680, 92000, "grid", 111540, 0)
+    m = mk_market(ma20=68000.0, ma60=69000.0, ma200=65000.0, sigma_down=0.26, sigma_ref=0.26)  # NEUTRAL, E=0.75
+    pf = pf_with(15_000_000, [lot])  # equity ≈ 62.6M, target ≈ 46.7M → excess > band
+    p = plan(I, m, mk_lev(), Regime.NEUTRAL, pf, P)
+    sells = [o for o in p.orders if o.instrument == K200 and o.side == "sell"]
+    total_sell = sum(o.qty for o in sells)
+    assert total_sell <= 680, f"매도 합계 {total_sell} > 보유 680"
+    kinds = {o.kind for o in sells}
+    if "reduce" in kinds and "tp" in kinds:
+        # 축소분(FIFO 선점) 제외한 잔여만 익절
+        reduce_q = next(o.qty for o in sells if o.kind == "reduce")
+        tp_q = next(o.qty for o in sells if o.kind == "tp")
+        assert reduce_q + tp_q <= 680

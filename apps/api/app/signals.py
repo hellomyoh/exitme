@@ -138,7 +138,9 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
             if regime is Regime.BULL and params.flags.f1_no_tp_in_bull:
                 lots.append(Lot(K200, l.qty_open, l.price, "core", None, 0))
             else:
-                tp = round_tick(l.price * (1 + grid_today), params.tick, up=True)
+                # 익절 기준가 = 최근 종가 × (1+오늘 Grid) — 정본 §5.6 코어 편입 규칙 준용.
+                # 평단 기준으로 하면 과거 매수분이 "이미 목표 도달"로 시작 즉시 전량 매도됨 (2026-08-28 검토)
+                tp = round_tick(m200.closes[last] * (1 + grid_today), params.tick, up=True)
                 lots.append(Lot(K200, l.qty_open, l.price, "grid", tp, 0))
             qty_200 += l.qty_open
 

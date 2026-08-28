@@ -181,21 +181,30 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
         orders.append(Order(LEV, "sell", "market", qty, None, "lev_liq"))
         lev_lots = []
 
-    # ── K200 매도
+    # ── K200 매도 — 축소를 먼저 확정하고, 익절은 축소분을 제외한 잔여 보유에만 발행
+    #    (주문 합계가 보유를 초과하는 이중 계상 방지 — 2026-08-28 사용자 검증 반영.
+    #     축소는 시장가라 반드시 체결되므로, 축소에 배정된 물량은 FIFO 순서로 익절 대상에서 제외)
     planned_sell_value = 0.0
-    if regime is Regime.NEUTRAL or not f.f1_no_tp_in_bull:
-        # 중립 왕복 익절 (f1 off 이면 v1: 상승장에도 익절)
-        if regime is not Regime.BEAR:
-            for idx, l in enumerate(pf.lots):
-                if l.instrument == K200 and l.kind == "grid" and l.tp_price:
-                    orders.append(Order(K200, "sell", "limit", l.qty, l.tp_price, "tp", lot_id=idx))
+    reduce_qty = 0
     excess = value_200 - target_200
     if excess > params.band * equity:
         # 축소 매도(하락장 신속 축소 / E 하락 리밸런싱) — 밴드 초과 시에만 (§5.5)
-        qty = int(excess / close)
-        if qty > 0:
-            orders.append(Order(K200, "sell", "market", qty, None, "reduce"))
-            planned_sell_value += qty * close
+        reduce_qty = int(excess / close)
+        if reduce_qty > 0:
+            orders.append(Order(K200, "sell", "market", reduce_qty, None, "reduce"))
+            planned_sell_value += reduce_qty * close
+    if regime is Regime.NEUTRAL or not f.f1_no_tp_in_bull:
+        # 중립 왕복 익절 (f1 off 이면 v1: 상승장에도 익절)
+        if regime is not Regime.BEAR:
+            earmarked = reduce_qty  # 축소가 FIFO 로 소진할 물량
+            for idx, l in enumerate(pf.lots):
+                if l.instrument != K200:
+                    continue
+                consumed = min(earmarked, l.qty)
+                earmarked -= consumed
+                available = l.qty - consumed
+                if l.kind == "grid" and l.tp_price and available > 0:
+                    orders.append(Order(K200, "sell", "limit", available, l.tp_price, "tp", lot_id=idx))
 
     # ── K200 그리드 매수 (하락장 정지)
     gap_cancel_below: int | None = None

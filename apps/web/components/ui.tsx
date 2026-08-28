@@ -23,13 +23,14 @@ export function CardTitle({ children, right }: { children: ReactNode; right?: Re
   );
 }
 
-export function Stat({ label, value, tone = "default", hint }: {
-  label: string; value: ReactNode; tone?: "default" | "up" | "down" | "accent"; hint?: string;
+export function Stat({ label, value, tone = "default", hint, tip }: {
+  label: string; value: ReactNode; tone?: "default" | "up" | "down" | "accent"; hint?: string; tip?: ReactNode;
 }) {
   const color = { default: "text-ink", up: "text-up", down: "text-down", accent: "text-accent" }[tone];
+  const labelEl = tip ? <Tip tip={tip}><span>{label}</span><span className="text-faint">ⓘ</span></Tip> : label;
   return (
     <div className="card px-4 py-3.5">
-      <div className="text-[13px] text-faint">{label}</div>
+      <div className="text-[13px] text-faint">{labelEl}</div>
       <div className={`mt-1 whitespace-nowrap text-[19px] font-bold ${color}`}>{value}</div>
       {hint && <div className="mt-0.5 text-[11px] text-faint">{hint}</div>}
     </div>

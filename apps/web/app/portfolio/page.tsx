@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createChart, IChartApi, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
-import { Badge, Card, CardTitle, EmptyState, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone, Stat } from "../../components/ui";
+import { Badge, Card, CardTitle, EmptyState, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone, Stat, Tip } from "../../components/ui";
 
 type Position = {
   code: string; name: string; qty: number; avg_price: number; price: number; value: number;
@@ -269,14 +269,14 @@ export default function PortfolioPage() {
 
       {sum && (
         <div className="mb-4 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
-          <Stat label="총자산" value={fmtWon(sum.total_equity)} />
-          <Stat label="현금" value={fmtWon(sum.cash)} />
-          <Stat label="주식" value={fmtWon(sum.stock_value)} />
-          <Stat label="실현손익" value={fmtWon(sum.realized_pnl)} tone={pnlTone(sum.realized_pnl)} />
-          <Stat label="평가손익" value={fmtWon(sum.unrealized_pnl)} tone={pnlTone(sum.unrealized_pnl)} />
-          <Stat label={`순손익${includeCosts ? " (비용차감)" : ""}`} value={fmtWon(net)} tone={pnlTone(net)} />
-          <Stat label="TWR" value={fmtPct(sum.twr, 2)} />
-          <Stat label="XIRR" value={fmtPct(sum.xirr, 2)} />
+          <Stat label="총자산" value={fmtWon(sum.total_equity)} tip="현금 + 보유 주식 평가액(최근 종가 기준)의 합" />
+          <Stat label="현금" value={fmtWon(sum.cash)} tip="입금 − 출금 − 매수금액 + 매도금액의 원장 잔액" />
+          <Stat label="주식" value={fmtWon(sum.stock_value)} tip="보유 수량 × 최근 종가 (지연 시세)" />
+          <Stat label="실현손익" value={fmtWon(sum.realized_pnl)} tone={pnlTone(sum.realized_pnl)} tip="매도로 확정된 손익의 누적 — 매도가와 매수가(FIFO 선입선출 매칭)의 차이" />
+          <Stat label="평가손익" value={fmtWon(sum.unrealized_pnl)} tone={pnlTone(sum.unrealized_pnl)} tip="아직 팔지 않은 보유분의 손익 — (현재가 − 평균단가) × 보유 수량" />
+          <Stat label={`순손익${includeCosts ? " (비용차감)" : ""}`} value={fmtWon(net)} tone={pnlTone(net)} tip="실현손익 + 평가손익 − 추정 수수료(체크 시). 이 계좌의 전체 성과 금액" />
+          <Stat label="TWR" value={fmtPct(sum.twr, 2)} tip="시간가중수익률 — 입출금 시점의 영향을 제거한 운용 성과. 펀드 수익률과 같은 방식이며, 입금이 많아도 왜곡되지 않습니다" />
+          <Stat label="XIRR" value={fmtPct(sum.xirr, 2)} tip="내부수익률(연환산) — 입출금 현금흐름과 현재 평가액으로 계산한 '내 돈 기준' 연 수익률" />
         </div>
       )}
 
