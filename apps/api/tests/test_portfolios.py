@@ -129,17 +129,34 @@ class TestPortfolioApi:
         s2 = client.get("/portfolio/summary", headers=h2).json()
         assert s2["positions"] == []  # 타인 포지션 미노출
 
-    def test_from_backtest_conversion(self):
+    def test_from_backtest_conversion_seeds_state(self):
+        """전환 시 백테스트 종료 상태(현금·보유)를 이어받는다 (2026-08-28 지시)."""
+        from tests.test_backtest_api import run_job_inline, seed_synthetic
+
+        with SessionLocal() as s:
+            seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
         client, h = self._client_token()
         bt = client.post("/backtests", json={"capital": 50_000_000, "date_from": "2024-01-02",
-                                             "date_to": "2025-01-02"}, headers=h).json()
+                                             "date_to": "2025-08-01"}, headers=h).json()
+        # 미완료 잡 전환 거부
+        assert client.post(f"/portfolios/from-backtest/{bt['id']}", headers=h).status_code == 409
+        run_job_inline(bt["id"])
         r = client.post(f"/portfolios/from-backtest/{bt['id']}", headers=h)
         assert r.status_code == 201
         pf = r.json()
-        assert pf["backtest_id"] == bt["id"]
-        s = client.get(f"/portfolio/summary?portfolio_id={pf['id']}", headers=h).json()
-        assert s["portfolio"]["kind"] == "from_backtest"
-        assert s["portfolio"]["backtest_id"] == bt["id"]
+        assert pf["backtest_id"] == bt["id"] and "seeded_cash" in pf
+        s2 = client.get(f"/portfolio/summary?portfolio_id={pf['id']}", headers=h).json()
+        assert s2["portfolio"]["kind"] == "from_backtest"
+        # 총자산(시드 현금+보유 평가) ≈ 백테스트 최종 평가액 (같은 종가 기준 — 반올림 오차 허용)
+        got = client.get(f"/backtests/{bt['id']}", headers=h).json()
+        final_eq = got["equity"][-1]["equity"]
+        assert abs(s2["total_equity"] - final_eq) / final_eq < 0.01
+        # 거래 내역 엔드포인트 — 시드 입금 + 이관 매수 확인
+        txs = client.get(f"/portfolio/transactions?portfolio_id={pf['id']}", headers=h).json()["items"]
+        kinds = {t["kind"] for t in txs}
+        assert "deposit" in kinds
+        if pf["seeded_lots"] > 0:
+            assert "buy" in kinds
 
     def test_target_stop_meta(self):
         client, h = self._client_token()

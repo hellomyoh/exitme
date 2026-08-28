@@ -48,8 +48,10 @@ export default function SimulatorPage() {
   const [journalBusy, setJournalBusy] = useState(false);
   const [tradedOnly, setTradedOnly] = useState(true);
   const [visibleDays, setVisibleDays] = useState(30);
+  const [show, setShow] = useState({ strategy: true, hold: false, trend: true });
   const chartRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
+  const othersRef = useRef<Job[]>([]);
 
   useEffect(() => {
     void ensureSession().then((ok) => {
@@ -122,8 +124,15 @@ export default function SimulatorPage() {
     drawEquity(job, others);
   }
 
-  function drawEquity(main: Job, others: Job[]) {
+  function toggleSeries(key: "strategy" | "hold" | "trend", value: boolean) {
+    const next = { ...show, [key]: value };
+    setShow(next);
+    if (job) drawEquity(job, othersRef.current, next);
+  }
+
+  function drawEquity(main: Job, others: Job[], opt = show) {
     if (!chartRef.current || !main.equity) return;
+    othersRef.current = others;
     disposeChart();
     const chart = createChart(chartRef.current, {
       layout: { background: { color: "transparent" }, textColor: "#858c9b", attributionLogo: false, fontSize: 12 },
@@ -136,13 +145,21 @@ export default function SimulatorPage() {
       const base = pts[0][key];
       return pts.map((p) => ({ time: p.date, value: (p[key] / base) * 100 }));
     };
-    chart.addSeries(LineSeries, { color: "#b45309", lineWidth: 2, title: "전략" }).setData(norm(main.equity, "equity"));
-    // 종목 추세(매수보유)는 하단 서브페인으로 분리 — 수익 곡선을 가리지 않도록 (2026-08-28 지시)
-    chart.addSeries(AreaSeries, {
-      lineColor: "#64748b", lineWidth: 1, title: "종목 추세",
-      topColor: "rgba(100,116,139,0.14)", bottomColor: "rgba(100,116,139,0.0)",
-      priceLineVisible: false,
-    }, 1).setData(norm(main.equity, "benchmark"));
+    // 시리즈 on/off (2026-08-28 지시) — 전략 수익 / 매수보유 수익(같은 축 비교) / 종목 추세(하단)
+    if (opt.strategy) {
+      chart.addSeries(LineSeries, { color: "#b45309", lineWidth: 2, title: "전략" }).setData(norm(main.equity, "equity"));
+    }
+    if (opt.hold) {
+      chart.addSeries(LineSeries, { color: "#64748b", lineWidth: 1, title: "매수보유" }).setData(norm(main.equity, "benchmark"));
+    }
+    if (opt.trend) {
+      // 종목 추세는 하단 서브페인 — 수익 곡선을 가리지 않음
+      chart.addSeries(AreaSeries, {
+        lineColor: "#64748b", lineWidth: 1, title: "종목 추세",
+        topColor: "rgba(100,116,139,0.14)", bottomColor: "rgba(100,116,139,0.0)",
+        priceLineVisible: false,
+      }, 1).setData(norm(main.equity, "benchmark"));
+    }
     const colors = ["#2563eb", "#7c3aed", "#0e9f6e", "#d92f45"];
     others.forEach((o, idx) => {
       if (o.equity) chart.addSeries(LineSeries, { color: colors[idx % 4], lineWidth: 1, title: `#${o.id}` }).setData(norm(o.equity, "equity"));
@@ -239,19 +256,29 @@ export default function SimulatorPage() {
             <Card>
               <CardTitle>지난 결과</CardTitle>
               <div className="grid gap-1">
-                {history.slice(0, 8).map((j) => (
-                  <div key={j.id} className="flex items-center gap-3 rounded-lg px-2 py-1.5 text-[13px] hover:bg-raised">
-                    <span className="w-10 text-faint">#{j.id}</span>
-                    <Badge tone="default">{(j.params as { etf?: string }).etf ?? "KODEX"}</Badge>
-                    <span className={`w-20 text-right font-semibold ${(j.kpi?.total_return ?? 0) >= 0 ? "text-up" : "text-down"}`}>
-                      {fmtPct(j.kpi?.total_return)}
-                    </span>
-                    <span className="ml-auto flex gap-1.5">
-                      <button className="btn !px-2.5 !py-1 text-xs" onClick={() => void showResult(j.id)}>보기</button>
-                      <button className="btn-ghost btn !px-2.5 !py-1 text-xs" onClick={() => clone(j)}>복제</button>
-                    </span>
-                  </div>
-                ))}
+                {history.slice(0, 8).map((j) => {
+                  const p = j.params as { etf?: string; capital?: number; date_from?: string; date_to?: string; flags?: Flags };
+                  const offFlags = p.flags ? FLAG_LABELS.filter(([k]) => p.flags![k] === false).map(([, l]) => l.slice(0, 1)) : [];
+                  return (
+                    <div key={j.id} className="rounded-lg px-2 py-2 hover:bg-raised">
+                      <div className="flex items-center gap-3 text-[14px]">
+                        <span className="w-10 text-faint">#{j.id}</span>
+                        <Badge tone="default">{p.etf ?? "KODEX"}</Badge>
+                        <span className={`w-20 text-right font-bold ${(j.kpi?.total_return ?? 0) >= 0 ? "text-up" : "text-down"}`}>
+                          {fmtPct(j.kpi?.total_return)}
+                        </span>
+                        <span className="ml-auto flex gap-1.5">
+                          <button className="btn !px-2.5 !py-1 text-[12.5px]" onClick={() => void showResult(j.id)}>보기</button>
+                          <button className="btn-ghost btn !px-2.5 !py-1 text-[12.5px]" onClick={() => clone(j)}>복제</button>
+                        </span>
+                      </div>
+                      <div className="mt-1 pl-10 text-[12.5px] text-faint">
+                        {p.date_from} ~ {p.date_to} · 자본 {p.capital ? Math.round(p.capital / 10000).toLocaleString() + "만원" : "—"}
+                        {offFlags.length > 0 && <span className="text-warn"> · 절제 OFF: {offFlags.join(" ")}</span>}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </Card>
           )}
@@ -272,6 +299,21 @@ export default function SimulatorPage() {
 
       {step === 3 && job && (
         <div className="grid gap-4">
+          {(() => {
+            const p = job.params as { etf?: string; capital?: number; date_from?: string; date_to?: string; flags?: Flags };
+            const offFlags = p.flags ? FLAG_LABELS.filter(([k]) => p.flags![k] === false).map(([, l]) => l) : [];
+            return (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[14px] text-muted">
+                <Badge tone="default">#{job.id}</Badge>
+                <span>주력 ETF <b className="text-ink">{p.etf === "TIGER" ? "TIGER 200" : "KODEX 200"}</b></span>
+                <span>기간 <b className="text-ink">{p.date_from} ~ {p.date_to}</b></span>
+                <span>자본금 <b className="text-ink">{p.capital?.toLocaleString()}원</b></span>
+                <span>{offFlags.length > 0
+                  ? <span className="text-warn">절제 OFF: {offFlags.join(", ")}</span>
+                  : "전 모듈 ON (RAVG v2 기본)"}</span>
+              </div>
+            );
+          })()}
           {job.stale && <Callout icon="⚠️">시세 데이터가 갱신되었습니다(stale) — 재실행을 권장합니다.</Callout>}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
             <Stat label="총수익률" value={fmtPct(kpi?.total_return)} tone={(kpi?.total_return ?? 0) >= 0 ? "up" : "down"} />
@@ -284,12 +326,31 @@ export default function SimulatorPage() {
           </div>
           <Card>
             <CardTitle right={
-              <span className="flex items-center gap-2 text-xs text-faint">
-                <i className="inline-block h-0.5 w-4 bg-accent" />전략 수익 (상단)
-                <i className="inline-block h-0.5 w-4 bg-[#64748b]" />종목 추세 (하단)
+              <span className="flex items-center gap-4 text-[13px] font-normal normal-case text-muted">
+                <label className="flex cursor-pointer items-center gap-1.5">
+                  <input type="checkbox" className="accent-[#b45309]" checked={show.strategy}
+                    onChange={(e) => toggleSeries("strategy", e.target.checked)} />
+                  <i className="inline-block h-0.5 w-4 bg-accent" />전략 수익
+                </label>
+                <label className="flex cursor-pointer items-center gap-1.5">
+                  <input type="checkbox" className="accent-[#64748b]" checked={show.hold}
+                    onChange={(e) => toggleSeries("hold", e.target.checked)} />
+                  <i className="inline-block h-0.5 w-4 bg-[#64748b]" />매수보유 수익
+                </label>
+                <label className="flex cursor-pointer items-center gap-1.5">
+                  <input type="checkbox" className="accent-[#64748b]" checked={show.trend}
+                    onChange={(e) => toggleSeries("trend", e.target.checked)} />
+                  <span className="inline-block h-2 w-4 rounded-sm bg-[rgba(100,116,139,0.3)]" />종목 추세 (하단)
+                </label>
               </span>
             }>자산곡선 <span className="normal-case text-faint">· 초기자본 = 100 정규화</span></CardTitle>
             <div ref={chartRef} className="h-96" />
+            <p className="mt-2 text-[12.5px] leading-relaxed text-faint">
+              <b className="text-muted">전략 수익</b> = RAVG v2를 따랐을 때의 자산 곡선 ·
+              <b className="text-muted"> 매수보유 수익</b> = 같은 돈으로 종목을 사서 계속 들고 있었을 때(벤치마크, 같은 축 비교용) ·
+              <b className="text-muted"> 종목 추세</b> = 종목 가격 흐름(하단 별도 영역이라 수익 곡선을 가리지 않음).
+              체크박스로 켜고 끌 수 있습니다.
+            </p>
           </Card>
           <Card>
             <div className="flex flex-wrap items-center gap-2">
@@ -300,7 +361,7 @@ export default function SimulatorPage() {
                 if (r.ok) router.push("/portfolio");
               })()}>실전매매로 전환 →</button>
               <span className="ml-auto flex flex-wrap items-center gap-2 text-[13px] text-muted">
-                오버레이:
+                <span className="text-faint">오버레이 = 지난 백테스트를 같은 차트에 겹쳐 비교 (최대 4개):</span>
                 {history.filter((h) => h.id !== job.id).slice(0, 8).map((h) => (
                   <label key={h.id} className="flex cursor-pointer items-center gap-1">
                     <input type="checkbox" className="accent-[#b45309]" checked={overlay.includes(h.id)}

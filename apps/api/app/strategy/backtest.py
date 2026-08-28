@@ -65,6 +65,7 @@ class BacktestResult:
     cash_curve: list[float] = field(default_factory=list)
     qty_200: list[int] = field(default_factory=list)
     qty_lev: list[int] = field(default_factory=list)
+    final_lots: list[dict] = field(default_factory=list)  # 실전 전환 시드용
 
 
 def _fee(value: float, annual_rate: float, days: float) -> float:
@@ -289,9 +290,14 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
         plans.append(p_final)
 
     kpi = compute_kpi(equity_curve, capital, ledger.closed)
+    final_lots = [
+        {"instrument": l.instrument, "qty": l.qty, "price": l.price,
+         "date": dates[min(l.buy_index, len(dates) - 1)]}
+        for l in pf.lots
+    ]
     return BacktestResult(out_dates, equity_curve, bench_curve, regimes, exposures,
                           ledger.closed, len(pf.lots), kpi, plans,
-                          fills, cash_curve, qty_200_curve, qty_lev_curve)
+                          fills, cash_curve, qty_200_curve, qty_lev_curve, final_lots)
 
 
 def _calendar_days(d1: str, d2: str) -> float:

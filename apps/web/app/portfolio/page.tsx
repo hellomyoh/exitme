@@ -18,6 +18,20 @@ type Summary = {
   twr: number | null; xirr: number | null; positions: Position[];
 };
 type PortfolioItem = { id: number; name: string; kind: string };
+type Tx = {
+  id: number; kind: string; code: string | null; name: string | null;
+  qty: number | null; price: number | null; amount: number | null;
+  realized_pnl: number | null; executed_at: string; memo: string | null;
+};
+type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
+type Signal = { status: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number };
+
+const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
+const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
+const ORDER_KIND_KO: Record<string, string> = {
+  grid1: "그리드 1차", grid2: "그리드 2차", grid3: "그리드 3차", tp: "익절", reduce: "축소",
+  lev_strat: "레버 전략", lev_tact1: "레버 전술1", lev_tact2: "레버 전술2", lev_tact_exit: "전술 이탈", lev_liq: "레버 청산",
+};
 
 const toneCls = { up: "text-up", down: "text-down", default: "text-ink" };
 
@@ -30,12 +44,24 @@ export default function PortfolioPage() {
   const [form, setForm] = useState({ kind: "buy", code: "069500", qty: "", price: "", amount: "", memo: "" });
   const [msg, setMsg] = useState("");
   const [newName, setNewName] = useState("");
+  const [showStart, setShowStart] = useState(false);
+  const [startMode, setStartMode] = useState<"fresh" | "holdings">("fresh");
+  const [startCash, setStartCash] = useState("");
+  const [holdings, setHoldings] = useState<{ code: string; qty: string; price: string }[]>([
+    { code: "069500", qty: "", price: "" },
+  ]);
+  const [txs, setTxs] = useState<Tx[]>([]);
+  const [signal, setSignal] = useState<Signal | null>(null);
 
   const load = useCallback(async (id: number | null) => {
     const res = await apiFetch(`/portfolio/summary${id ? `?portfolio_id=${id}` : ""}`);
     if (res.ok) setSum((await res.json()) as Summary);
     const pl = await apiFetch("/portfolios");
     if (pl.ok) setPortfolios(((await pl.json()) as { items: PortfolioItem[] }).items);
+    const tx = await apiFetch(`/portfolio/transactions${id ? `?portfolio_id=${id}` : ""}`);
+    if (tx.ok) setTxs(((await tx.json()) as { items: Tx[] }).items);
+    const sg = await apiFetch("/signals/daily");
+    if (sg.ok) setSignal((await sg.json()) as Signal);
   }, []);
 
   useEffect(() => {
@@ -66,14 +92,36 @@ export default function PortfolioPage() {
     }
   }
 
-  async function createPortfolio() {
-    if (!newName.trim()) return;
-    const res = await apiFetch("/portfolios", { method: "POST", body: JSON.stringify({ name: newName.trim() }) });
-    if (res.ok) {
-      const { id } = (await res.json()) as { id: number };
-      setNewName("");
-      setPid(id);
+  async function startPortfolio() {
+    const name = newName.trim() || `실전매매 ${new Date().toISOString().slice(0, 10)}`;
+    const res = await apiFetch("/portfolios", { method: "POST", body: JSON.stringify({ name }) });
+    if (!res.ok) return;
+    const { id } = (await res.json()) as { id: number };
+    const now = new Date().toISOString();
+    const cash = Number(startCash.replaceAll(",", "")) || 0;
+    if (startMode === "fresh") {
+      // 오늘부터 새로 시작 — 이전 기록 없음, (선택) 초기 입금만
+      if (cash > 0) {
+        await apiFetch("/positions", { method: "POST", body: JSON.stringify({
+          portfolio_id: id, kind: "deposit", amount: cash, executed_at: now, memo: "시작 입금" }) });
+      }
+    } else {
+      // 현재 보유분 입력하고 시작 — 입금(현금+보유 원가) 후 보유분을 오늘자 매수로 등록
+      const rows = holdings.filter((h) => Number(h.qty) > 0 && Number(h.price) > 0);
+      const cost = rows.reduce((a, h) => a + Number(h.qty) * Number(h.price), 0);
+      if (cash + cost > 0) {
+        await apiFetch("/positions", { method: "POST", body: JSON.stringify({
+          portfolio_id: id, kind: "deposit", amount: cash + cost, executed_at: now, memo: "시작 입금 (현금+보유 원가)" }) });
+      }
+      for (const h of rows) {
+        await apiFetch("/positions", { method: "POST", body: JSON.stringify({
+          portfolio_id: id, kind: "buy", code: h.code, qty: Number(h.qty), price: Number(h.price),
+          executed_at: now, memo: "보유분 등록" }) });
+      }
     }
+    setShowStart(false); setNewName(""); setStartCash("");
+    setHoldings([{ code: "069500", qty: "", price: "" }]);
+    setPid(id);
   }
 
   async function deletePortfolio() {
@@ -97,16 +145,74 @@ export default function PortfolioPage() {
         </select>
         <button className="btn-ghost btn !py-2 text-[14px] !text-up" onClick={() => void deletePortfolio()}>이 포트 삭제</button>
         <span className="mx-1 h-5 w-px bg-line-strong" />
-        <input className="input w-40 !py-2" placeholder="새 실전매매 이름" value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && void createPortfolio()} />
-        <button className="btn !py-2" onClick={() => void createPortfolio()}>+ 추가</button>
+        <button className="btn btn-primary !py-2" onClick={() => setShowStart(!showStart)}>＋ 새 실전매매 시작</button>
         <label className="flex items-center gap-1.5 text-[13px] text-muted">
           <input type="checkbox" className="accent-[#b45309]" checked={includeCosts} onChange={(e) => setIncludeCosts(e.target.checked)} />
           비용 포함 (추정 수수료)
         </label>
         {sum?.as_of && <span className="ml-auto text-xs text-faint">기준일 {sum.as_of} · 지연 시세</span>}
       </div>
+
+      {showStart && (
+        <Card className="mb-4 border-accent">
+          <CardTitle>새 실전매매 시작</CardTitle>
+          <div className="mb-4 grid gap-2 sm:grid-cols-2">
+            <button onClick={() => setStartMode("fresh")}
+              className={`rounded-xl border p-4 text-left transition-colors ${startMode === "fresh" ? "border-accent bg-accent-dim" : "border-line bg-inset hover:border-line-strong"}`}>
+              <div className="font-bold">오늘부터 새로 시작</div>
+              <div className="mt-0.5 text-[13px] text-faint">이전 거래 기록 없음 — 빈 계좌로 시작 (초기 입금 선택)</div>
+            </button>
+            <button onClick={() => setStartMode("holdings")}
+              className={`rounded-xl border p-4 text-left transition-colors ${startMode === "holdings" ? "border-accent bg-accent-dim" : "border-line bg-inset hover:border-line-strong"}`}>
+              <div className="font-bold">현재 보유분 입력하고 시작</div>
+              <div className="mt-0.5 text-[13px] text-faint">이미 들고 있는 주식 수량·평단을 등록하고 이어서 관리</div>
+            </button>
+          </div>
+          <div className="grid gap-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="grid gap-1 text-[13px] text-faint">이름
+                <input className="input w-52" placeholder={`실전매매 ${new Date().toISOString().slice(0, 10)}`}
+                  value={newName} onChange={(e) => setNewName(e.target.value)} /></label>
+              <label className="grid gap-1 text-[13px] text-faint">{startMode === "fresh" ? "초기 입금(원, 선택)" : "보유 외 현금(원)"}
+                <input className="input w-44" placeholder="예: 50000000" value={startCash}
+                  onChange={(e) => setStartCash(e.target.value)} /></label>
+            </div>
+            {startMode === "holdings" && (
+              <div className="grid gap-2">
+                <div className="text-[13px] font-semibold text-muted">보유 종목 (수량 · 평균단가)</div>
+                {holdings.map((h, i) => (
+                  <div key={i} className="flex flex-wrap items-center gap-2">
+                    <select className="input !py-2" value={h.code}
+                      onChange={(e) => setHoldings(holdings.map((x, j) => j === i ? { ...x, code: e.target.value } : x))}>
+                      <option value="069500">KODEX 200</option>
+                      <option value="102110">TIGER 200</option>
+                      <option value="122630">KODEX 레버리지</option>
+                    </select>
+                    <input className="input w-28 !py-2" placeholder="수량(주)" value={h.qty}
+                      onChange={(e) => setHoldings(holdings.map((x, j) => j === i ? { ...x, qty: e.target.value } : x))} />
+                    <input className="input w-36 !py-2" placeholder="평균단가(원)" value={h.price}
+                      onChange={(e) => setHoldings(holdings.map((x, j) => j === i ? { ...x, price: e.target.value } : x))} />
+                    {holdings.length > 1 && (
+                      <button className="btn-ghost btn !px-2 !py-1.5 !text-up" onClick={() => setHoldings(holdings.filter((_, j) => j !== i))}>✕</button>
+                    )}
+                  </div>
+                ))}
+                <button className="btn-ghost btn w-fit !py-1.5 text-[13.5px]" onClick={() => setHoldings([...holdings, { code: "069500", qty: "", price: "" }])}>
+                  ＋ 종목 추가
+                </button>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button className="btn btn-primary" onClick={() => void startPortfolio()}>시작하기</button>
+              <button className="btn-ghost btn" onClick={() => setShowStart(false)}>취소</button>
+            </div>
+            <p className="text-[12.5px] text-faint">
+              💡 백테스트 결과를 그대로 이어받아 시작하려면 시뮬레이터 결과 화면의 &quot;실전매매로 전환&quot;을 사용하세요 —
+              백테스트 종료 시점의 현금·보유가 자동 등록됩니다.
+            </p>
+          </div>
+        </Card>
+      )}
 
       {sum && (
         <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
@@ -156,6 +262,45 @@ export default function PortfolioPage() {
         </div>
       </Card>
 
+      {/* 오늘의 주문표 (2026-08-28 지시 — 실전매매 중간 섹션) */}
+      <Card className="mb-4">
+        <CardTitle right={<a href="/signals" className="text-[13.5px] font-semibold normal-case text-accent">전체 주문표 →</a>}>
+          오늘의 주문표 {signal?.status === "OK" && (
+            <span className="normal-case text-faint">· {signal.trade_date} 종가 기준 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}</span>
+          )}
+        </CardTitle>
+        {signal?.status === "OK" && signal.orders && signal.orders.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[14.5px]">
+              <thead><tr className="border-b border-line text-left text-[13px] text-faint">
+                <th className="pb-2 font-medium">구분</th><th className="pb-2 font-medium">종목</th>
+                <th className="pb-2 font-medium">방향</th>
+                <th className="pb-2 text-right font-medium">지정가</th>
+                <th className="pb-2 text-right font-medium">수량 (모델 1억)</th>
+              </tr></thead>
+              <tbody>
+                {signal.orders.map((o, i) => (
+                  <tr key={i} className="border-b border-line/50 last:border-0">
+                    <td className="py-2"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge></td>
+                    <td className="py-2">{o.instrument === "K200" ? "KODEX 200" : "KODEX 레버리지"}</td>
+                    <td className={`py-2 font-bold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
+                    <td className="table-num py-2 font-semibold">{o.price ? o.price.toLocaleString() : "시가"}</td>
+                    <td className="table-num py-2">{o.qty.toLocaleString()}주</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {signal.gap_cancel_below && (
+              <p className="mt-2 text-[13px] text-faint">⚠️ 시가 {signal.gap_cancel_below.toLocaleString()}원 이하 출발 시 그리드 전량 취소 — 상세는 전체 주문표 참조</p>
+            )}
+          </div>
+        ) : (
+          <p className="text-[14px] text-faint">
+            {signal?.status === "OK" ? "오늘은 신규 주문이 없습니다." : "시그널이 아직 없습니다 — 장 마감 배치(16:05) 이후 표시됩니다."}
+          </p>
+        )}
+      </Card>
+
       {/* 포지션 카드 */}
       {sum?.positions.length === 0 ? (
         <EmptyState icon="📒" title="보유 포지션이 없습니다"
@@ -200,6 +345,69 @@ export default function PortfolioPage() {
           })}
         </div>
       )}
+
+      {/* 날짜별 거래 내역 (2026-08-28 지시 — 시뮬레이터 저널과 동일 UX, 기본 닫힘) */}
+      {txs.length > 0 && (() => {
+        const byDate = new Map<string, Tx[]>();
+        for (const t of txs) {
+          const d = t.executed_at.slice(0, 10);
+          if (!byDate.has(d)) byDate.set(d, []);
+          byDate.get(d)!.push(t);
+        }
+        const days = Array.from(byDate.entries());
+        return (
+          <Card className="mt-4">
+            <CardTitle>날짜별 거래 내역</CardTitle>
+            <div className="grid gap-1.5">
+              {days.map(([d, list]) => {
+                const realized = list.reduce((a, t) => a + (t.realized_pnl ?? 0), 0);
+                const hasSell = list.some((t) => t.kind === "sell");
+                return (
+                  <details key={d} className="rounded-xl border border-line bg-inset">
+                    <summary className="flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-1 rounded-xl px-4 py-3 text-[14.5px] transition-colors hover:bg-raised/60">
+                      <b className="w-24">{d}</b>
+                      <span className="text-[13.5px] text-muted">거래 {list.length}건</span>
+                      {hasSell && (
+                        <span className={`text-[13.5px] font-bold ${realized > 0 ? "text-up" : realized < 0 ? "text-down" : "text-muted"}`}>
+                          당일 실현손익 {realized >= 0 ? "+" : ""}{realized.toLocaleString()}원
+                        </span>
+                      )}
+                      <span className="ml-auto text-[13px] text-faint">펼치기</span>
+                    </summary>
+                    <div className="overflow-x-auto border-t-2 border-line-strong px-4 py-3">
+                      <table className="w-full text-[14px]">
+                        <thead><tr className="text-left text-xs text-faint">
+                          <th className="pb-1 font-medium">시각</th><th className="pb-1 font-medium">구분</th>
+                          <th className="pb-1 font-medium">종목</th>
+                          <th className="pb-1 text-right font-medium">단가/금액</th>
+                          <th className="pb-1 text-right font-medium">수량</th>
+                          <th className="pb-1 text-right font-medium">실현손익</th>
+                          <th className="pb-1 pl-3 font-medium">메모</th>
+                        </tr></thead>
+                        <tbody>
+                          {list.map((t) => (
+                            <tr key={t.id} className="border-t border-line/40">
+                              <td className="py-1.5 text-faint">{t.executed_at.slice(11, 16)}</td>
+                              <td className={`py-1.5 font-semibold ${t.kind === "buy" ? "text-up" : t.kind === "sell" ? "text-down" : "text-muted"}`}>{TX_KO[t.kind]}</td>
+                              <td className="py-1.5">{t.name ?? "—"}</td>
+                              <td className="table-num py-1.5">{(t.price ?? t.amount ?? 0).toLocaleString()}원</td>
+                              <td className="table-num py-1.5">{t.qty ? `${t.qty.toLocaleString()}주` : "—"}</td>
+                              <td className={`table-num py-1.5 font-semibold ${!t.realized_pnl ? "text-faint" : t.realized_pnl > 0 ? "text-up" : "text-down"}`}>
+                                {t.realized_pnl !== null && t.realized_pnl !== undefined ? `${t.realized_pnl >= 0 ? "+" : ""}${t.realized_pnl.toLocaleString()}원` : "—"}
+                              </td>
+                              <td className="py-1.5 pl-3 text-[13px] text-faint">{t.memo ?? ""}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+          </Card>
+        );
+      })()}
     </main>
   );
 }

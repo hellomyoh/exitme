@@ -178,16 +178,86 @@ def set_position_meta(pid: int, code: str, body: MetaIn, user_id: int = Depends(
 @router.post("/portfolios/from-backtest/{bt_id}", status_code=201)
 def create_from_backtest(bt_id: int, user_id: int = Depends(current_user_id),
                          session: Session = Depends(get_session)) -> dict:
+    """백테스트 → 실전 전환 — 종료 시점 상태(현금·보유 로트)를 시드해 그대로 이어서 운영 (2026-08-28 지시).
+
+    입금(현금+보유 원가 합) + 로트별 매수 거래(원 체결가·일자)로 등록된다. 과거 실현손익 이력은 이관하지 않는다.
+    """
+    from datetime import time as _time, timedelta as _td, timezone as _tz
+
+    from app.backtests import load_aligned_bars, pair_from_params
+    from app.strategy.backtest import run_backtest
+    from app.strategy.params import AblationFlags, Params
+
     bt = session.get(Backtest, bt_id)
     if bt is None or bt.user_id != user_id:
         raise HTTPException(status_code=404, detail="backtest not found")
+    if bt.status != "DONE":
+        raise HTTPException(status_code=409, detail=f"cannot convert job in status {bt.status}")
+
+    p = bt.params
+    code_200, code_lev = pair_from_params(p)
+    bars_200, bars_lev, _fp = load_aligned_bars(
+        session, date.fromisoformat(p["date_from"]), date.fromisoformat(p["date_to"]),
+        codes=(code_200, code_lev))
+    params = Params(**p.get("costs", {}), flags=AblationFlags(**p.get("flags", {})))
+    result = run_backtest(bars_200, bars_lev, float(p["capital"]), params)
+
     pf = TradePortfolio(user_id=user_id, name=f"실전 (백테스트 #{bt_id})",
                         kind="from_backtest", backtest_id=bt_id, params=bt.params)
     session.add(pf)
+    session.flush()
+
+    kst = _tz(_td(hours=9))
+    end_dt = datetime.combine(date.fromisoformat(p["date_to"]), _time(15, 30), tzinfo=kst)
+    cash = round(result.cash_curve[-1]) if result.cash_curve else int(p["capital"])
+    lots_cost = sum(l["qty"] * l["price"] for l in result.final_lots)
+    session.add(TradeTransaction(portfolio_id=pf.id, kind="deposit", amount=cash + lots_cost,
+                                 executed_at=end_dt, memo=f"백테스트 #{bt_id} 전환 시드"))
+    code_map = {"K200": code_200, "LEV": code_lev}
+    seeded = 0
+    for l in result.final_lots:
+        inst = session.scalar(select(Instrument).where(Instrument.code == code_map[l["instrument"]]))
+        buy_dt = datetime.combine(date.fromisoformat(l["date"]), _time(15, 30), tzinfo=kst)
+        session.add(PositionLot(portfolio_id=pf.id, instrument_id=inst.id,
+                                qty_open=l["qty"], price=l["price"], opened_at=buy_dt))
+        session.add(TradeTransaction(portfolio_id=pf.id, kind="buy", instrument_id=inst.id,
+                                     qty=l["qty"], price=l["price"], executed_at=buy_dt,
+                                     memo="백테스트 보유분 이관"))
+        seeded += 1
+
     from app.dashboard import record_event
     record_event(session, "portfolio_created_from_backtest", user_id)
     session.commit()
-    return {"id": pf.id, "name": pf.name, "backtest_id": bt_id}
+    return {"id": pf.id, "name": pf.name, "backtest_id": bt_id,
+            "seeded_cash": cash, "seeded_lots": seeded}
+
+
+@router.get("/portfolio/transactions")
+def list_transactions(portfolio_id: int | None = None, limit: int = 500,
+                      user_id: int = Depends(current_user_id),
+                      session: Session = Depends(get_session)) -> dict:
+    """거래 내역 — 날짜별 그룹은 클라이언트에서 (시뮬레이터 저널과 동일 UX)."""
+    pf = (_owned_portfolio(session, portfolio_id, user_id)
+          if portfolio_id else _default_portfolio(session, user_id))
+    session.commit()
+    txs = session.scalars(
+        select(TradeTransaction).where(TradeTransaction.portfolio_id == pf.id)
+        .order_by(TradeTransaction.executed_at.desc(), TradeTransaction.id.desc()).limit(min(limit, 2000))
+    ).all()
+    code_cache: dict[int, Instrument] = {}
+    def inst_of(iid):
+        if iid not in code_cache:
+            code_cache[iid] = session.get(Instrument, iid)
+        return code_cache[iid]
+    return {"portfolio_id": pf.id, "items": [
+        {"id": t.id, "kind": t.kind,
+         "code": inst_of(t.instrument_id).code if t.instrument_id else None,
+         "name": inst_of(t.instrument_id).name if t.instrument_id else None,
+         "qty": t.qty, "price": t.price, "amount": t.amount,
+         "realized_pnl": t.realized_pnl,
+         "executed_at": t.executed_at.isoformat(), "memo": t.memo, "tags": t.tags}
+        for t in txs
+    ]}
 
 
 class PortfolioIn(BaseModel):
