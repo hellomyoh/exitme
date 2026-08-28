@@ -26,6 +26,11 @@
 
 - [2026-08-28] compose 서비스 재생성 시 nginx가 업스트림 IP를 캐시해 502를 반환한다 — api/web 재생성 후에는 `docker compose restart nginx` 필요. (근거: /api/health 502 재현 후 재시작으로 해소. 운영 개선: resolver + 변수 proxy_pass 는 TODO)
 
+## Next.js / lightweight-charts
+
+- [2026-08-28] **Windows Docker bind mount 는 파일 변경 이벤트를 컨테이너에 전달하지 못한다** — Next dev 가 stale 컴파일을 계속 서빙(수정한 페이지가 반영 안 됨). `WATCHPACK_POLLING=true`(+CHOKIDAR_USEPOLLING) 로 해결, 소스 수정 → 8초 내 반영 실검증. (근거: 홈 리다이렉트 미반영 재현 후 해결)
+- [2026-08-28] lightweight-charts `chart.remove()` 후 ref 를 null 로 비우지 않으면 라우트 전환/재렌더에서 이중 remove → "Object is disposed" 런타임 크래시(클라이언트 라우팅까지 마비). dispose 헬퍼(try/catch + ref null)로 통일. (근거: 차트 페이지 크래시 재현 후 수정)
+
 ## KIS Open API
 
 - [2026-08-28] 일봉 API(FHKST03010100)는 호출당 최대 100건 — 140 달력일 창으로 페이지네이션하면 안전하다. 모의(vps)에서 TR ID V-치환은 주문 계열(T…)만 적용되고 시세 TR(FHKST…)은 공통. (근거: 공식 GitHub https://github.com/koreainvestment/open-trading-api 예제 분석 + 2026-08-28 실 호출로 10년 시딩 검증)

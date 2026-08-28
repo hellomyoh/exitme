@@ -41,11 +41,16 @@ export default function DashboardPage() {
     if (c.ok) setCalendar(((await c.json()) as { items: CalItem[] }).items);
   }, []);
 
+  const disposeChart = useCallback(() => {
+    try { chartApi.current?.remove(); } catch { /* already disposed */ }
+    chartApi.current = null;
+  }, []);
+
   const loadTrend = useCallback(async (r: string) => {
     const res = await apiFetch(`/portfolio/trend?range_=${r}`);
     if (!res.ok || !trendRef.current) return;
     const items = ((await res.json()) as { items: { date: string; total: number }[] }).items;
-    chartApi.current?.remove();
+    disposeChart();
     if (items.length < 2) return;
     const chart = createChart(trendRef.current, {
       layout: { background: { color: "#111117" }, textColor: "#c9c9d1", attributionLogo: false },
@@ -55,11 +60,12 @@ export default function DashboardPage() {
     chartApi.current = chart;
     chart.addSeries(LineSeries, { color: "#e8b339", lineWidth: 2 }).setData(items.map((i) => ({ time: i.date, value: i.total })));
     chart.timeScale().fitContent();
-  }, []);
+  }, [disposeChart]);
 
   useEffect(() => {
     if (!hasToken()) { router.push("/login"); return; }
     void load().then(() => loadTrend(range));
+    return () => disposeChart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

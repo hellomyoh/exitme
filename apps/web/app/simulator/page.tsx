@@ -50,6 +50,7 @@ export default function SimulatorPage() {
   useEffect(() => {
     if (!hasToken()) router.push("/login");
     void loadHistory();
+    return () => disposeChart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -110,9 +111,14 @@ export default function SimulatorPage() {
     drawEquity(job, others);
   }
 
+  function disposeChart() {
+    try { chartApi.current?.remove(); } catch { /* already disposed */ }
+    chartApi.current = null;
+  }
+
   function drawEquity(main: Job, others: Job[]) {
     if (!chartRef.current || !main.equity) return;
-    chartApi.current?.remove();
+    disposeChart();
     const chart = createChart(chartRef.current, {
       layout: { background: { color: "#111117" }, textColor: "#c9c9d1", attributionLogo: false },
       grid: { vertLines: { color: "#22222c" }, horzLines: { color: "#22222c" } },

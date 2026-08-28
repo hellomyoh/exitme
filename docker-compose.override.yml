@@ -15,6 +15,10 @@ services:
 
   web:
     command: npm run dev
+    environment:
+      # Windows bind mount 는 파일 변경 이벤트를 전달하지 못함 → 폴링 감시 (NOTES.md)
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
     volumes:
       - ./apps/web:/srv/web
       - /srv/web/node_modules

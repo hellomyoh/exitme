@@ -86,9 +86,17 @@ export default function ChartPage() {
     );
   }
 
+  function disposeChart() {
+    // lightweight-charts: remove() 후 ref 를 비우지 않으면 이중 remove 시 "Object is disposed" (NOTES.md)
+    try { chartRef.current?.remove(); } catch { /* already disposed */ }
+    chartRef.current = null;
+    candleRef.current = null;
+    priceLinesRef.current = [];
+  }
+
   function draw(bars: Bar[]) {
     if (!containerRef.current) return;
-    chartRef.current?.remove();
+    disposeChart();
     const chart = createChart(containerRef.current, {
       layout: { background: { color: "#111117" }, textColor: "#c9c9d1", attributionLogo: false },
       grid: { vertLines: { color: "#22222c" }, horzLines: { color: "#22222c" } },
@@ -135,7 +143,7 @@ export default function ChartPage() {
 
   useEffect(() => {
     void load(code);
-    return () => chartRef.current?.remove();
+    return () => disposeChart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
