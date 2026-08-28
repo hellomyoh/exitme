@@ -184,3 +184,29 @@ def test_journal_daily_records():
     q_id = client.post("/backtests", json={"capital": 100_000_000, "date_from": "2024-01-02",
                                            "date_to": "2025-08-01"}, headers=h).json()["id"]
     assert client.get(f"/backtests/{q_id}/journal", headers=h).status_code == 409
+
+
+def test_delete_backtest_cascade_and_isolation():
+    """기록 삭제(2026-08-28 지시): 자산곡선 연쇄 삭제, 전환 포트 링크 해제, 타인 404."""
+    client = TestClient(app, base_url="https://testserver")
+    token = make_user(client)
+    h = {"Authorization": f"Bearer {token}"}
+    bt_id = client.post("/backtests", json={"capital": 50_000_000, "date_from": "2024-01-02",
+                                            "date_to": "2025-08-01"}, headers=h).json()["id"]
+    run_job_inline(bt_id)
+    pf = client.post(f"/portfolios/from-backtest/{bt_id}", headers=h).json()
+    # 타인 삭제 404
+    client.cookies.clear()
+    t2 = make_user(client)
+    assert client.delete(f"/backtests/{bt_id}", headers={"Authorization": f"Bearer {t2}"}).status_code == 404
+    # 본인 삭제 → 기록 404, 전환 포트는 유지(링크만 해제)
+    assert client.delete(f"/backtests/{bt_id}", headers=h).status_code == 200
+    assert client.get(f"/backtests/{bt_id}", headers=h).status_code == 404
+    s = client.get(f"/portfolio/summary?portfolio_id={pf['id']}", headers=h).json()
+    assert s["portfolio"]["backtest_id"] is None
+    from app.db import SessionLocal
+    from app.models import BacktestEquity
+    from sqlalchemy import select as _sel, func as _f
+    with SessionLocal() as db:
+        left = db.scalar(_sel(_f.count()).where(BacktestEquity.backtest_id == bt_id))
+        assert left == 0  # 자산곡선 연쇄 삭제

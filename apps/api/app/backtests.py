@@ -224,6 +224,22 @@ def get_backtest_journal(bt_id: int, user_id: int = Depends(current_user_id),
     return {"id": bt_id, "stale": stale, "items": items}
 
 
+@router.delete("/backtests/{bt_id}")
+def delete_backtest(bt_id: int, user_id: int = Depends(current_user_id),
+                    session: Session = Depends(get_session)) -> dict:
+    """백테스트 기록 삭제 (2026-08-28 지시) — 자산곡선 연쇄 삭제, 전환된 실전 포트는 링크만 해제."""
+    from app.models import TradePortfolio
+
+    bt = _get_owned(session, bt_id, user_id)
+    if bt.status == "RUNNING":
+        raise HTTPException(status_code=409, detail="running job — cancel it first")
+    session.query(TradePortfolio).filter(TradePortfolio.backtest_id == bt_id).update({"backtest_id": None})
+    session.query(BacktestEquity).filter(BacktestEquity.backtest_id == bt_id).delete()
+    session.delete(bt)
+    session.commit()
+    return {"deleted": bt_id}
+
+
 @router.post("/backtests/{bt_id}/cancel")
 def cancel_backtest(bt_id: int, user_id: int = Depends(current_user_id),
                     session: Session = Depends(get_session)) -> dict:

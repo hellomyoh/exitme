@@ -270,6 +270,12 @@ export default function SimulatorPage() {
                         <span className="ml-auto flex gap-1.5">
                           <button className="btn !px-2.5 !py-1 text-[12.5px]" onClick={() => void showResult(j.id)}>보기</button>
                           <button className="btn-ghost btn !px-2.5 !py-1 text-[12.5px]" onClick={() => clone(j)}>복제</button>
+                          <button className="btn-ghost btn !px-2.5 !py-1 text-[12.5px] !text-up"
+                            onClick={() => void (async () => {
+                              if (!window.confirm(`백테스트 #${j.id} 기록을 삭제할까요? 되돌릴 수 없습니다.`)) return;
+                              const r = await apiFetch(`/backtests/${j.id}`, { method: "DELETE" });
+                              if (r.ok) { if (job?.id === j.id) { setJob(null); setStep(1); } void loadHistory(); }
+                            })()}>삭제</button>
                         </span>
                       </div>
                       <div className="mt-1 pl-10 text-[12.5px] text-faint">
