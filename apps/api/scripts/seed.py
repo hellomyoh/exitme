@@ -32,6 +32,11 @@ DEFAULT_CODES = {
     "069500": ("KODEX 200", "KOSPI"),
     "122630": ("KODEX 레버리지", "KOSPI"),
 }
+KNOWN_NAMES = {
+    **DEFAULT_CODES,
+    "102110": ("TIGER 200", "KOSPI"),
+    "123320": ("TIGER 레버리지", "KOSPI"),
+}
 CALENDAR_PROXY = "069500"
 
 
@@ -112,7 +117,7 @@ def main() -> None:
             session.commit()
             logger.info("calendar rows added: %d", cal_rows)
             for code in codes:
-                name, market = DEFAULT_CODES.get(code) or (pykrx_client.fetch_etf_name(code), "KOSPI")
+                name, market = KNOWN_NAMES.get(code) or (pykrx_client.fetch_etf_name(code), "KOSPI")
                 report[code] = seed_code(session, fetch, source, code, name, market, start_year, end.year)
             total_inserted = sum(r["inserted"] for r in report.values())
             skipped = sum(r["skipped_years"] for r in report.values())

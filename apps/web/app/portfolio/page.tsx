@@ -114,7 +114,7 @@ export default function PortfolioPage() {
           <>
             <label>종목<br />
               <select style={input} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })}>
-                <option value="069500">KODEX 200</option><option value="122630">KODEX 레버리지</option>
+                <option value="069500">KODEX 200</option><option value="102110">TIGER 200</option><option value="122630">KODEX 레버리지</option>
               </select>
             </label>
             <label>수량<br /><input style={{ ...input, width: 90 }} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></label>

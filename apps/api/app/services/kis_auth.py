@@ -7,8 +7,10 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -49,12 +51,71 @@ class KisAuth:
         self._token: _Token | None = None
         self._lock = threading.Lock()
 
+    # ── Redis 공유 토큰 캐시 — KIS는 토큰 발급을 분당 1회로 제한하므로(EGW00133/403)
+    #    프로세스(api/worker/scheduler/run)간 토큰을 공유해야 한다 (NOTES.md).
+    def _redis_key(self) -> str:
+        return f"kis:token:{self.env}:{self.app_key[:8]}"
+
+    def _redis(self):
+        try:
+            import redis as sync_redis
+
+            from app.config import get_settings
+
+            r = sync_redis.from_url(get_settings().redis_url, decode_responses=True,
+                                    socket_connect_timeout=1)
+            r.ping()
+            return r
+        except Exception:
+            return None  # 테스트/redis 부재 환경 — 메모리 캐시만 사용
+
+    def _load_shared(self) -> _Token | None:
+        r = self._redis()
+        if r is None:
+            return None
+        raw = r.get(self._redis_key())
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            return _Token(data["value"], datetime.fromisoformat(data["expires_at"]))
+        except (ValueError, KeyError):
+            return None
+
+    def _store_shared(self, token: _Token) -> None:
+        r = self._redis()
+        if r is None:
+            return
+        ttl = max(int((token.expires_at - datetime.now()).total_seconds()), 60)
+        r.set(self._redis_key(),
+              json.dumps({"value": token.value, "expires_at": token.expires_at.isoformat()}),
+              ex=ttl)
+
     def access_token(self, session: requests.Session | None = None) -> str:
         with self._lock:
             now = datetime.now()
             if self._token and self._token.expires_at - _EXPIRY_MARGIN > now:
                 return self._token.value
-            self._token = self._issue(session or requests.Session())
+            shared = self._load_shared()
+            if shared and shared.expires_at - _EXPIRY_MARGIN > now:
+                self._token = shared
+                return shared.value
+            sess = session or requests.Session()
+            try:
+                self._token = self._issue(sess)
+            except requests.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 403:
+                    # 발급 빈도 제한 — 65초 대기 후 1회 재시도 (그 사이 타 프로세스 발급분 재확인)
+                    logger.warning("KIS token issue rate-limited (403) — waiting 65s before retry")
+                    time.sleep(65)
+                    shared = self._load_shared()
+                    if shared and shared.expires_at - _EXPIRY_MARGIN > datetime.now():
+                        self._token = shared
+                        return shared.value
+                    self._token = self._issue(sess)
+                else:
+                    raise
+            self._store_shared(self._token)
             return self._token.value
 
     def _issue(self, session: requests.Session) -> _Token:

@@ -107,6 +107,25 @@ class OhlcvDaily(Base):
     )
 
 
+class OhlcvIntraday(Base):
+    """분봉 하이퍼테이블 (청크 7일) — 원본 불변, 증분 수집 (feature-market-data §7)."""
+
+    __tablename__ = "ohlcv_intraday"
+
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), primary_key=True)
+    timeframe: Mapped[str] = mapped_column(Text, primary_key=True)  # '1m'
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    open_raw: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    high_raw: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    low_raw: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    close_raw: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    volume: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class SeedCheckpoint(Base):
     """시딩 이어받기 체크포인트 — (종목, 연도) 단위 완료 기록."""
 

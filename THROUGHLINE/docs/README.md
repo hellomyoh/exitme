@@ -5,3 +5,4 @@
 | [user-guide.md](user-guide.md) | 일반 사용자 | 차트·백테스트·실전 기록·대시보드 기본 사용 방법 |
 | [strategy-guide.md](strategy-guide.md) | 일반 사용자 | RAVG v2 전략과 주문표를 이해하고 활용하는 방법 |
 | [operator-guide.md](operator-guide.md) | 운영자 | 설치·시딩·배치 운영·장애 대응 |
+| [ablation-report-20260828.md](ablation-report-20260828.md) | 운영자 | RAVG v2 절제 5종 실데이터 백테스트 결과 (Phase 4 게이트) |

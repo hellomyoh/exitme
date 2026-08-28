@@ -52,6 +52,7 @@ def synthetic_market():
     with SessionLocal() as s:
         seed_synthetic(s, "069500", "KODEX 200")
         seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+        seed_synthetic(s, "102110", "TIGER 200", start=35000.0, seed=13)
 
 
 def make_user(client: TestClient) -> str:
@@ -137,3 +138,21 @@ def test_invalid_period_422():
     resp = client.post("/backtests", json={"capital": 50_000_000, "date_from": "2025-01-02",
                                            "date_to": "2024-01-02"}, headers=h)
     assert resp.status_code == 422
+
+
+def test_tiger_etf_selection():
+    """ETF 옵션(2026-08-28 지시): TIGER 선택 시 102110 데이터로 실행되고 fingerprint 가 달라진다."""
+    client = TestClient(app, base_url="https://testserver")
+    token = make_user(client)
+    h = {"Authorization": f"Bearer {token}"}
+    base = {"capital": 100_000_000, "date_from": "2024-01-02", "date_to": "2025-08-01"}
+    fps = {}
+    for etf in ("KODEX", "TIGER"):
+        bt_id = client.post("/backtests", json={**base, "etf": etf}, headers=h).json()["id"]
+        assert run_job_inline(bt_id)["status"] == "DONE"
+        got = client.get(f"/backtests/{bt_id}", headers=h).json()
+        assert got["status"] == "DONE" and got["params"]["etf"] == etf
+        fps[etf] = got["data_fingerprint"]
+    assert fps["KODEX"] != fps["TIGER"]  # 다른 데이터 세트
+    # 잘못된 값 거부
+    assert client.post("/backtests", json={**base, "etf": "ARIRANG"}, headers=h).status_code == 422

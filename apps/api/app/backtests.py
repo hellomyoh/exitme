@@ -23,8 +23,13 @@ PROGRESS_CH = "backtests:progress:{id}"
 PROGRESS_KEY = "backtests:progress-snap:{id}"
 CANCEL_KEY = "backtests:cancel:{id}"
 
-CODE_200 = "069500"
-CODE_LEV = "122630"
+# ETF 선택 (2026-08-28 채팅 지시): 주력 200 ETF 를 KODEX/TIGER 중 선택.
+# 레버리지는 유동성이 큰 KODEX 레버리지(122630) 공통 사용 (ASSUMPTIONS 기록).
+ETF_PAIRS = {
+    "KODEX": ("069500", "122630"),
+    "TIGER": ("102110", "122630"),
+}
+CODE_200, CODE_LEV = ETF_PAIRS["KODEX"]  # 기본값 (전략 정본 기준)
 
 
 class Costs(BaseModel):
@@ -47,15 +52,18 @@ class BacktestIn(BaseModel):
     capital: int = Field(gt=1_000_000, le=100_000_000_000)
     date_from: date
     date_to: date
+    etf: str = Field(default="KODEX", pattern="^(KODEX|TIGER)$")
     costs: Costs = Costs()
     flags: Flags = Flags()
 
 
-def load_aligned_bars(session: Session, date_from: date, date_to: date):
-    """069500/122630 일봉을 날짜 교집합으로 정렬 로드 + data_fingerprint 계산."""
+def load_aligned_bars(session: Session, date_from: date, date_to: date,
+                      codes: tuple[str, str] = ETF_PAIRS["KODEX"]):
+    """(200 ETF, 레버리지) 일봉을 날짜 교집합으로 정렬 로드 + data_fingerprint 계산."""
+    code_200, code_lev = codes
     out: dict[str, dict[str, dict]] = {}
     fingerprints = []
-    for code in (CODE_200, CODE_LEV):
+    for code in (code_200, code_lev):
         inst = session.scalar(select(Instrument).where(Instrument.code == code))
         if inst is None:
             raise HTTPException(status_code=409, detail=f"instrument {code} not seeded")
@@ -77,16 +85,21 @@ def load_aligned_bars(session: Session, date_from: date, date_to: date):
                 "volume": r.volume,
             } for r in rows
         }
-    common = sorted(set(out[CODE_200]) & set(out[CODE_LEV]))
+    common = sorted(set(out[code_200]) & set(out[code_lev]))
     if len(common) < 30:
         raise HTTPException(status_code=409, detail=f"not enough aligned bars ({len(common)}) — run seeding first")
     fp = hashlib.md5(("|".join(fingerprints) + f"|{date_from}|{date_to}").encode()).hexdigest()
-    return [out[CODE_200][d] for d in common], [out[CODE_LEV][d] for d in common], fp
+    return [out[code_200][d] for d in common], [out[code_lev][d] for d in common], fp
+
+
+def pair_from_params(params: dict) -> tuple[str, str]:
+    return ETF_PAIRS.get(params.get("etf", "KODEX"), ETF_PAIRS["KODEX"])
 
 
 def current_fingerprint(session: Session, params: dict) -> str:
     _, _, fp = load_aligned_bars(session, date.fromisoformat(params["date_from"]),
-                                 date.fromisoformat(params["date_to"]))
+                                 date.fromisoformat(params["date_to"]),
+                                 codes=pair_from_params(params))
     return fp
 
 

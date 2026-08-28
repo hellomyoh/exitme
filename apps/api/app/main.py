@@ -9,7 +9,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.db import get_session
-from app.models import Instrument, OhlcvDaily
+from app.models import Instrument, OhlcvDaily, OhlcvIntraday
 from app.auth import router as auth_router
 from app.backtests import router as backtests_router
 from app.charts import router as charts_router
@@ -79,13 +79,37 @@ def get_ohlcv(
     code: str,
     from_: date = Query(alias="from"),
     to: date = Query(),
-    limit: int = Query(default=1000, le=10000),
+    timeframe: str = Query(default="D", pattern="^(D|1m)$"),
+    limit: int = Query(default=1000, le=200000),
     session: Session = Depends(get_session),
 ):
-    """일봉 조회 — 수정주가(= raw × adj_factor) 기준, as_of/delayed 포함 (ARCHITECTURE §5)."""
+    """시세 조회 — 수정주가(= raw × adj_factor) 기준, as_of/delayed 포함 (ARCHITECTURE §5).
+
+    timeframe: D(일봉, 기본) | 1m(분봉 — KIS 보관 한도 내 증분 수집분)
+    """
     inst = session.scalar(select(Instrument).where(Instrument.code == code))
     if inst is None:
         return problem(404, "instrument not found", f"unknown code {code}", str(request.url.path))
+    if timeframe == "1m":
+        rows = session.execute(
+            select(OhlcvIntraday)
+            .where(OhlcvIntraday.instrument_id == inst.id, OhlcvIntraday.timeframe == "1m",
+                   OhlcvIntraday.ts >= from_, OhlcvIntraday.ts < to + __import__("datetime").timedelta(days=1))
+            .order_by(OhlcvIntraday.ts)
+            .limit(limit)
+        ).scalars().all()
+        as_of = session.scalar(
+            select(func.max(OhlcvIntraday.ingested_at)).where(OhlcvIntraday.instrument_id == inst.id)
+        )
+        return {
+            "code": code, "timeframe": "1m",
+            "as_of": as_of.isoformat() if as_of else None, "delayed": True,
+            "items": [
+                {"ts": r.ts.isoformat(), "open": r.open_raw, "high": r.high_raw,
+                 "low": r.low_raw, "close": r.close_raw, "volume": r.volume}
+                for r in rows
+            ],
+        }
     rows = session.execute(
         select(OhlcvDaily)
         .where(

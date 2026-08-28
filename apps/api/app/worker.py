@@ -87,6 +87,13 @@ def daily_ingest(target: str | None = None) -> dict:
                 res = upsert_daily_bars(session, inst.id, bars, source="kis" if kis else "pykrx")
                 totals["inserted"] += res.inserted
                 totals["rejected"] += res.rejected
+                if kis is not None:
+                    # 1분봉 증분 수집 — 당일분만 (과거 소급은 scripts.seed_minutes)
+                    from app.services.ingest import upsert_minute_bars
+
+                    mbars = kis.fetch_minutes_day(inst.code, target_date)
+                    mres = upsert_minute_bars(session, inst.id, mbars, source="kis")
+                    totals["minutes_inserted"] = totals.get("minutes_inserted", 0) + mres.inserted
             except Exception as exc:  # 개별 종목 실패는 배치 전체를 죽이지 않는다
                 logger.error("ingest failed for %s: %s", inst.code, exc)
                 totals["failed"].append(inst.code)
@@ -153,7 +160,7 @@ def run_backtest_job(bt_id: int) -> dict:
 
     import redis as sync_redis
 
-    from app.backtests import CANCEL_KEY, PROGRESS_CH, PROGRESS_KEY, load_aligned_bars
+    from app.backtests import CANCEL_KEY, PROGRESS_CH, PROGRESS_KEY, load_aligned_bars, pair_from_params
     from app.db import SessionLocal
     from app.models import Backtest, BacktestEquity
     from app.strategy.backtest import Cancelled, run_backtest
@@ -173,7 +180,8 @@ def run_backtest_job(bt_id: int) -> dict:
         try:
             p = bt.params
             bars_200, bars_lev, fp = load_aligned_bars(
-                session, _date.fromisoformat(p["date_from"]), _date.fromisoformat(p["date_to"])
+                session, _date.fromisoformat(p["date_from"]), _date.fromisoformat(p["date_to"]),
+                codes=pair_from_params(p),
             )
             bt.status = "RUNNING"
             bt.data_fingerprint = fp

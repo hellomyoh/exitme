@@ -28,4 +28,8 @@
 
 ## KIS Open API
 
-- [2026-08-28] 일봉 API(FHKST03010100)는 호출당 최대 100건 — 140 달력일 창으로 페이지네이션하면 안전하다. 모의(vps)에서 TR ID V-치환은 주문 계열(T…)만 적용되고 시세 TR(FHKST…)은 공통. (근거: 공식 GitHub https://github.com/koreainvestment/open-trading-api 예제 분석; 실 호출 검증은 키 기입 후 예정)
+- [2026-08-28] 일봉 API(FHKST03010100)는 호출당 최대 100건 — 140 달력일 창으로 페이지네이션하면 안전하다. 모의(vps)에서 TR ID V-치환은 주문 계열(T…)만 적용되고 시세 TR(FHKST…)은 공통. (근거: 공식 GitHub https://github.com/koreainvestment/open-trading-api 예제 분석 + 2026-08-28 실 호출로 10년 시딩 검증)
+- [2026-08-28] **토큰 발급은 분당 1회 제한** — 짧은 간격 재발급 시 /oauth2/tokenP 가 403 반환. 프로세스 간 토큰을 Redis 로 공유하고 403 시 65초 대기 재시도로 해결. (근거: 실 호출 재현)
+- [2026-08-28] **유량 초과 시 시세 API 가 HTTP 500 반환** — 호출 간 0.15s 스로틀 + 지수 백오프(1/2/4/8s)로 해결. (근거: 10년 시딩 중 재현)
+- [2026-08-28] 주식일별분봉조회(FHKST03010230): 호출당 120건, 시간 커서(FID_INPUT_HOUR_1) 내림차순, 과거 보관 약 1년(2025-09-01 실 데이터 수신 확인). 응답 필드 stck_bsop_date/stck_cntg_hour/stck_oprc/hgpr/lwpr/prpr/cntg_vol. (근거: 실 호출 프로브)
+- [2026-08-28] 통합 테스트가 실코드(069500)에 합성 데이터를 넣으면 실 시딩과 충돌한다 — 개발 DB 오염 확인 후 source='pykrx' 삭제로 복구. **테스트는 stocklab_ci DB 로 격리 실행** (DATABASE_URL 오버라이드). (근거: 2024년 inserted=0 재현·복구)

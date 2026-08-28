@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.models import BatchRun, Instrument, OhlcvDaily
+from app.models import BatchRun, Instrument, OhlcvDaily, OhlcvIntraday
 from app.services.validators import validate_bar
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,39 @@ def upsert_daily_bars(
             .values(rows)
             .on_conflict_do_nothing(index_elements=["instrument_id", "trade_date"])
             .returning(OhlcvDaily.trade_date)
+        )
+        returned = session.execute(stmt).all()
+        result.inserted = len(returned)
+        result.skipped_conflict = len(rows) - result.inserted
+    return result
+
+
+def upsert_minute_bars(
+    session: Session,
+    instrument_id: int,
+    bars: list,
+    source: str,
+    timeframe: str = "1m",
+) -> IngestResult:
+    """분봉 멱등 적재 — bars: MinuteBar 또는 동형 dict. 검증 통과분만."""
+    result = IngestResult()
+    rows = []
+    for b in bars:
+        o, h, l, c, v = b.open, b.high, b.low, b.close, b.volume
+        errors = validate_bar(o, h, l, c, v)
+        if errors:
+            result.rejected += 1
+            continue
+        rows.append(dict(
+            instrument_id=instrument_id, timeframe=timeframe, ts=b.ts,
+            open_raw=o, high_raw=h, low_raw=l, close_raw=c, volume=v, source=source,
+        ))
+    if rows:
+        stmt = (
+            insert(OhlcvIntraday)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=["instrument_id", "timeframe", "ts"])
+            .returning(OhlcvIntraday.ts)
         )
         returned = session.execute(stmt).all()
         result.inserted = len(returned)

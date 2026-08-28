@@ -22,6 +22,7 @@ type Bar = { date: string; open: number; high: number; low: number; close: numbe
 
 const PRESETS = [
   { code: "069500", label: "KODEX 200" },
+  { code: "102110", label: "TIGER 200" },
   { code: "122630", label: "KODEX 레버리지" },
 ];
 

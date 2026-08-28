@@ -23,12 +23,18 @@ const FLAG_LABELS: [string, string][] = [
 ];
 
 const box = { background: "#1a1a22", color: "#e6e6ea", border: "1px solid #33333f", borderRadius: 6, padding: "8px 10px" } as const;
+// 총보수(연) 기본값 — 선택 ETF에 따라 백테스트 비용에 반영 (정확한 현재 보수율은 운용사 공시 기준으로 조정 가능)
+const ETF_INFO: Record<string, { label: string; code: string; fee: number }> = {
+  KODEX: { label: "KODEX 200 (069500)", code: "069500", fee: 0.0015 },
+  TIGER: { label: "TIGER 200 (102110)", code: "102110", fee: 0.0005 },
+};
 const pct = (v: number | null | undefined, digits = 2) => (v === null || v === undefined ? "—" : `${(v * 100).toFixed(digits)}%`);
 
 export default function SimulatorPage() {
   const router = useRouter();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [capital, setCapital] = useState("100000000");
+  const [etf, setEtf] = useState<"KODEX" | "TIGER">("KODEX");
   const [dateFrom, setDateFrom] = useState("2017-01-02");
   const [dateTo, setDateTo] = useState(new Date().toISOString().slice(0, 10));
   const [flags, setFlags] = useState<Flags>(Object.fromEntries(FLAG_LABELS.map(([k]) => [k, true])));
@@ -56,7 +62,10 @@ export default function SimulatorPage() {
     setError("");
     const res = await apiFetch("/backtests", {
       method: "POST",
-      body: JSON.stringify({ capital: Number(capital), date_from: dateFrom, date_to: dateTo, flags }),
+      body: JSON.stringify({
+        capital: Number(capital), date_from: dateFrom, date_to: dateTo, etf, flags,
+        costs: { fee_200: ETF_INFO[etf].fee },
+      }),
     });
     if (!res.ok) {
       const detail = (await res.json()) as { detail?: string };
@@ -135,8 +144,9 @@ export default function SimulatorPage() {
   }
 
   function clone(j: Job) {
-    const p = j.params as { capital: number; date_from: string; date_to: string; flags?: Flags };
+    const p = j.params as { capital: number; date_from: string; date_to: string; etf?: string; flags?: Flags };
     setCapital(String(p.capital));
+    if (p.etf === "KODEX" || p.etf === "TIGER") setEtf(p.etf);
     setDateFrom(p.date_from);
     setDateTo(p.date_to);
     if (p.flags) setFlags(p.flags);
@@ -149,6 +159,15 @@ export default function SimulatorPage() {
 
       {step === 1 && (
         <section style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 520 }}>
+          <fieldset style={{ ...box, display: "flex", gap: 16 }}>
+            <legend>주력 ETF 선택 (레버리지는 KODEX 레버리지 공통)</legend>
+            {(Object.keys(ETF_INFO) as ("KODEX" | "TIGER")[]).map((k) => (
+              <label key={k}>
+                <input type="radio" name="etf" checked={etf === k} onChange={() => setEtf(k)} /> {ETF_INFO[k].label}
+                <span style={{ opacity: 0.5, fontSize: 12 }}> 보수 {(ETF_INFO[k].fee * 100).toFixed(2)}%</span>
+              </label>
+            ))}
+          </fieldset>
           <label>자본금(원) <input style={{ ...box, width: "100%" }} value={capital} onChange={(e) => setCapital(e.target.value)} /></label>
           <div style={{ display: "flex", gap: 8 }}>
             <label style={{ flex: 1 }}>시작일 <input type="date" style={{ ...box, width: "100%" }} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} /></label>
