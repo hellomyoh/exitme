@@ -1,36 +1,52 @@
 "use client";
 
-/** 로그인/가입 — access는 메모리 보관, refresh는 httpOnly 쿠키 (ADR-003). */
+/** 로그인/가입 — access는 메모리, refresh는 httpOnly 쿠키 (ADR-003). */
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { login, register } from "../../lib/api";
-
-const box = { background: "#1a1a22", color: "#e6e6ea", border: "1px solid #33333f", borderRadius: 6, padding: "8px 10px" } as const;
+import { Card } from "../../components/ui";
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
 
   async function submit(kind: "login" | "register") {
+    setBusy(true);
+    setMsg("");
     const ok = kind === "login" ? await login(email, password) : await register(email, password);
-    if (ok) router.push("/chart");
-    else setMsg(kind === "login" ? "로그인 실패 — 이메일/비밀번호를 확인하세요" : "가입 실패 — 이미 등록된 이메일이거나 비밀번호가 8자 미만입니다");
+    setBusy(false);
+    if (ok) router.push("/dashboard");
+    else setMsg(kind === "login"
+      ? "로그인 실패 — 이메일/비밀번호를 확인하세요"
+      : "가입 실패 — 이미 등록된 이메일이거나 비밀번호가 8자 미만입니다");
   }
 
   return (
-    <main style={{ display: "grid", placeItems: "center", minHeight: "100vh" }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, width: 300 }}>
-        <h1 style={{ fontSize: "1.4rem", marginBottom: 8 }}>StockLab 로그인</h1>
-        <input style={box} placeholder="이메일" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <input style={box} placeholder="비밀번호 (8자 이상)" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-        <div style={{ display: "flex", gap: 8 }}>
-          <button style={{ ...box, flex: 1, cursor: "pointer" }} onClick={() => void submit("login")}>로그인</button>
-          <button style={{ ...box, flex: 1, cursor: "pointer" }} onClick={() => void submit("register")}>가입</button>
+    <main className="flex min-h-[70vh] items-center justify-center">
+      <Card className="w-full max-w-sm !p-8">
+        <div className="mb-6 flex items-center gap-2">
+          <span className="inline-block h-3 w-3 rounded-sm bg-accent" />
+          <h1 className="text-lg font-extrabold tracking-tight">StockLab</h1>
         </div>
-        {msg && <p style={{ color: "#f2617a", fontSize: 13 }}>{msg}</p>}
-      </div>
+        <div className="grid gap-3">
+          <label className="grid gap-1.5 text-xs text-faint">이메일
+            <input className="input" placeholder="you@example.com" value={email}
+              onChange={(e) => setEmail(e.target.value)} /></label>
+          <label className="grid gap-1.5 text-xs text-faint">비밀번호 (8자 이상)
+            <input className="input" type="password" value={password}
+              onKeyDown={(e) => e.key === "Enter" && void submit("login")}
+              onChange={(e) => setPassword(e.target.value)} /></label>
+          <button className="btn btn-primary mt-1" disabled={busy} onClick={() => void submit("login")}>로그인</button>
+          <button className="btn" disabled={busy} onClick={() => void submit("register")}>새 계정 가입</button>
+          {msg && <p className="text-[13px] text-up">{msg}</p>}
+        </div>
+        <p className="mt-5 text-[11px] leading-relaxed text-faint">
+          모의·과거 데이터 기반 서비스이며 투자 권유가 아닙니다.
+        </p>
+      </Card>
     </main>
   );
 }

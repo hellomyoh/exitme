@@ -1,40 +1,34 @@
 "use client";
 
-/**
- * 백테스트 3스텝 위저드 (feature-backtest §9): 조건 → 실행(WS 진행률·취소) → 결과.
- * 오버레이 비교(최대 5개, 초기자본=100 정규화), stale 배지, 파라미터 복제 재실행.
- */
+/** 백테스트 3스텝 위저드 — 조건 → 실행(WS 진행률) → 결과 (feature-backtest §9). */
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createChart, IChartApi, LineSeries } from "lightweight-charts";
 import { apiFetch, hasToken } from "../../lib/api";
+import { Badge, Callout, Card, CardTitle, fmtPct, GaugeBar, PageTitle, Stat } from "../../components/ui";
 
 type Flags = Record<string, boolean>;
 type Kpi = { total_return: number; cagr: number | null; mdd: number; sharpe: number | null; trades: number; win_rate: number | null; profit_factor: number | null };
 type EquityPoint = { date: string; equity: number; benchmark: number; regime: string; exposure: number };
 type Job = { id: number; status: string; progress: number; params: Record<string, unknown>; kpi: Kpi | null; equity?: EquityPoint[]; trades?: Record<string, unknown>[]; stale?: boolean };
 
-const FLAG_LABELS: [string, string][] = [
-  ["f1_no_tp_in_bull", "① 상승장 익절 제거"],
-  ["f2_downside_vol", "② 하방 변동성 타게팅"],
-  ["f3_fast_regime", "③ 레짐 판정 단축 (MA20>MA60)"],
-  ["f4_leverage", "④ 레버리지 모듈 (Emax 1.30)"],
-  ["f5_gap_filter", "⑤ 갭 필터 + 잔여예산"],
+const FLAG_LABELS: [string, string, string][] = [
+  ["f1_no_tp_in_bull", "① 상승장 익절 제거", "체결분을 코어로 보유 — 기여도 최대"],
+  ["f2_downside_vol", "② 하방 변동성 타게팅", "상승 변동성에 벌점 없음"],
+  ["f3_fast_regime", "③ 레짐 판정 단축", "MA20>MA60 교차 (끄면 v1 기울기)"],
+  ["f4_leverage", "④ 레버리지 모듈", "Emax 1.30 · E>1 초과분만"],
+  ["f5_gap_filter", "⑤ 갭 필터 + 잔여예산", "갭 하락 방어 · 예산 초과 미발주"],
 ];
-
-const box = { background: "#1a1a22", color: "#e6e6ea", border: "1px solid #33333f", borderRadius: 6, padding: "8px 10px" } as const;
-// 총보수(연) 기본값 — 선택 ETF에 따라 백테스트 비용에 반영 (정확한 현재 보수율은 운용사 공시 기준으로 조정 가능)
-const ETF_INFO: Record<string, { label: string; code: string; fee: number }> = {
-  KODEX: { label: "KODEX 200 (069500)", code: "069500", fee: 0.0015 },
-  TIGER: { label: "TIGER 200 (102110)", code: "102110", fee: 0.0005 },
+const ETF_INFO: Record<string, { label: string; fee: number }> = {
+  KODEX: { label: "KODEX 200", fee: 0.0015 },
+  TIGER: { label: "TIGER 200", fee: 0.0005 },
 };
-const pct = (v: number | null | undefined, digits = 2) => (v === null || v === undefined ? "—" : `${(v * 100).toFixed(digits)}%`);
 
 export default function SimulatorPage() {
   const router = useRouter();
   const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [capital, setCapital] = useState("100000000");
   const [etf, setEtf] = useState<"KODEX" | "TIGER">("KODEX");
+  const [capital, setCapital] = useState("100000000");
   const [dateFrom, setDateFrom] = useState("2017-01-02");
   const [dateTo, setDateTo] = useState(new Date().toISOString().slice(0, 10));
   const [flags, setFlags] = useState<Flags>(Object.fromEntries(FLAG_LABELS.map(([k]) => [k, true])));
@@ -54,6 +48,11 @@ export default function SimulatorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  function disposeChart() {
+    try { chartApi.current?.remove(); } catch { /* already disposed */ }
+    chartApi.current = null;
+  }
+
   async function loadHistory() {
     const res = await apiFetch("/backtests");
     if (res.ok) setHistory(((await res.json()) as { items: Job[] }).items.filter((j) => j.status === "DONE"));
@@ -69,14 +68,11 @@ export default function SimulatorPage() {
       }),
     });
     if (!res.ok) {
-      const detail = (await res.json()) as { detail?: string };
-      setError(detail.detail ?? `실행 실패 (${res.status}) — 시세 시딩 여부를 확인하세요`);
+      setError(((await res.json()) as { detail?: string }).detail ?? `실행 실패 (${res.status})`);
       return;
     }
     const { id } = (await res.json()) as { id: number };
-    setJobId(id);
-    setProgress(0);
-    setStep(2);
+    setJobId(id); setProgress(0); setStep(2);
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/backtests/${id}`);
     ws.onmessage = async (ev) => {
       const msg = JSON.parse(ev.data as string) as { status: string; progress?: number; error?: string };
@@ -87,18 +83,13 @@ export default function SimulatorPage() {
     };
   }
 
-  async function cancel() {
-    if (jobId) await apiFetch(`/backtests/${jobId}/cancel`, { method: "POST" });
-  }
-
   async function showResult(id: number) {
     const res = await apiFetch(`/backtests/${id}`);
     if (!res.ok) return;
     const j = (await res.json()) as Job;
-    setJob(j);
-    setStep(3);
+    setJob(j); setStep(3); setOverlay([]);
     void loadHistory();
-    setTimeout(() => drawEquity(j, []), 50);
+    setTimeout(() => drawEquity(j, []), 60);
   }
 
   async function drawOverlay(ids: number[]) {
@@ -111,17 +102,13 @@ export default function SimulatorPage() {
     drawEquity(job, others);
   }
 
-  function disposeChart() {
-    try { chartApi.current?.remove(); } catch { /* already disposed */ }
-    chartApi.current = null;
-  }
-
   function drawEquity(main: Job, others: Job[]) {
     if (!chartRef.current || !main.equity) return;
     disposeChart();
     const chart = createChart(chartRef.current, {
-      layout: { background: { color: "#111117" }, textColor: "#c9c9d1", attributionLogo: false },
-      grid: { vertLines: { color: "#22222c" }, horzLines: { color: "#22222c" } },
+      layout: { background: { color: "transparent" }, textColor: "#71717e", attributionLogo: false, fontSize: 11 },
+      grid: { vertLines: { visible: false }, horzLines: { color: "rgba(255,255,255,0.06)" } },
+      rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
       autoSize: true,
     });
     chartApi.current = chart;
@@ -129,9 +116,9 @@ export default function SimulatorPage() {
       const base = pts[0][key];
       return pts.map((p) => ({ time: p.date, value: (p[key] / base) * 100 }));
     };
-    chart.addSeries(LineSeries, { color: "#e8b339", lineWidth: 2, title: "전략" }).setData(norm(main.equity, "equity"));
-    chart.addSeries(LineSeries, { color: "#8888a0", lineWidth: 1, title: "KODEX 200 매수보유" }).setData(norm(main.equity, "benchmark"));
-    const colors = ["#4fc3f7", "#ab7df8", "#66d9a8", "#f2617a"];
+    chart.addSeries(LineSeries, { color: "#f0b429", lineWidth: 2, title: "전략" }).setData(norm(main.equity, "equity"));
+    chart.addSeries(LineSeries, { color: "#71717e", lineWidth: 1, title: "매수보유" }).setData(norm(main.equity, "benchmark"));
+    const colors = ["#4d8df6", "#8b7cf6", "#35c28f", "#f2495c"];
     others.forEach((o, idx) => {
       if (o.equity) chart.addSeries(LineSeries, { color: colors[idx % 4], lineWidth: 1, title: `#${o.id}` }).setData(norm(o.equity, "equity"));
     });
@@ -151,105 +138,153 @@ export default function SimulatorPage() {
 
   function clone(j: Job) {
     const p = j.params as { capital: number; date_from: string; date_to: string; etf?: string; flags?: Flags };
-    setCapital(String(p.capital));
+    setCapital(String(p.capital)); setDateFrom(p.date_from); setDateTo(p.date_to);
     if (p.etf === "KODEX" || p.etf === "TIGER") setEtf(p.etf);
-    setDateFrom(p.date_from);
-    setDateTo(p.date_to);
     if (p.flags) setFlags(p.flags);
     setStep(1);
   }
 
+  const kpi = job?.kpi;
+
   return (
-    <main style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, minHeight: "100vh" }}>
-      <h1 style={{ fontSize: "1.3rem" }}>시뮬레이터 — RAVG v2 <span style={{ opacity: 0.5, fontSize: 13 }}>Step {step}/3 · 모의 계산이며 투자 권유가 아닙니다</span></h1>
+    <main>
+      <PageTitle title="시뮬레이터" sub="RAVG v2 백테스트 — 조건 설정 → 실행 → 결과. 모의 계산이며 투자 권유가 아닙니다." />
+
+      {/* 스텝 인디케이터 */}
+      <div className="mb-5 flex items-center gap-2 text-[13px]">
+        {["조건 설정", "실행", "결과"].map((label, i) => (
+          <div key={label} className="flex items-center gap-2">
+            {i > 0 && <span className="h-px w-8 bg-line-strong" />}
+            <span className={`flex items-center gap-2 rounded-full px-3 py-1 font-semibold ${
+              step === i + 1 ? "bg-accent text-[#16130a]" : step > i + 1 ? "bg-raised text-ink" : "bg-raised/50 text-faint"}`}>
+              <span>{i + 1}</span>{label}
+            </span>
+          </div>
+        ))}
+      </div>
 
       {step === 1 && (
-        <section style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 520 }}>
-          <fieldset style={{ ...box, display: "flex", gap: 16 }}>
-            <legend>주력 ETF 선택 (레버리지는 KODEX 레버리지 공통)</legend>
-            {(Object.keys(ETF_INFO) as ("KODEX" | "TIGER")[]).map((k) => (
-              <label key={k}>
-                <input type="radio" name="etf" checked={etf === k} onChange={() => setEtf(k)} /> {ETF_INFO[k].label}
-                <span style={{ opacity: 0.5, fontSize: 12 }}> 보수 {(ETF_INFO[k].fee * 100).toFixed(2)}%</span>
-              </label>
-            ))}
-          </fieldset>
-          <label>자본금(원) <input style={{ ...box, width: "100%" }} value={capital} onChange={(e) => setCapital(e.target.value)} /></label>
-          <div style={{ display: "flex", gap: 8 }}>
-            <label style={{ flex: 1 }}>시작일 <input type="date" style={{ ...box, width: "100%" }} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} /></label>
-            <label style={{ flex: 1 }}>종료일 <input type="date" style={{ ...box, width: "100%" }} value={dateTo} onChange={(e) => setDateTo(e.target.value)} /></label>
-          </div>
-          <fieldset style={{ ...box, display: "flex", flexDirection: "column", gap: 4 }}>
-            <legend>절제(ablation) 플래그 — 하나씩 꺼서 모듈 기여를 검증 (정본 §11 순서)</legend>
-            {FLAG_LABELS.map(([key, label]) => (
-              <label key={key} style={{ opacity: key !== "f4_leverage" || flags.f4_leverage ? 1 : 0.6 }}>
-                <input type="checkbox" checked={flags[key]} onChange={(e) => setFlags({ ...flags, [key]: e.target.checked })} /> {label}
-              </label>
-            ))}
-            {!flags.f4_leverage && <small style={{ opacity: 0.6 }}>④ off — 레버리지 2트랙·강제청산 규칙 비활성 (E ≤ 1.0)</small>}
-          </fieldset>
-          <small style={{ opacity: 0.6 }}>비용 기본값: 수수료 0.015% · 시장가 슬리피지 0.1%(지정가 0) · 레버리지 과세 15.4%(단순화) · 보수 일할</small>
-          {error && <p style={{ color: "#f2617a" }}>{error}</p>}
-          <button style={{ ...box, cursor: "pointer" }} onClick={() => void start()}>실행 →</button>
-          {history.length > 0 && (
-            <details>
-              <summary style={{ cursor: "pointer", opacity: 0.8 }}>지난 결과 ({history.length}) — 복제 재실행 / 결과 보기</summary>
-              {history.slice(0, 10).map((j) => (
-                <div key={j.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0" }}>
-                  <span style={{ opacity: 0.7 }}>#{j.id}</span>
-                  <span>{pct(j.kpi?.total_return)}</span>
-                  <button style={{ ...box, padding: "2px 8px", cursor: "pointer" }} onClick={() => void showResult(j.id)}>보기</button>
-                  <button style={{ ...box, padding: "2px 8px", cursor: "pointer" }} onClick={() => clone(j)}>복제</button>
-                </div>
+        <div className="grid max-w-2xl gap-4">
+          <Card>
+            <CardTitle>주력 ETF</CardTitle>
+            <div className="grid grid-cols-2 gap-2">
+              {(Object.keys(ETF_INFO) as ("KODEX" | "TIGER")[]).map((k) => (
+                <button key={k} onClick={() => setEtf(k)}
+                  className={`rounded-xl border p-4 text-left transition-colors ${etf === k ? "border-accent bg-accent-dim" : "border-line bg-inset hover:border-line-strong"}`}>
+                  <div className="font-bold">{ETF_INFO[k].label}</div>
+                  <div className="mt-0.5 text-xs text-faint">총보수 연 {(ETF_INFO[k].fee * 100).toFixed(2)}% · 레버리지는 KODEX 공통</div>
+                </button>
               ))}
-            </details>
+            </div>
+          </Card>
+          <Card>
+            <CardTitle>기간 · 자본</CardTitle>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <label className="grid gap-1 text-xs text-faint">시작일
+                <input type="date" className="input" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} /></label>
+              <label className="grid gap-1 text-xs text-faint">종료일
+                <input type="date" className="input" value={dateTo} onChange={(e) => setDateTo(e.target.value)} /></label>
+              <label className="grid gap-1 text-xs text-faint">자본금(원)
+                <input className="input" value={capital} onChange={(e) => setCapital(e.target.value)} /></label>
+            </div>
+          </Card>
+          <Card>
+            <CardTitle>절제(Ablation) 플래그 <span className="normal-case text-faint">· 하나씩 꺼서 모듈 기여 검증</span></CardTitle>
+            <div className="grid gap-1.5">
+              {FLAG_LABELS.map(([key, label, desc]) => (
+                <label key={key} className={`flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 transition-colors hover:bg-raised ${
+                  key !== "f4_leverage" || flags.f4_leverage ? "" : "opacity-60"}`}>
+                  <span className="flex items-center gap-3">
+                    <input type="checkbox" className="accent-[#f0b429]" checked={flags[key]}
+                      onChange={(e) => setFlags({ ...flags, [key]: e.target.checked })} />
+                    <span className="font-medium">{label}</span>
+                  </span>
+                  <span className="text-xs text-faint">{desc}</span>
+                </label>
+              ))}
+            </div>
+            {!flags.f4_leverage && <p className="mt-2 text-xs text-warn">④ off — 레버리지 2트랙·강제청산 규칙이 비활성됩니다 (E ≤ 1.0)</p>}
+          </Card>
+          {error && <Callout icon="⛔">{error}</Callout>}
+          <button className="btn btn-primary py-3 text-[15px]" onClick={() => void start()}>백테스트 실행 →</button>
+
+          {history.length > 0 && (
+            <Card>
+              <CardTitle>지난 결과</CardTitle>
+              <div className="grid gap-1">
+                {history.slice(0, 8).map((j) => (
+                  <div key={j.id} className="flex items-center gap-3 rounded-lg px-2 py-1.5 text-[13px] hover:bg-raised">
+                    <span className="w-10 text-faint">#{j.id}</span>
+                    <Badge tone="default">{(j.params as { etf?: string }).etf ?? "KODEX"}</Badge>
+                    <span className={`w-20 text-right font-semibold ${(j.kpi?.total_return ?? 0) >= 0 ? "text-up" : "text-down"}`}>
+                      {fmtPct(j.kpi?.total_return)}
+                    </span>
+                    <span className="ml-auto flex gap-1.5">
+                      <button className="btn !px-2.5 !py-1 text-xs" onClick={() => void showResult(j.id)}>보기</button>
+                      <button className="btn-ghost btn !px-2.5 !py-1 text-xs" onClick={() => clone(j)}>복제</button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </Card>
           )}
-        </section>
+        </div>
       )}
 
       {step === 2 && (
-        <section style={{ maxWidth: 520 }}>
-          <p>백테스트 실행 중… {progress}%</p>
-          <div style={{ background: "#22222c", borderRadius: 6, height: 10 }}>
-            <div style={{ width: `${progress}%`, background: "#e8b339", height: 10, borderRadius: 6, transition: "width .3s" }} />
-          </div>
-          <button style={{ ...box, marginTop: 12, cursor: "pointer" }} onClick={() => void cancel()}>취소</button>
-        </section>
+        <Card className="max-w-xl">
+          <CardTitle>백테스트 실행 중</CardTitle>
+          <div className="mb-2 text-3xl font-extrabold">{progress}%</div>
+          <GaugeBar ratio={progress / 100} height={10} />
+          <button className="btn mt-5" onClick={() => jobId && void apiFetch(`/backtests/${jobId}/cancel`, { method: "POST" })}>취소</button>
+        </Card>
       )}
 
       {step === 3 && job && (
-        <section style={{ display: "flex", flexDirection: "column", gap: 12, flex: 1 }}>
-          {job.stale && <p style={{ color: "#e8b339" }}>⚠ 시세 데이터가 갱신되었습니다(stale) — 재실행을 권장합니다. 오버레이 비교가 제한됩니다.</p>}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8, fontVariantNumeric: "tabular-nums" }}>
-            {[["총수익률", pct(job.kpi?.total_return)], ["CAGR", job.kpi?.cagr === null ? "1년 미만" : pct(job.kpi?.cagr)],
-              ["MDD", pct(job.kpi?.mdd)], ["샤프", job.kpi?.sharpe?.toFixed(2) ?? "—"],
-              ["거래(라운드트립)", String(job.kpi?.trades ?? 0)], ["승률", pct(job.kpi?.win_rate, 1)],
-              ["손익비", job.kpi?.profit_factor?.toFixed(2) ?? "—"]].map(([k, v]) => (
-              <div key={k} style={{ ...box }}><div style={{ opacity: 0.6, fontSize: 12 }}>{k}</div><div style={{ fontSize: 18 }}>{v}</div></div>
-            ))}
+        <div className="grid gap-4">
+          {job.stale && <Callout icon="⚠️">시세 데이터가 갱신되었습니다(stale) — 재실행을 권장합니다.</Callout>}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+            <Stat label="총수익률" value={fmtPct(kpi?.total_return)} tone={(kpi?.total_return ?? 0) >= 0 ? "up" : "down"} />
+            <Stat label="CAGR" value={kpi?.cagr === null ? "1년 미만" : fmtPct(kpi?.cagr)} />
+            <Stat label="MDD" value={fmtPct(kpi?.mdd)} tone="down" />
+            <Stat label="샤프" value={kpi?.sharpe?.toFixed(2) ?? "—"} />
+            <Stat label="거래" value={String(kpi?.trades ?? 0)} hint="FIFO 라운드트립" />
+            <Stat label="승률" value={fmtPct(kpi?.win_rate)} />
+            <Stat label="손익비" value={kpi?.profit_factor?.toFixed(2) ?? "—"} />
           </div>
-          <div ref={chartRef} style={{ flex: 1, minHeight: 300 }} />
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <button style={{ ...box, cursor: "pointer" }} onClick={downloadCsv}>거래내역 CSV</button>
-            <button style={{ ...box, cursor: "pointer" }} onClick={() => clone(job)}>이 조건으로 다시 설정</button>
-            <button style={{ ...box, cursor: "pointer" }} onClick={() => void (async () => {
-              const r = await apiFetch(`/portfolios/from-backtest/${job.id}`, { method: "POST" });
-              if (r.ok) router.push("/portfolio");
-            })()}>실전매매로 전환 →</button>
-            <span style={{ opacity: 0.7 }}>오버레이(최대 4개 추가):</span>
-            {history.filter((h) => h.id !== job.id).slice(0, 8).map((h) => (
-              <label key={h.id} style={{ opacity: 0.85 }}>
-                <input type="checkbox" checked={overlay.includes(h.id)} disabled={!overlay.includes(h.id) && overlay.length >= 4}
-                  onChange={(e) => {
-                    const next = e.target.checked ? [...overlay, h.id] : overlay.filter((x) => x !== h.id);
-                    setOverlay(next);
-                    void drawOverlay(next);
-                  }} /> #{h.id}
-              </label>
-            ))}
-          </div>
-          <p style={{ opacity: 0.45, fontSize: 12 }}>자산곡선은 초기자본=100 정규화. 벤치마크 = KODEX 200 매수보유(보수 반영). 세금은 단순화 계산.</p>
-        </section>
+          <Card>
+            <CardTitle right={
+              <span className="flex items-center gap-2 text-xs text-faint">
+                <i className="inline-block h-0.5 w-4 bg-accent" />전략
+                <i className="inline-block h-px w-4 bg-faint" />KODEX 200 매수보유
+              </span>
+            }>자산곡선 <span className="normal-case text-faint">· 초기자본 = 100 정규화</span></CardTitle>
+            <div ref={chartRef} className="h-80" />
+          </Card>
+          <Card>
+            <div className="flex flex-wrap items-center gap-2">
+              <button className="btn" onClick={downloadCsv}>거래내역 CSV</button>
+              <button className="btn" onClick={() => clone(job)}>이 조건으로 다시 설정</button>
+              <button className="btn btn-primary" onClick={() => void (async () => {
+                const r = await apiFetch(`/portfolios/from-backtest/${job.id}`, { method: "POST" });
+                if (r.ok) router.push("/portfolio");
+              })()}>실전매매로 전환 →</button>
+              <span className="ml-auto flex flex-wrap items-center gap-2 text-[13px] text-muted">
+                오버레이:
+                {history.filter((h) => h.id !== job.id).slice(0, 8).map((h) => (
+                  <label key={h.id} className="flex cursor-pointer items-center gap-1">
+                    <input type="checkbox" className="accent-[#f0b429]" checked={overlay.includes(h.id)}
+                      disabled={!overlay.includes(h.id) && overlay.length >= 4}
+                      onChange={(e) => {
+                        const next = e.target.checked ? [...overlay, h.id] : overlay.filter((x) => x !== h.id);
+                        setOverlay(next); void drawOverlay(next);
+                      }} />#{h.id}
+                  </label>
+                ))}
+              </span>
+            </div>
+          </Card>
+        </div>
       )}
     </main>
   );

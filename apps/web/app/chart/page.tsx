@@ -1,22 +1,16 @@
 "use client";
 
 /**
- * 차트 화면 v1 — Lightweight Charts v5 (feature-chart §5·§9).
- * 캔들 + MA20/60/200·EMA20 오버레이 + 거래량 + RSI 서브페인, 수평선 드로잉 저장(로그인 시).
- * 나머지 드로잉 4종(추세선·채널·피보나치·텍스트)은 백로그(TODO.md) — v1은 수평선만.
+ * 차트 — Lightweight Charts v5: 캔들 + MA/EMA 오버레이 + 거래량 + RSI 페인 (feature-chart §5·§9).
+ * 드로잉 v1 = 수평선 저장 (나머지 4종 TODO). 로그인 시 평단선 표시.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  CandlestickSeries,
-  createChart,
-  HistogramSeries,
-  IChartApi,
-  IPriceLine,
-  ISeriesApi,
-  LineSeries,
+  CandlestickSeries, createChart, HistogramSeries, IChartApi, IPriceLine, ISeriesApi, LineSeries,
 } from "lightweight-charts";
-import { atr, ema, rsi, sma } from "../../lib/indicators";
+import { ema, rsi, sma } from "../../lib/indicators";
 import { apiFetch, hasToken } from "../../lib/api";
+
 
 type Bar = { date: string; open: number; high: number; low: number; close: number; volume: number };
 
@@ -25,10 +19,9 @@ const PRESETS = [
   { code: "102110", label: "TIGER 200" },
   { code: "122630", label: "KODEX 레버리지" },
 ];
-
-const MA_COLORS: Record<string, string> = {
-  ma20: "#e8b339", ma60: "#4fc3f7", ma200: "#ab7df8", ema20: "#66d9a8",
-};
+const MA_STYLES: [string, string, string][] = [
+  ["ma20", "MA20", "#f0b429"], ["ma60", "MA60", "#4d8df6"], ["ma200", "MA200", "#8b7cf6"], ["ema20", "EMA20", "#35c28f"],
+];
 
 export default function ChartPage() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -41,21 +34,22 @@ export default function ChartPage() {
   const [hlines, setHlines] = useState<number[]>([]);
   const [newLine, setNewLine] = useState("");
 
+  function disposeChart() {
+    try { chartRef.current?.remove(); } catch { /* already disposed */ }
+    chartRef.current = null;
+    candleRef.current = null;
+    priceLinesRef.current = [];
+  }
+
   const load = useCallback(async (c: string) => {
     setStatus("불러오는 중…");
     const to = new Date().toISOString().slice(0, 10);
     const from = new Date(Date.now() - 3650 * 86400e3).toISOString().slice(0, 10);
     const res = await fetch(`/api/ohlcv?code=${c}&from=${from}&to=${to}&limit=10000`);
-    if (!res.ok) {
-      setStatus(`데이터 없음 (${res.status}) — 시세 시딩이 필요할 수 있습니다`);
-      return;
-    }
+    if (!res.ok) { setStatus(`데이터 없음 (${res.status}) — 시세 시딩이 필요할 수 있습니다`); return; }
     const body = (await res.json()) as { items: Bar[]; as_of: string | null };
     setAsOf(body.as_of);
-    if (body.items.length === 0) {
-      setStatus("데이터 0건 — .env에 KIS 키 기입 후 시딩을 실행하세요");
-      return;
-    }
+    if (body.items.length === 0) { setStatus("데이터 0건 — 시딩을 먼저 실행하세요"); return; }
     setStatus("");
     draw(body.items);
     if (hasToken()) {
@@ -65,16 +59,16 @@ export default function ChartPage() {
         setHlines(items.hlines ?? []);
         applyPriceLines(items.hlines ?? []);
       }
-      // 실전 포지션 평단선 (feature-chart §5)
       const ps = await apiFetch("/portfolio/summary");
       if (ps.ok) {
         const positions = ((await ps.json()) as { positions: { code: string; avg_price: number; qty: number }[] }).positions;
         const mine = positions.find((x) => x.code === c);
         if (mine && candleRef.current) {
-          candleRef.current.createPriceLine({ price: mine.avg_price, color: "#66d9a8", lineWidth: 1, title: `평단 ${mine.qty}주` });
+          candleRef.current.createPriceLine({ price: mine.avg_price, color: "#35c28f", lineWidth: 1, title: `평단 ${mine.qty}주` });
         }
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function applyPriceLines(prices: number[]) {
@@ -82,24 +76,18 @@ export default function ChartPage() {
     if (!candle) return;
     priceLinesRef.current.forEach((l) => candle.removePriceLine(l));
     priceLinesRef.current = prices.map((p) =>
-      candle.createPriceLine({ price: p, color: "#f2617a", lineWidth: 1, title: `${p.toLocaleString()}` }),
+      candle.createPriceLine({ price: p, color: "#f2495c", lineWidth: 1, title: p.toLocaleString() }),
     );
-  }
-
-  function disposeChart() {
-    // lightweight-charts: remove() 후 ref 를 비우지 않으면 이중 remove 시 "Object is disposed" (NOTES.md)
-    try { chartRef.current?.remove(); } catch { /* already disposed */ }
-    chartRef.current = null;
-    candleRef.current = null;
-    priceLinesRef.current = [];
   }
 
   function draw(bars: Bar[]) {
     if (!containerRef.current) return;
     disposeChart();
     const chart = createChart(containerRef.current, {
-      layout: { background: { color: "#111117" }, textColor: "#c9c9d1", attributionLogo: false },
-      grid: { vertLines: { color: "#22222c" }, horzLines: { color: "#22222c" } },
+      layout: { background: { color: "transparent" }, textColor: "#71717e", attributionLogo: false, fontSize: 11 },
+      grid: { vertLines: { color: "rgba(255,255,255,0.05)" }, horzLines: { color: "rgba(255,255,255,0.05)" } },
+      rightPriceScale: { borderVisible: false },
+      timeScale: { borderVisible: false },
       autoSize: true,
     });
     chartRef.current = chart;
@@ -108,29 +96,29 @@ export default function ChartPage() {
 
     // 국내 관례: 상승=적 / 하락=청 (REQUIREMENTS §7)
     const candle = chart.addSeries(CandlestickSeries, {
-      upColor: "#e5484d", wickUpColor: "#e5484d", borderUpColor: "#e5484d",
-      downColor: "#3b82f6", wickDownColor: "#3b82f6", borderDownColor: "#3b82f6",
+      upColor: "#f2495c", wickUpColor: "#f2495c", borderUpColor: "#f2495c",
+      downColor: "#4d8df6", wickDownColor: "#4d8df6", borderDownColor: "#4d8df6",
     });
     candle.setData(bars.map((b) => ({ time: b.date, open: b.open, high: b.high, low: b.low, close: b.close })));
     candleRef.current = candle;
 
-    const overlays: [string, (number | null)[]][] = [
-      ["ma20", sma(closes, 20)], ["ma60", sma(closes, 60)], ["ma200", sma(closes, 200)], ["ema20", ema(closes, 20)],
+    const overlays: [(number | null)[], string][] = [
+      [sma(closes, 20), MA_STYLES[0][2]], [sma(closes, 60), MA_STYLES[1][2]],
+      [sma(closes, 200), MA_STYLES[2][2]], [ema(closes, 20), MA_STYLES[3][2]],
     ];
-    for (const [name, values] of overlays) {
-      const s = chart.addSeries(LineSeries, { color: MA_COLORS[name], lineWidth: 1, priceLineVisible: false });
-      s.setData(values.flatMap((v, i) => (v === null ? [] : [{ time: times[i], value: v }])));
+    for (const [values, color] of overlays) {
+      chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, crosshairMarkerVisible: false })
+        .setData(values.flatMap((v, i) => (v === null ? [] : [{ time: times[i], value: v }])));
     }
 
-    const vol = chart.addSeries(HistogramSeries, { priceScaleId: "vol", color: "#3c3c49" });
-    chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    const vol = chart.addSeries(HistogramSeries, { priceScaleId: "vol", color: "rgba(255,255,255,0.12)" });
+    chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
     vol.setData(bars.map((b) => ({ time: b.date, value: b.volume })));
 
-    const rsiSeries = chart.addSeries(LineSeries, { color: "#e8b339", lineWidth: 1 }, 1);
-    rsiSeries.setData(rsi(closes, 14).flatMap((v, i) => (v === null ? [] : [{ time: times[i], value: v }])));
+    chart.addSeries(LineSeries, { color: "#f0b429", lineWidth: 1 }, 1)
+      .setData(rsi(closes, 14).flatMap((v, i) => (v === null ? [] : [{ time: times[i], value: v }])));
 
     chart.timeScale().fitContent();
-    void atr; // 전략 오버레이(Phase 4)에서 사용 예정
   }
 
   async function saveLines(next: number[]) {
@@ -148,35 +136,33 @@ export default function ChartPage() {
   }, [code]);
 
   return (
-    <main style={{ padding: 16, display: "flex", flexDirection: "column", gap: 8, height: "100vh" }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        {PRESETS.map((p) => (
-          <button key={p.code} onClick={() => setCode(p.code)}
-            style={{ padding: "6px 10px", background: code === p.code ? "#2d2d3a" : "#1a1a22", color: "#e6e6ea", border: "1px solid #33333f", borderRadius: 6 }}>
-            {p.label}
-          </button>
-        ))}
-        <span style={{ opacity: 0.6, fontSize: 12 }}>
-          {asOf ? `기준시각 ${new Date(asOf).toLocaleString("ko-KR")} · 지연 시세` : ""}
-        </span>
-        <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-          <input value={newLine} onChange={(e) => setNewLine(e.target.value)} placeholder="수평선 가격"
-            style={{ width: 110, background: "#1a1a22", color: "#e6e6ea", border: "1px solid #33333f", borderRadius: 6, padding: "6px 8px" }} />
-          <button onClick={() => { const p = Number(newLine); if (p > 0) { void saveLines([...hlines, p]); setNewLine(""); } }}
-            style={{ padding: "6px 10px", background: "#1a1a22", color: "#e6e6ea", border: "1px solid #33333f", borderRadius: 6 }}>
-            수평선 추가
-          </button>
-          <button onClick={() => void saveLines([])}
-            style={{ padding: "6px 10px", background: "#1a1a22", color: "#e6e6ea", border: "1px solid #33333f", borderRadius: 6 }}>
-            지우기
-          </button>
-        </span>
+    <main className="flex h-[calc(100vh-130px)] flex-col">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="flex overflow-hidden rounded-lg border border-line">
+          {PRESETS.map((p) => (
+            <button key={p.code} onClick={() => setCode(p.code)}
+              className={`px-3.5 py-2 text-[13px] font-semibold transition-colors ${
+                code === p.code ? "bg-raised text-ink" : "bg-surface text-muted hover:text-ink"}`}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-faint">{asOf ? `기준시각 ${new Date(asOf).toLocaleString("ko-KR")} · 지연 시세` : ""}</span>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="hidden gap-3 text-[11px] text-faint lg:flex">
+            {MA_STYLES.map(([k, label, color]) => (
+              <span key={k}><i className="mr-1 inline-block h-0.5 w-3 align-middle" style={{ background: color }} />{label}</span>
+            ))}
+          </span>
+          <input className="input w-28 !py-2" placeholder="수평선 가격" value={newLine} onChange={(e) => setNewLine(e.target.value)} />
+          <button className="btn !py-2" onClick={() => { const p = Number(newLine); if (p > 0) { void saveLines([...hlines, p]); setNewLine(""); } }}>추가</button>
+          {hlines.length > 0 && <button className="btn-ghost btn !py-2" onClick={() => void saveLines([])}>지우기</button>}
+        </div>
       </div>
-      {status && <p style={{ opacity: 0.7 }}>{status}</p>}
-      <div ref={containerRef} style={{ flex: 1, minHeight: 320 }} />
-      <p style={{ opacity: 0.45, fontSize: 12, margin: 0 }}>
-        모의·과거 데이터 기반이며 투자 권유가 아닙니다. 수평선 저장은 로그인 시 서버에 보관됩니다.
-      </p>
+      {status && <p className="mb-2 text-[13px] text-muted">{status}</p>}
+      <div className="card flex-1 overflow-hidden p-2">
+        <div ref={containerRef} className="h-full w-full" />
+      </div>
     </main>
   );
 }

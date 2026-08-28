@@ -1,9 +1,10 @@
 "use client";
 
-/** 실전매매 기록 — 수익률 카드 + 거래 등록 (feature-portfolio §9). 비용 포함/제외 토글, 목표/손절 진행 바. */
+/** 실전매매 기록 — 수익률 카드 + 거래 등록 (feature-portfolio §9). */
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch, hasToken } from "../../lib/api";
+import { Badge, Card, CardTitle, EmptyState, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone, Stat } from "../../components/ui";
 
 type Position = {
   code: string; name: string; qty: number; avg_price: number; price: number; value: number;
@@ -18,19 +19,7 @@ type Summary = {
 };
 type PortfolioItem = { id: number; name: string; kind: string };
 
-const box = { background: "#1a1a22", color: "#e6e6ea", border: "1px solid #33333f", borderRadius: 6, padding: "10px 12px" } as const;
-const input = { ...box, padding: "6px 8px" } as const;
-const pct = (v: number | null | undefined, d = 2) => (v === null || v === undefined ? "—" : `${(v * 100).toFixed(d)}%`);
-const won = (v: number) => `${v.toLocaleString()}원`;
-const pnlColor = (v: number) => (v > 0 ? "#e5484d" : v < 0 ? "#3b82f6" : "#c9c9d1");
-
-function progress(pos: Position): { label: string; ratio: number } | null {
-  if (!pos.target_price || !pos.stop_price) return null;
-  const span = pos.target_price - pos.stop_price;
-  if (span <= 0) return null;
-  const ratio = Math.min(Math.max((pos.price - pos.stop_price) / span, 0), 1);
-  return { label: `손절 ${pos.stop_price.toLocaleString()} ─ 목표 ${pos.target_price.toLocaleString()}`, ratio };
-}
+const toneCls = { up: "text-up", down: "text-down", default: "text-ink" };
 
 export default function PortfolioPage() {
   const router = useRouter();
@@ -67,95 +56,123 @@ export default function PortfolioPage() {
     const res = await apiFetch("/positions", { method: "POST", body: JSON.stringify(body) });
     if (res.ok) {
       const out = (await res.json()) as { realized_pnl: number | null };
-      setMsg(out.realized_pnl !== null ? `실현손익 ${won(out.realized_pnl)}` : "등록됨");
+      setMsg(out.realized_pnl !== null ? `등록됨 — 실현손익 ${fmtWon(out.realized_pnl)}` : "등록됨");
       void load(pid);
     } else {
       setMsg(((await res.json()) as { detail?: string }).detail ?? `등록 실패 (${res.status})`);
     }
   }
 
-  const gross = sum ? sum.unrealized_pnl + sum.realized_pnl : 0;
-  const net = sum ? gross - (includeCosts ? sum.estimated_costs : 0) : 0;
+  const net = sum ? sum.unrealized_pnl + sum.realized_pnl - (includeCosts ? sum.estimated_costs : 0) : 0;
 
   return (
-    <main style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, maxWidth: 860 }}>
-      <h1 style={{ fontSize: "1.3rem" }}>실전매매 기록 <span style={{ opacity: 0.5, fontSize: 13 }}>지연 시세 기준 · 투자 권유 아님</span></h1>
+    <main>
+      <PageTitle title="실전매매" sub="체결 내역을 등록해 매수 시점 기준 수익률을 추적합니다 — 지연 시세 기준" />
 
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <select style={input} value={pid ?? ""} onChange={(e) => setPid(e.target.value ? Number(e.target.value) : null)}>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <select className="input" value={pid ?? ""} onChange={(e) => setPid(e.target.value ? Number(e.target.value) : null)}>
           <option value="">내 계좌 (기본)</option>
           {portfolios.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        <label style={{ opacity: 0.8 }}>
-          <input type="checkbox" checked={includeCosts} onChange={(e) => setIncludeCosts(e.target.checked)} /> 비용 포함(추정 수수료)
+        <label className="flex items-center gap-1.5 text-[13px] text-muted">
+          <input type="checkbox" className="accent-[#f0b429]" checked={includeCosts} onChange={(e) => setIncludeCosts(e.target.checked)} />
+          비용 포함 (추정 수수료)
         </label>
-        {sum?.as_of && <span style={{ opacity: 0.5, fontSize: 12 }}>기준 {sum.as_of}</span>}
+        {sum?.as_of && <span className="ml-auto text-xs text-faint">기준일 {sum.as_of} · 지연 시세</span>}
       </div>
 
       {sum && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8, fontVariantNumeric: "tabular-nums" }}>
-          {[["총자산", won(sum.total_equity)], ["현금", won(sum.cash)], ["주식", won(sum.stock_value)],
-            ["실현손익", won(sum.realized_pnl)], ["평가손익", won(sum.unrealized_pnl)],
-            ["순손익" + (includeCosts ? "(비용차감)" : ""), won(net)],
-            ["TWR", pct(sum.twr)], ["XIRR", pct(sum.xirr)]].map(([k, v]) => (
-            <div key={k} style={box}><div style={{ opacity: 0.6, fontSize: 12 }}>{k}</div><div style={{ fontSize: 17 }}>{v}</div></div>
-          ))}
+        <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+          <Stat label="총자산" value={fmtWon(sum.total_equity)} />
+          <Stat label="현금" value={fmtWon(sum.cash)} />
+          <Stat label="주식" value={fmtWon(sum.stock_value)} />
+          <Stat label="실현손익" value={fmtWon(sum.realized_pnl)} tone={pnlTone(sum.realized_pnl)} />
+          <Stat label="평가손익" value={fmtWon(sum.unrealized_pnl)} tone={pnlTone(sum.unrealized_pnl)} />
+          <Stat label={`순손익${includeCosts ? " (비용차감)" : ""}`} value={fmtWon(net)} tone={pnlTone(net)} />
+          <Stat label="TWR" value={fmtPct(sum.twr, 2)} />
+          <Stat label="XIRR" value={fmtPct(sum.xirr, 2)} />
         </div>
       )}
 
-      <section style={{ ...box, display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap" }}>
-        <label>구분<br />
-          <select style={input} value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
-            <option value="buy">매수</option><option value="sell">매도</option>
-            <option value="deposit">입금</option><option value="withdraw">출금</option>
-          </select>
-        </label>
-        {(form.kind === "buy" || form.kind === "sell") ? (
-          <>
-            <label>종목<br />
-              <select style={input} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })}>
-                <option value="069500">KODEX 200</option><option value="102110">TIGER 200</option><option value="122630">KODEX 레버리지</option>
-              </select>
-            </label>
-            <label>수량<br /><input style={{ ...input, width: 90 }} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></label>
-            <label>단가<br /><input style={{ ...input, width: 110 }} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} /></label>
-          </>
-        ) : (
-          <label>금액<br /><input style={{ ...input, width: 140 }} value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></label>
-        )}
-        <label>메모<br /><input style={{ ...input, width: 160 }} value={form.memo} onChange={(e) => setForm({ ...form, memo: e.target.value })} /></label>
-        <button style={{ ...box, cursor: "pointer" }} onClick={() => void submit()}>등록</button>
-        {msg && <span style={{ opacity: 0.8 }}>{msg}</span>}
-      </section>
+      {/* 거래 등록 */}
+      <Card className="mb-4">
+        <CardTitle>거래 등록</CardTitle>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="grid gap-1 text-xs text-faint">구분
+            <select className="input" value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
+              <option value="buy">매수</option><option value="sell">매도</option>
+              <option value="deposit">입금</option><option value="withdraw">출금</option>
+            </select>
+          </label>
+          {(form.kind === "buy" || form.kind === "sell") ? (
+            <>
+              <label className="grid gap-1 text-xs text-faint">종목
+                <select className="input" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })}>
+                  <option value="069500">KODEX 200</option>
+                  <option value="102110">TIGER 200</option>
+                  <option value="122630">KODEX 레버리지</option>
+                </select>
+              </label>
+              <label className="grid gap-1 text-xs text-faint">수량
+                <input className="input w-24" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></label>
+              <label className="grid gap-1 text-xs text-faint">단가(원)
+                <input className="input w-32" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} /></label>
+            </>
+          ) : (
+            <label className="grid gap-1 text-xs text-faint">금액(원)
+              <input className="input w-40" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></label>
+          )}
+          <label className="grid gap-1 text-xs text-faint">메모
+            <input className="input w-44" value={form.memo} onChange={(e) => setForm({ ...form, memo: e.target.value })} /></label>
+          <button className="btn btn-primary" onClick={() => void submit()}>등록</button>
+          {msg && <span className="text-[13px] text-muted">{msg}</span>}
+        </div>
+      </Card>
 
-      <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {sum?.positions.length === 0 && <p style={{ opacity: 0.6 }}>보유 포지션이 없습니다. 체결 내역을 등록하세요.</p>}
-        {sum?.positions.map((p) => {
-          const bar = progress(p);
-          return (
-            <div key={p.code} style={{ ...box, fontVariantNumeric: "tabular-nums" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-                <b>{p.name} <span style={{ opacity: 0.5 }}>{p.code}</span></b>
-                <span style={{ color: pnlColor(p.return), fontSize: 18 }}>{pct(p.return)} ({won(p.unrealized)})</span>
-              </div>
-              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", opacity: 0.85, fontSize: 13, marginTop: 4 }}>
-                <span>{p.qty.toLocaleString()}주 · 평단 {won(p.avg_price)} · 현재 {won(p.price)}</span>
-                <span>보유 {p.held_days}일</span>
-                <span>연환산 {p.annualized === null ? "— (30일 미만)" : pct(p.annualized)}</span>
-                <span>최고 {pct(p.best_return)} / 최저 {pct(p.worst_return)}</span>
-              </div>
-              {bar && (
-                <div style={{ marginTop: 6 }}>
-                  <div style={{ fontSize: 11, opacity: 0.6 }}>{bar.label}</div>
-                  <div style={{ background: "#22222c", borderRadius: 4, height: 6 }}>
-                    <div style={{ width: `${bar.ratio * 100}%`, background: pnlColor(p.return), height: 6, borderRadius: 4 }} />
+      {/* 포지션 카드 */}
+      {sum?.positions.length === 0 ? (
+        <EmptyState icon="📒" title="보유 포지션이 없습니다"
+          desc="HTS에서 체결한 매수 내역을 위 폼으로 등록하면 수익률 추적이 시작됩니다. 입출금도 등록해야 TWR·XIRR이 정확해집니다." />
+      ) : (
+        <div className="grid gap-3">
+          {sum?.positions.map((p) => {
+            const t = pnlTone(p.return);
+            const hasBand = p.target_price && p.stop_price && p.target_price > p.stop_price;
+            const ratio = hasBand ? (p.price - p.stop_price!) / (p.target_price! - p.stop_price!) : 0;
+            return (
+              <Card key={p.code}>
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <b className="text-[15px]">{p.name}</b>
+                    <span className="text-xs text-faint">{p.code}</span>
+                    <Badge tone="default">{p.held_days}일 보유</Badge>
+                  </div>
+                  <div className={`text-lg font-extrabold ${toneCls[t]}`}>
+                    {fmtPct(p.return, 2)} <span className="text-[13px] font-semibold">({fmtWon(p.unrealized)})</span>
                   </div>
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </section>
+                <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-[13px] text-muted sm:grid-cols-4 lg:grid-cols-6">
+                  <span>보유 <b className="text-ink">{p.qty.toLocaleString()}주</b></span>
+                  <span>평단 <b className="text-ink">{fmtWon(p.avg_price)}</b></span>
+                  <span>현재가 <b className="text-ink">{fmtWon(p.price)}</b></span>
+                  <span>평가액 <b className="text-ink">{fmtWon(p.value)}</b></span>
+                  <span>연환산 <b className="text-ink">{p.annualized === null ? "— (30일 미만)" : fmtPct(p.annualized)}</b></span>
+                  <span>최고/최저 <b className="text-up">{fmtPct(p.best_return)}</b> / <b className="text-down">{fmtPct(p.worst_return)}</b></span>
+                </div>
+                {hasBand && (
+                  <div className="mt-3">
+                    <div className="mb-1 flex justify-between text-[11px] text-faint">
+                      <span>손절 {fmtWon(p.stop_price!)}</span>
+                      <span>목표 {fmtWon(p.target_price!)}</span>
+                    </div>
+                    <GaugeBar ratio={ratio} color={t === "down" ? "var(--color-down)" : "var(--color-up)"} height={6} />
+                  </div>
+                )}
+              </Card>
+            );
+          })}
+        </div>
+      )}
     </main>
   );
 }

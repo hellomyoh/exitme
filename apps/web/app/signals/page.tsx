@@ -1,9 +1,10 @@
 "use client";
 
-/** 주문표 — 오늘의 레짐·노출·다음 거래일 지정가 주문 + 조건부 지시문 + 계산 근거 (feature-strategy-engine §9). */
+/** 주문표 — 레짐·노출 히어로 + 주문 테이블 + 조건부 지시문 + 계산 근거 (feature-strategy-engine §9). */
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch, hasToken } from "../../lib/api";
+import { Badge, Callout, Card, CardTitle, EmptyState, fmtNum, fmtPct, GaugeBar, PageTitle } from "../../components/ui";
 
 type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
 type Signal = {
@@ -12,16 +13,32 @@ type Signal = {
   indicators?: Record<string, number>; detail?: Record<string, unknown>; orders?: OrderRow[];
 };
 
-const box = { background: "#1a1a22", border: "1px solid #33333f", borderRadius: 6, padding: "10px 12px" } as const;
-const REGIME_COLOR: Record<string, string> = { BULL: "#e5484d", NEUTRAL: "#e8b339", BEAR: "#3b82f6" };
-const REGIME_KO: Record<string, string> = { BULL: "상승", NEUTRAL: "중립", BEAR: "하락" };
+const REGIME = {
+  BULL: { ko: "상승장", color: "var(--color-up)", tone: "up" as const, desc: "그리드 매수 + 코어 보유 (익절 없음)" },
+  NEUTRAL: { ko: "중립장", color: "var(--color-accent)", tone: "accent" as const, desc: "그리드 왕복 — 매수 후 +Grid 익절" },
+  BEAR: { ko: "하락장", color: "var(--color-down)", tone: "down" as const, desc: "신규 매수 정지 · 보유 축소" },
+};
 const KIND_KO: Record<string, string> = {
-  grid1: "그리드 1차 매수", grid2: "그리드 2차 매수", grid3: "그리드 3차 매수", tp: "익절 매도",
-  reduce: "축소 매도", lev_strat: "레버리지 전략", lev_tact1: "레버리지 전술 1차", lev_tact2: "레버리지 전술 2차",
-  lev_tact_exit: "레버리지 전술 이탈", lev_liq: "레버리지 청산",
+  grid1: "그리드 1차", grid2: "그리드 2차", grid3: "그리드 3차", tp: "익절",
+  reduce: "축소", lev_strat: "레버리지 전략", lev_tact1: "레버리지 전술 1차",
+  lev_tact2: "레버리지 전술 2차", lev_tact_exit: "전술 이탈", lev_liq: "레버리지 청산",
 };
 const NAME: Record<string, string> = { K200: "KODEX 200", LEV: "KODEX 레버리지" };
-const pct = (v?: number) => (v === undefined || v === null ? "—" : `${(v * 100).toFixed(1)}%`);
+
+const IND_ROWS: { key: string; label: string; fmt: (v: number) => string }[] = [
+  { key: "close", label: "KODEX 200 종가", fmt: (v) => `${fmtNum(v)}원` },
+  { key: "ma20", label: "MA20", fmt: (v) => `${fmtNum(v)}원` },
+  { key: "ma60", label: "MA60", fmt: (v) => `${fmtNum(v)}원` },
+  { key: "ma200", label: "MA200", fmt: (v) => `${fmtNum(v)}원` },
+  { key: "ema20", label: "EMA20", fmt: (v) => `${fmtNum(v)}원` },
+  { key: "atr20", label: "ATR20", fmt: (v) => `${fmtNum(v)}원` },
+  { key: "grid", label: "그리드 간격", fmt: (v) => fmtPct(v, 2) },
+  { key: "sigma20", label: "σ20 (연율 총변동성)", fmt: (v) => fmtPct(v, 1) },
+  { key: "sigma_down", label: "σ_down (하방 변동성)", fmt: (v) => fmtPct(v, 1) },
+  { key: "sigma_ref", label: "σ_ref (250일 중위)", fmt: (v) => fmtPct(v, 1) },
+  { key: "lev_close", label: "레버리지 종가", fmt: (v) => `${fmtNum(v)}원` },
+  { key: "equity", label: "모델 포트 평가액", fmt: (v) => `${fmtNum(v)}원` },
+];
 
 export default function SignalsPage() {
   const router = useRouter();
@@ -35,72 +52,118 @@ export default function SignalsPage() {
     })();
   }, [router]);
 
-  if (!sig) return <main style={{ padding: 24 }}>불러오는 중…</main>;
+  if (!sig) return <main><PageTitle title="주문표" /><p className="text-muted">불러오는 중…</p></main>;
+
+  const r = REGIME[(sig.regime ?? "NEUTRAL") as keyof typeof REGIME] ?? REGIME.NEUTRAL;
+  const cashRatio = sig.e_target !== undefined ? Math.max(1 - (sig.w_200 ?? 0) - (sig.w_lev ?? 0), 0) : 0;
 
   return (
-    <main style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, maxWidth: 760 }}>
-      <h1 style={{ fontSize: "1.3rem" }}>주문표 <span style={{ opacity: 0.5, fontSize: 13 }}>모의 계산이며 투자 권유가 아닙니다 — 발주는 본인 HTS에서 직접 수행</span></h1>
+    <main>
+      <PageTitle title="주문표" sub="다음 거래일 지정가 주문 — 발주는 본인 HTS에서 직접 수행합니다. 모의 계산이며 투자 권유가 아닙니다." />
 
-      {sig.status !== "OK" && (
-        <div style={{ ...box, borderColor: "#e8b339" }}>
-          <b>{sig.status}</b> — {sig.reason ?? (sig.status === "INSUFFICIENT_HISTORY" ? "지표 계산에 필요한 데이터(약 270 거래일)가 부족합니다" : String(sig.detail?.error ?? ""))}
-        </div>
-      )}
-
-      {sig.status === "OK" && (
-        <>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", fontVariantNumeric: "tabular-nums" }}>
-            <div style={{ ...box }}>
-              <div style={{ opacity: 0.6, fontSize: 12 }}>레짐 ({sig.trade_date} 종가 · v{sig.version})</div>
-              <div style={{ fontSize: 20, color: REGIME_COLOR[sig.regime ?? ""] }}>{REGIME_KO[sig.regime ?? ""] ?? sig.regime}</div>
-            </div>
-            <div style={{ ...box }}><div style={{ opacity: 0.6, fontSize: 12 }}>목표 노출 E</div><div style={{ fontSize: 20 }}>{pct(sig.e_target)}</div></div>
-            <div style={{ ...box }}><div style={{ opacity: 0.6, fontSize: 12 }}>KODEX 200</div><div style={{ fontSize: 20 }}>{pct(sig.w_200)}</div></div>
-            <div style={{ ...box }}><div style={{ opacity: 0.6, fontSize: 12 }}>레버리지</div><div style={{ fontSize: 20 }}>{pct(sig.w_lev)}</div></div>
+      {sig.status !== "OK" ? (
+        <EmptyState icon="🛰️" title={sig.status === "INSUFFICIENT_HISTORY" ? "데이터 워밍업 중" : "시그널이 아직 없습니다"}
+          desc={sig.reason ?? (sig.status === "INSUFFICIENT_HISTORY"
+            ? "지표 계산에 약 270 거래일의 데이터가 필요합니다."
+            : String(sig.detail?.error ?? "장 마감 후 배치(16:05)가 실행되면 표시됩니다."))} />
+      ) : (
+        <div className="grid gap-4">
+          {/* 히어로: 레짐 + 배분 */}
+          <div className="grid gap-4 md:grid-cols-3">
+            <Card>
+              <CardTitle>시장 레짐 <span className="normal-case text-faint">· {sig.trade_date} 종가 기준</span></CardTitle>
+              <div className="flex items-center gap-3">
+                <span className="text-2xl font-extrabold" style={{ color: r.color }}>{r.ko}</span>
+                <Badge tone={r.tone}>v{sig.version}</Badge>
+              </div>
+              <p className="mt-2 text-[13px] text-muted">{r.desc}</p>
+            </Card>
+            <Card className="md:col-span-2">
+              <CardTitle>목표 노출 E = {fmtPct(sig.e_target)}</CardTitle>
+              <GaugeBar ratio={(sig.e_target ?? 0) / 1.3} color={r.color} height={10} />
+              <div className="mt-4 flex h-3 w-full overflow-hidden rounded-full">
+                <div style={{ width: `${(sig.w_200 ?? 0) * 100}%`, background: "var(--color-accent)" }} />
+                <div style={{ width: `${(sig.w_lev ?? 0) * 100}%`, background: "var(--color-up)" }} />
+                <div style={{ width: `${cashRatio * 100}%`, background: "var(--color-raised)" }} />
+              </div>
+              <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-[12.5px] text-muted">
+                <span><i className="mr-1.5 inline-block h-2 w-2 rounded-full bg-accent" />KODEX 200 {fmtPct(sig.w_200)}</span>
+                <span><i className="mr-1.5 inline-block h-2 w-2 rounded-full bg-up" />레버리지 {fmtPct(sig.w_lev)}</span>
+                <span><i className="mr-1.5 inline-block h-2 w-2 rounded-full bg-raised" style={{ outline: "1px solid var(--color-line-strong)" }} />현금 {fmtPct(cashRatio)}</span>
+              </div>
+            </Card>
           </div>
 
-          <section style={{ ...box }}>
-            <h2 style={{ fontSize: "1rem", marginBottom: 8 }}>다음 거래일 주문 (모델 자본 1억 기준 수량)</h2>
+          {/* 주문 테이블 */}
+          <Card>
+            <CardTitle>다음 거래일 주문 <span className="normal-case text-faint">· 모델 자본 1억 기준 수량</span></CardTitle>
             {sig.orders && sig.orders.length > 0 ? (
-              <table style={{ width: "100%", fontVariantNumeric: "tabular-nums", borderCollapse: "collapse" }}>
-                <thead><tr style={{ opacity: 0.6, textAlign: "left" }}><th>구분</th><th>종목</th><th>방향</th><th>유형</th><th style={{ textAlign: "right" }}>지정가</th><th style={{ textAlign: "right" }}>수량</th></tr></thead>
-                <tbody>
-                  {sig.orders.map((o, i) => (
-                    <tr key={i} style={{ borderTop: "1px solid #22222c" }}>
-                      <td>{KIND_KO[o.kind] ?? o.kind}</td><td>{NAME[o.instrument]}</td>
-                      <td style={{ color: o.side === "buy" ? "#e5484d" : "#3b82f6" }}>{o.side === "buy" ? "매수" : "매도"}</td>
-                      <td>{o.otype === "limit" ? "지정가" : "시장가"}</td>
-                      <td style={{ textAlign: "right" }}>{o.price ? o.price.toLocaleString() : "시가"}</td>
-                      <td style={{ textAlign: "right" }}>{o.qty.toLocaleString()}</td>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[13.5px]">
+                  <thead>
+                    <tr className="border-b border-line text-left text-xs text-faint">
+                      <th className="pb-2 font-medium">구분</th>
+                      <th className="pb-2 font-medium">종목</th>
+                      <th className="pb-2 font-medium">방향</th>
+                      <th className="pb-2 font-medium">유형</th>
+                      <th className="pb-2 text-right font-medium">지정가</th>
+                      <th className="pb-2 text-right font-medium">수량</th>
+                      <th className="pb-2 text-right font-medium">주문금액</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : <p style={{ opacity: 0.7 }}>오늘은 신규 주문이 없습니다.</p>}
-          </section>
+                  </thead>
+                  <tbody>
+                    {sig.orders.map((o, i) => (
+                      <tr key={i} className="border-b border-line/50 transition-colors last:border-0 hover:bg-raised/50">
+                        <td className="py-2.5"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{KIND_KO[o.kind] ?? o.kind}</Badge></td>
+                        <td className="py-2.5 font-medium">{NAME[o.instrument]}</td>
+                        <td className={`py-2.5 font-bold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
+                        <td className="py-2.5 text-muted">{o.otype === "limit" ? "지정가" : "시장가"}</td>
+                        <td className="table-num py-2.5 font-semibold">{o.price ? fmtNum(o.price) : "시가"}</td>
+                        <td className="table-num py-2.5">{fmtNum(o.qty)}</td>
+                        <td className="table-num py-2.5 text-muted">{o.price ? fmtNum(o.price * o.qty) : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : <p className="py-4 text-center text-muted">오늘은 신규 주문이 없습니다.</p>}
+          </Card>
 
-          <section style={{ ...box }}>
-            <h2 style={{ fontSize: "1rem", marginBottom: 8 }}>조건부 지시문</h2>
-            <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>
+          {/* 조건부 지시문 */}
+          <Card>
+            <CardTitle>조건부 지시문</CardTitle>
+            <div className="grid gap-2.5">
               {sig.gap_cancel_below && (
-                <li>시가가 <b>{sig.gap_cancel_below.toLocaleString()}원 이하</b>(전일종가 −1.5×ATR)로 하락하면 잔여 그리드 매수 <b>전량 취소</b></li>
+                <Callout icon="⚠️">
+                  시가가 <b className="text-ink">{fmtNum(sig.gap_cancel_below)}원 이하</b>(전일종가 −1.5×ATR)로 하락하면
+                  잔여 그리드 매수를 <b className="text-ink">전량 취소</b>합니다. (갭 하락 방어)
+                </Callout>
               )}
-              <li>σ20 = <b>{pct(sig.indicators?.sigma20)}</b> — 종가 기준 25% 돌파 시 레버리지 전량 청산</li>
-              <li>레짐이 상승에서 이탈하면 레버리지 전량 청산 (목표가 대기 금지)</li>
-            </ul>
-          </section>
+              <Callout icon="🛡️">
+                σ20 = <b className="text-ink">{fmtPct(sig.indicators?.sigma20)}</b> — 종가 기준 <b className="text-ink">25%</b> 돌파 시
+                레버리지를 전량 청산합니다.
+              </Callout>
+              <Callout icon="📉">
+                레짐이 상승에서 이탈하면 목표가를 기다리지 않고 레버리지를 <b className="text-ink">즉시 전량 청산</b>합니다.
+              </Callout>
+            </div>
+          </Card>
 
-          <details style={{ ...box }}>
-            <summary style={{ cursor: "pointer" }}>계산 근거 (지표값)</summary>
-            <table style={{ marginTop: 8, fontVariantNumeric: "tabular-nums" }}>
-              <tbody>
-                {Object.entries(sig.indicators ?? {}).map(([k, v]) => (
-                  <tr key={k}><td style={{ opacity: 0.6, paddingRight: 16 }}>{k}</td><td>{typeof v === "number" ? v.toLocaleString(undefined, { maximumFractionDigits: 4 }) : String(v)}</td></tr>
-                ))}
-              </tbody>
-            </table>
+          {/* 계산 근거 */}
+          <details className="card group">
+            <summary className="cursor-pointer select-none px-5 py-4 text-[13px] font-semibold uppercase tracking-wide text-muted transition-colors hover:text-ink">
+              계산 근거 (지표값) <span className="ml-1 text-faint group-open:hidden">펼치기</span>
+            </summary>
+            <div className="grid gap-x-8 gap-y-1 border-t border-line px-5 py-4 sm:grid-cols-2 lg:grid-cols-3">
+              {IND_ROWS.filter((row) => sig.indicators?.[row.key] !== undefined).map((row) => (
+                <div key={row.key} className="flex items-baseline justify-between border-b border-line/40 py-1.5 text-[13px]">
+                  <span className="text-faint">{row.label}</span>
+                  <span className="font-semibold">{row.fmt(sig.indicators![row.key])}</span>
+                </div>
+              ))}
+            </div>
           </details>
-        </>
+        </div>
       )}
     </main>
   );

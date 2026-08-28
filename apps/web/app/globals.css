@@ -1,0 +1,107 @@
+@import "tailwindcss";
+
+/*
+ * StockLab 디자인 토큰 — 다크 퍼스트 (REQUIREMENTS §7, 2026 다크 대시보드 패턴)
+ * - 표면 위계: bg < surface < raised, 보더는 백색 8% 불투명도
+ * - 단일 액센트(앰버), 상승=적 / 하락=청 (국내 관례) + AA 대비
+ * - 숫자: tabular-nums 전역
+ */
+@theme {
+  --color-bg: #0a0a0f;
+  --color-surface: #13131a;
+  --color-raised: #1a1a23;
+  --color-inset: #0e0e14;
+  --color-line: rgba(255, 255, 255, 0.08);
+  --color-line-strong: rgba(255, 255, 255, 0.14);
+  --color-ink: #ececf1;
+  --color-muted: #a2a2b0;
+  --color-faint: #71717e;
+  --color-accent: #f0b429;
+  --color-accent-dim: rgba(240, 180, 41, 0.14);
+  --color-up: #f2495c;
+  --color-up-dim: rgba(242, 73, 92, 0.13);
+  --color-down: #4d8df6;
+  --color-down-dim: rgba(77, 141, 246, 0.13);
+  --color-ok: #35c28f;
+  --color-warn: #f0b429;
+
+  --font-sans: "Pretendard", -apple-system, "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+  --radius-card: 14px;
+}
+
+html {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-feature-settings: "tnum" 1;
+}
+
+body {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+::selection {
+  background: var(--color-accent-dim);
+}
+
+/* 공용 컴포넌트 클래스 */
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+}
+
+.input {
+  background: var(--color-inset);
+  border: 1px solid var(--color-line-strong);
+  border-radius: 10px;
+  padding: 9px 12px;
+  color: var(--color-ink);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.input:focus {
+  border-color: var(--color-accent);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 10px;
+  padding: 9px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--color-line-strong);
+  background: var(--color-raised);
+  color: var(--color-ink);
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn:hover {
+  border-color: var(--color-accent);
+}
+.btn-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #16130a;
+}
+.btn-primary:hover {
+  filter: brightness(1.08);
+}
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-muted);
+}
+.btn-ghost:hover {
+  color: var(--color-ink);
+  border-color: var(--color-line);
+}
+
+.table-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
