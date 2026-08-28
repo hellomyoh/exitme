@@ -308,7 +308,10 @@ def create_portfolio(body: PortfolioIn, user_id: int = Depends(current_user_id),
 def delete_portfolio(pid: int, user_id: int = Depends(current_user_id),
                      session: Session = Depends(get_session)) -> dict:
     """실전매매 포트 삭제 — 거래·로트·목표/손절 기록까지 함께 제거 (되돌릴 수 없음)."""
+    from app.models import PortfolioPlan
+
     pf = _owned_portfolio(session, pid, user_id)
+    session.query(PortfolioPlan).filter(PortfolioPlan.portfolio_id == pf.id).delete()  # 계획 스냅샷 (0008)
     session.query(PositionMeta).filter(PositionMeta.portfolio_id == pf.id).delete()
     session.query(PositionLot).filter(PositionLot.portfolio_id == pf.id).delete()
     session.query(TradeTransaction).filter(TradeTransaction.portfolio_id == pf.id).delete()

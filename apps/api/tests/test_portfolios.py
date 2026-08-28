@@ -344,3 +344,23 @@ def test_portfolio_journal_plan_and_fills():
     assert planned_days, "주문표 조회일의 계획 스냅샷이 일지에 있어야 함"
     fill_days = [i for i in items if i["fills"]]
     assert fill_days and any(f["kind"] == "buy" for f in fill_days[0]["fills"])
+
+
+def test_delete_portfolio_with_plan_snapshot():
+    """2026-08-29 결함: 계획 스냅샷(portfolio_plans) FK 로 포트 삭제 실패 — 함께 삭제 회귀."""
+    from tests.test_backtest_api import seed_synthetic
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _u
+    token = client.post("/auth/register", json={"email": f"dp{_u.uuid4().hex[:8]}@stocklab.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "del"}, headers=h).json()["id"]
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 5_000_000,
+                                    "executed_at": datetime(2025, 1, 10, tzinfo=timezone.utc).isoformat()},
+                headers=h)
+    assert client.get(f"/signals/daily?portfolio_id={pid}", headers=h).status_code == 200  # 스냅샷 생성
+    r = client.delete(f"/portfolios/{pid}", headers=h)
+    assert r.status_code == 200, r.text
