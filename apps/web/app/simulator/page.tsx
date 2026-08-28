@@ -322,13 +322,20 @@ export default function SimulatorPage() {
           })()}
           {job.stale && <Callout icon="⚠️">시세 데이터가 갱신되었습니다(stale) — 재실행을 권장합니다.</Callout>}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
-            <Stat label="총수익률" value={fmtPct(kpi?.total_return)} tone={(kpi?.total_return ?? 0) >= 0 ? "up" : "down"} />
-            <Stat label="CAGR" value={kpi?.cagr === null ? "1년 미만" : fmtPct(kpi?.cagr)} />
-            <Stat label="MDD" value={fmtPct(kpi?.mdd)} tone="down" />
-            <Stat label="샤프" value={kpi?.sharpe?.toFixed(2) ?? "—"} />
-            <Stat label="거래" value={String(kpi?.trades ?? 0)} hint="FIFO 라운드트립" />
-            <Stat label="승률" value={fmtPct(kpi?.win_rate)} />
-            <Stat label="손익비" value={kpi?.profit_factor?.toFixed(2) ?? "—"} />
+            <Stat label="총수익률" value={fmtPct(kpi?.total_return)} tone={(kpi?.total_return ?? 0) >= 0 ? "up" : "down"}
+              tip="기간 전체 누적 수익률 — (최종 평가액 ÷ 투입 자본) − 1. 비용(수수료·슬리피지·세금) 반영" />
+            <Stat label="CAGR" value={kpi?.cagr === null ? "1년 미만" : fmtPct(kpi?.cagr)}
+              tip="연평균 복리 수익률 — 매년 같은 비율로 늘었다고 환산한 값. 전략이 실제로 매매한 활동 구간 기준이며, 1년(252거래일) 미만이면 왜곡이 커서 표시하지 않습니다" />
+            <Stat label="MDD" value={fmtPct(kpi?.mdd)} tone="down"
+              tip="최대 낙폭 — 기간 중 고점 대비 가장 깊게 빠졌던 비율. 이 전략이 견뎌야 했던 최악의 순간으로, 작을수록(0에 가까울수록) 안전" />
+            <Stat label="샤프" value={kpi?.sharpe?.toFixed(2) ?? "—"}
+              tip="위험 대비 수익 효율 — 수익률을 변동성으로 나눈 값. 1 이상이면 준수, 2 이상이면 우수. 수익이 같아도 출렁임이 크면 낮아집니다" />
+            <Stat label="거래" value={String(kpi?.trades ?? 0)} hint="FIFO 라운드트립"
+              tip="완결된 매매(라운드트립) 횟수 — 매수 후 그 물량을 전부 매도해야 1건. 먼저 산 것부터 파는(FIFO) 기준으로 짝을 맞춥니다. 아직 팔지 않은 보유분은 제외" />
+            <Stat label="승률" value={fmtPct(kpi?.win_rate)}
+              tip="이익으로 끝난 라운드트립의 비율. 그리드 전략 특성상 승률이 높아도 총수익은 손익비와 함께 봐야 합니다" />
+            <Stat label="손익비" value={kpi?.profit_factor?.toFixed(2) ?? "—"}
+              tip="총이익 ÷ 총손실 — 번 돈이 잃은 돈의 몇 배인지. 1보다 커야 남는 장사이고, 클수록 좋습니다" />
           </div>
           <Card>
             <CardTitle right={
