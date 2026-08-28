@@ -10,7 +10,12 @@ export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [msg, setMsg] = useState("");
+  const [msg, setMsg] = useState(() => {
+    try {
+      return typeof window !== "undefined" && new URLSearchParams(window.location.search).get("expired")
+        ? "세션이 만료되었습니다 (1시간 미사용) — 다시 로그인하세요" : "";
+    } catch { return ""; }
+  });
   const [busy, setBusy] = useState(false);
 
   async function submit(kind: "login" | "register") {

@@ -35,8 +35,13 @@ export async function apiFetch(path: string, init: RequestInit = {}, retry = tru
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const res = await fetch(`/api${path}`, { ...init, headers, credentials: "include" });
-  if (res.status === 401 && retry && (await tryRefresh())) {
-    return apiFetch(path, init, false);
+  if (res.status === 401 && retry) {
+    if (await tryRefresh()) return apiFetch(path, init, false);
+    // refresh 쿠키(1시간 롤링)까지 만료 — "invalid token" 원문 노출 대신 재로그인 안내 (2026-08-29)
+    accessToken = null;
+    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+      window.location.href = "/login?expired=1";
+    }
   }
   return res;
 }
