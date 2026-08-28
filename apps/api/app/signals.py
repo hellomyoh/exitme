@@ -49,7 +49,14 @@ def run_signal_batch(session: Session, target: date | None = None) -> SignalSnap
         last_plan.status if last_plan.status != "OK" else "OK",
         regime=last_plan.regime.value, e=last_plan.e_target, w200=last_plan.w_200, wlev=last_plan.w_lev,
         gap=last_plan.gap_cancel_below, indicators=last_plan.indicators,
-        detail={"model_capital": MODEL_CAPITAL, "plans": len(result.plans)},
+        detail={
+            "model_capital": MODEL_CAPITAL,
+            "model_equity": round(result.equity[-1]) if result.equity else MODEL_CAPITAL,
+            "model_cash": round(result.cash_curve[-1]) if result.cash_curve else MODEL_CAPITAL,
+            "model_qty_200": result.qty_200[-1] if result.qty_200 else 0,
+            "model_qty_lev": result.qty_lev[-1] if result.qty_lev else 0,
+            "plans": len(result.plans),
+        },
     )
     for od in last_plan.orders:
         session.add(OrderSheetRow(signal_id=snap.id, instrument=od.instrument, side=od.side,

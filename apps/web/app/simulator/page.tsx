@@ -3,7 +3,7 @@
 /** 백테스트 3스텝 위저드 — 조건 → 실행(WS 진행률) → 결과 (feature-backtest §9). */
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createChart, IChartApi, LineSeries } from "lightweight-charts";
+import { AreaSeries, createChart, IChartApi, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { Badge, Callout, Card, CardTitle, fmtPct, GaugeBar, PageTitle, Stat } from "../../components/ui";
 
@@ -136,7 +136,12 @@ export default function SimulatorPage() {
       return pts.map((p) => ({ time: p.date, value: (p[key] / base) * 100 }));
     };
     chart.addSeries(LineSeries, { color: "#b45309", lineWidth: 2, title: "전략" }).setData(norm(main.equity, "equity"));
-    chart.addSeries(LineSeries, { color: "#858c9b", lineWidth: 1, title: "매수보유" }).setData(norm(main.equity, "benchmark"));
+    // 종목 추세(매수보유)는 하단 서브페인으로 분리 — 수익 곡선을 가리지 않도록 (2026-08-28 지시)
+    chart.addSeries(AreaSeries, {
+      lineColor: "#64748b", lineWidth: 1, title: "종목 추세",
+      topColor: "rgba(100,116,139,0.14)", bottomColor: "rgba(100,116,139,0.0)",
+      priceLineVisible: false,
+    }, 1).setData(norm(main.equity, "benchmark"));
     const colors = ["#2563eb", "#7c3aed", "#0e9f6e", "#d92f45"];
     others.forEach((o, idx) => {
       if (o.equity) chart.addSeries(LineSeries, { color: colors[idx % 4], lineWidth: 1, title: `#${o.id}` }).setData(norm(o.equity, "equity"));
@@ -183,7 +188,8 @@ export default function SimulatorPage() {
       </div>
 
       {step === 1 && (
-        <div className="grid max-w-2xl gap-4">
+        <div className="grid min-h-[60vh] items-start gap-4 lg:grid-cols-2">
+          <div className="grid gap-4">
           <Card>
             <CardTitle>주력 ETF</CardTitle>
             <div className="grid grid-cols-2 gap-2">
@@ -226,7 +232,8 @@ export default function SimulatorPage() {
           </Card>
           {error && <Callout icon="⛔">{error}</Callout>}
           <button className="btn btn-primary py-3 text-[15px]" onClick={() => void start()}>백테스트 실행 →</button>
-
+          </div>
+          <div className="grid gap-4">
           {history.length > 0 && (
             <Card>
               <CardTitle>지난 결과</CardTitle>
@@ -247,16 +254,19 @@ export default function SimulatorPage() {
               </div>
             </Card>
           )}
+          </div>
         </div>
       )}
 
       {step === 2 && (
-        <Card className="max-w-xl">
-          <CardTitle>백테스트 실행 중</CardTitle>
-          <div className="mb-2 text-3xl font-extrabold">{progress}%</div>
-          <GaugeBar ratio={progress / 100} height={10} />
-          <button className="btn mt-5" onClick={() => jobId && void apiFetch(`/backtests/${jobId}/cancel`, { method: "POST" })}>취소</button>
-        </Card>
+        <div className="grid min-h-[60vh] items-start">
+          <Card>
+            <CardTitle>백테스트 실행 중</CardTitle>
+            <div className="mb-2 text-3xl font-extrabold">{progress}%</div>
+            <GaugeBar ratio={progress / 100} height={10} />
+            <button className="btn mt-5" onClick={() => jobId && void apiFetch(`/backtests/${jobId}/cancel`, { method: "POST" })}>취소</button>
+          </Card>
+        </div>
       )}
 
       {step === 3 && job && (
@@ -274,11 +284,11 @@ export default function SimulatorPage() {
           <Card>
             <CardTitle right={
               <span className="flex items-center gap-2 text-xs text-faint">
-                <i className="inline-block h-0.5 w-4 bg-accent" />전략
-                <i className="inline-block h-px w-4 bg-faint" />KODEX 200 매수보유
+                <i className="inline-block h-0.5 w-4 bg-accent" />전략 수익 (상단)
+                <i className="inline-block h-0.5 w-4 bg-[#64748b]" />종목 추세 (하단)
               </span>
             }>자산곡선 <span className="normal-case text-faint">· 초기자본 = 100 정규화</span></CardTitle>
-            <div ref={chartRef} className="h-80" />
+            <div ref={chartRef} className="h-96" />
           </Card>
           <Card>
             <div className="flex flex-wrap items-center gap-2">

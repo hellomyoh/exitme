@@ -190,6 +190,33 @@ def create_from_backtest(bt_id: int, user_id: int = Depends(current_user_id),
     return {"id": pf.id, "name": pf.name, "backtest_id": bt_id}
 
 
+class PortfolioIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
+@router.post("/portfolios", status_code=201)
+def create_portfolio(body: PortfolioIn, user_id: int = Depends(current_user_id),
+                     session: Session = Depends(get_session)) -> dict:
+    """실전매매 포트 추가 — 여러 실전매매 동시 진행 (2026-08-28 지시)."""
+    pf = TradePortfolio(user_id=user_id, name=body.name, kind="manual")
+    session.add(pf)
+    session.commit()
+    return {"id": pf.id, "name": pf.name}
+
+
+@router.delete("/portfolios/{pid}")
+def delete_portfolio(pid: int, user_id: int = Depends(current_user_id),
+                     session: Session = Depends(get_session)) -> dict:
+    """실전매매 포트 삭제 — 거래·로트·목표/손절 기록까지 함께 제거 (되돌릴 수 없음)."""
+    pf = _owned_portfolio(session, pid, user_id)
+    session.query(PositionMeta).filter(PositionMeta.portfolio_id == pf.id).delete()
+    session.query(PositionLot).filter(PositionLot.portfolio_id == pf.id).delete()
+    session.query(TradeTransaction).filter(TradeTransaction.portfolio_id == pf.id).delete()
+    session.delete(pf)
+    session.commit()
+    return {"deleted": pid}
+
+
 @router.get("/portfolios")
 def list_portfolios(user_id: int = Depends(current_user_id),
                     session: Session = Depends(get_session)) -> dict:

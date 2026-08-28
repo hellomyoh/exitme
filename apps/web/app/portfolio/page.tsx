@@ -29,6 +29,7 @@ export default function PortfolioPage() {
   const [includeCosts, setIncludeCosts] = useState(true);
   const [form, setForm] = useState({ kind: "buy", code: "069500", qty: "", price: "", amount: "", memo: "" });
   const [msg, setMsg] = useState("");
+  const [newName, setNewName] = useState("");
 
   const load = useCallback(async (id: number | null) => {
     const res = await apiFetch(`/portfolio/summary${id ? `?portfolio_id=${id}` : ""}`);
@@ -65,6 +66,24 @@ export default function PortfolioPage() {
     }
   }
 
+  async function createPortfolio() {
+    if (!newName.trim()) return;
+    const res = await apiFetch("/portfolios", { method: "POST", body: JSON.stringify({ name: newName.trim() }) });
+    if (res.ok) {
+      const { id } = (await res.json()) as { id: number };
+      setNewName("");
+      setPid(id);
+    }
+  }
+
+  async function deletePortfolio() {
+    if (!sum) return;
+    const name = sum.portfolio.name;
+    if (!window.confirm(`'${name}' 실전매매를 삭제할까요?\n등록한 거래·손익 기록이 모두 삭제되며 되돌릴 수 없습니다.`)) return;
+    const res = await apiFetch(`/portfolios/${sum.portfolio.id}`, { method: "DELETE" });
+    if (res.ok) { setPid(null); void load(null); }
+  }
+
   const net = sum ? sum.unrealized_pnl + sum.realized_pnl - (includeCosts ? sum.estimated_costs : 0) : 0;
 
   return (
@@ -76,8 +95,14 @@ export default function PortfolioPage() {
           <option value="">내 계좌 (기본)</option>
           {portfolios.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        <button className="btn-ghost btn !py-2 text-[14px] !text-up" onClick={() => void deletePortfolio()}>이 포트 삭제</button>
+        <span className="mx-1 h-5 w-px bg-line-strong" />
+        <input className="input w-40 !py-2" placeholder="새 실전매매 이름" value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && void createPortfolio()} />
+        <button className="btn !py-2" onClick={() => void createPortfolio()}>+ 추가</button>
         <label className="flex items-center gap-1.5 text-[13px] text-muted">
-          <input type="checkbox" className="accent-[#f0b429]" checked={includeCosts} onChange={(e) => setIncludeCosts(e.target.checked)} />
+          <input type="checkbox" className="accent-[#b45309]" checked={includeCosts} onChange={(e) => setIncludeCosts(e.target.checked)} />
           비용 포함 (추정 수수료)
         </label>
         {sum?.as_of && <span className="ml-auto text-xs text-faint">기준일 {sum.as_of} · 지연 시세</span>}

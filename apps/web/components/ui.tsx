@@ -81,6 +81,29 @@ export function GaugeBar({ ratio, color = "var(--color-accent)", height = 8 }: {
   );
 }
 
+/** 마우스 롤오버 도움말 — label 위에 hover 시 툴팁 표시 */
+export function Tip({ tip, children }: { tip: ReactNode; children: ReactNode }) {
+  return (
+    <span className="group relative inline-flex cursor-help items-center gap-1">
+      {children}
+      <span className="pointer-events-none invisible absolute bottom-full left-0 z-30 mb-2 w-80 rounded-xl border border-line bg-surface p-3.5 text-left text-[13.5px] font-normal normal-case leading-relaxed text-muted opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100">
+        {tip}
+      </span>
+    </span>
+  );
+}
+
+/** 레짐 도움말 본문 — 상승/중립/하락 기준과 운용 (전략 정본 §4·§9) */
+export function RegimeTip() {
+  return (
+    <span>
+      <b className="text-up">상승장</b>: 종가&gt;200일선 <b>그리고</b> 20일선&gt;60일선 → 그리드로 사서 <b className="text-ink">익절 없이 보유</b>, 레버리지 허용<br />
+      <b className="text-accent">중립장</b>: 상승·하락 어느 쪽도 아닌 구간 → 떨어지면 사고 <b className="text-ink">+Grid% 오르면 익절</b>(왕복)<br />
+      <b className="text-down">하락장</b>: 종가&lt;200일선 <b>그리고</b> 20일선&lt;60일선 → 신규 매수 정지·보유 축소(최대 20%)·레버리지 청산
+    </span>
+  );
+}
+
 export const fmtWon = (v: number) => `${Math.round(v).toLocaleString()}원`;
 export const fmtNum = (v: number) => Math.round(v).toLocaleString();
 export const fmtPct = (v: number | null | undefined, d = 1) =>

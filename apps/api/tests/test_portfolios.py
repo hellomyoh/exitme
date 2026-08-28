@@ -153,3 +153,37 @@ class TestPortfolioApi:
         s = client.get("/portfolio/summary", headers=h).json()
         pos = s["positions"][0]
         assert pos["target_price"] == 77000 and pos["stop_price"] == 65000
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DB_UP, reason="database not reachable")
+def test_multi_portfolio_create_delete_cascade():
+    """다중 실전매매 생성·삭제 (2026-08-28 지시) — 삭제 시 거래·로트 연쇄 제거, 타 포트 영향 없음."""
+    from tests.test_backtest_api import seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _uuid
+    email = f"mp{_uuid.uuid4().hex[:8]}@stocklab.dev"
+    token = client.post("/auth/register", json={"email": email, "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    a = client.post("/portfolios", json={"name": "전략 A"}, headers=h).json()["id"]
+    b = client.post("/portfolios", json={"name": "전략 B"}, headers=h).json()["id"]
+    ts = datetime(2025, 1, 10, tzinfo=timezone.utc).isoformat()
+    for pid in (a, b):
+        client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500",
+                                        "qty": 10, "price": 70000, "executed_at": ts}, headers=h)
+    # A 삭제 → A만 사라지고 B는 유지
+    assert client.delete(f"/portfolios/{a}", headers=h).status_code == 200
+    names = [p["name"] for p in client.get("/portfolios", headers=h).json()["items"]]
+    assert "전략 A" not in names and "전략 B" in names
+    sb = client.get(f"/portfolio/summary?portfolio_id={b}", headers=h).json()
+    assert sb["positions"][0]["qty"] == 10  # B 데이터 무결
+    # 삭제된 포트 접근 404, 타인 삭제 404
+    assert client.get(f"/portfolio/summary?portfolio_id={a}", headers=h).status_code == 404
+    client.cookies.clear()
+    email2 = f"mp{_uuid.uuid4().hex[:8]}@stocklab.dev"
+    t2 = client.post("/auth/register", json={"email": email2, "password": "password123"}).json()["access_token"]
+    assert client.delete(f"/portfolios/{b}", headers={"Authorization": f"Bearer {t2}"}).status_code == 404
