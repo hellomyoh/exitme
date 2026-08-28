@@ -27,6 +27,8 @@ type JournalFill = {
 type JournalItem = {
   date: string; regime: string | null; planned: OrderRow[] | null; gap_cancel_below: number | null;
   fills: JournalFill[]; realized_pnl: number; day_return: number | null; equity: number | null;
+  account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
+  e_target: number | null;
 };
 type Signal = { status: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; account?: { qty_200: number; qty_lev: number; cash: number } };
 
@@ -468,58 +470,85 @@ export default function PortfolioPage() {
                   )}
                   <span className="ml-auto text-[13px] text-faint">주문 {j.planned ? j.planned.length : "—"} · 체결 {j.date > new Date().toISOString().slice(0, 10) ? "—" : j.fills.length}</span>
                 </summary>
-                <div className="border-t-2 border-line-strong px-4 py-3">
-                  <div className="mb-1.5 text-[12.5px] font-semibold uppercase tracking-wide text-faint">장 시작 전 주문표</div>
-                  {j.planned === null ? (
-                    <p className="text-[13px] text-faint">이날의 주문표 스냅샷이 없습니다 — 주문표를 화면에서 조회한 날부터 자동 저장됩니다.</p>
-                  ) : j.planned.length === 0 ? (
-                    <p className="text-[13px] text-faint">신규 주문 없음.</p>
-                  ) : (
-                    <div className="grid gap-1 text-[13.5px]">
-                      {j.planned.map((o, i) => (
-                        <span key={i}>
-                          <Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge>
-                          {" "}<b className={o.side === "buy" ? "text-up" : "text-down"}>{o.side === "buy" ? "매수" : "매도"}</b>
-                          {" "}{o.instrument === "K200" ? "200 ETF" : "레버리지"} {o.qty.toLocaleString()}주 @ {o.price ? `${o.price.toLocaleString()}원` : "시가"}
-                        </span>
-                      ))}
-                      {j.gap_cancel_below && <span className="text-[12.5px] text-faint">⚠️ 시가 {j.gap_cancel_below.toLocaleString()}원 이하 출발 시 그리드 취소</span>}
-                    </div>
-                  )}
-                  <div className="mb-1.5 mt-3 border-t border-line pt-3 text-[12.5px] font-semibold uppercase tracking-wide text-faint">체결 · 입출금</div>
-                  {j.fills.length === 0 ? (
-                    <p className="text-[13px] text-faint">
-                      {j.date === new Date().toISOString().slice(0, 10)
-                        ? "아직 등록된 체결이 없습니다 — 장 마감 후 위 주문표의 '체결 등록'으로 입력하세요."
-                        : "체결 없음."}
-                    </p>
-                  ) : (
-                    <div className="overflow-x-auto">
+                <div className="grid gap-x-8 gap-y-4 border-t-2 border-line-strong px-4 py-4 lg:grid-cols-2">
+                  <div>
+                    <div className="mb-2 text-[13.5px] font-semibold text-muted">📋 장 시작 전 주문표 (계획) ({j.planned?.length ?? 0}건)</div>
+                    {j.planned === null ? (
+                      <p className="text-[13px] text-faint">이날의 주문표 스냅샷이 없습니다 — 주문표를 화면에서 조회한 날부터 자동 저장됩니다.</p>
+                    ) : j.planned.length === 0 ? (
+                      <p className="text-[13px] text-faint">신규 주문 없음.</p>
+                    ) : (
                       <table className="w-full text-[14px]">
                         <thead><tr className="text-left text-xs text-faint">
-                          <th className="pb-1 font-medium">시각</th><th className="pb-1 font-medium">구분</th>
-                          <th className="pb-1 font-medium">종목</th>
-                          <th className="pb-1 text-right font-medium">단가/금액</th>
+                          <th className="pb-1 font-medium">구분</th><th className="pb-1 font-medium">종목</th>
+                          <th className="pb-1 font-medium">방향</th>
+                          <th className="pb-1 text-right font-medium">지정가</th>
                           <th className="pb-1 text-right font-medium">수량</th>
-                          <th className="pb-1 text-right font-medium">실현손익</th>
-                          <th className="pb-1 pl-3 font-medium">메모</th>
+                          <th className="pb-1 text-right font-medium">금액</th>
                         </tr></thead>
                         <tbody>
-                          {j.fills.map((t) => (
-                            <tr key={t.id} className="border-t border-line/40">
-                              <td className="py-1.5 text-faint">{t.time}</td>
-                              <td className={`py-1.5 font-semibold ${t.kind === "buy" ? "text-up" : t.kind === "sell" ? "text-down" : "text-muted"}`}>{TX_KO[t.kind]}</td>
-                              <td className="py-1.5">{t.name ?? "—"}</td>
-                              <td className="table-num py-1.5">{(t.price ?? t.amount ?? 0).toLocaleString()}원</td>
-                              <td className="table-num py-1.5">{t.qty ? `${t.qty.toLocaleString()}주` : "—"}</td>
-                              <td className={`table-num py-1.5 font-semibold ${!t.realized_pnl ? "text-faint" : t.realized_pnl > 0 ? "text-up" : "text-down"}`}>
-                                {t.realized_pnl !== null && t.realized_pnl !== undefined ? `${t.realized_pnl >= 0 ? "+" : ""}${t.realized_pnl.toLocaleString()}원` : "—"}
-                              </td>
-                              <td className="py-1.5 pl-3 text-[13px] text-faint">{t.memo ?? ""}</td>
+                          {j.planned.map((o, i) => (
+                            <tr key={i} className="border-t border-line/40">
+                              <td className="py-1.5 text-muted">{ORDER_KIND_KO[o.kind] ?? o.kind}</td>
+                              <td className="py-1.5">{o.instrument === "K200" ? "200 ETF" : "레버리지"}</td>
+                              <td className={`py-1.5 font-semibold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
+                              <td className="table-num py-1.5">{o.price ? o.price.toLocaleString() : "시가"}</td>
+                              <td className="table-num py-1.5">{o.qty.toLocaleString()}</td>
+                              <td className="table-num py-1.5 text-muted">{o.price ? (o.price * o.qty).toLocaleString() : "—"}</td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
+                    )}
+                    {j.gap_cancel_below && (
+                      <p className="mt-2 text-[12.5px] text-faint">⚠️ 시가 {j.gap_cancel_below.toLocaleString()}원 이하 출발 시 그리드 취소</p>
+                    )}
+                  </div>
+                  <div className="border-t border-dashed border-line-strong pt-4 lg:border-l lg:border-t-0 lg:pl-8 lg:pt-0" style={{ borderLeftStyle: "solid" }}>
+                    <div className="mb-2 flex items-center justify-between text-[13.5px] font-semibold text-muted">
+                      <span>✅ 체결 내역 ({j.fills.length}건)</span>
+                      {j.realized_pnl !== 0 && (
+                        <span className={`font-bold ${j.realized_pnl > 0 ? "text-up" : "text-down"}`}>
+                          당일 실현손익 {j.realized_pnl >= 0 ? "+" : ""}{j.realized_pnl.toLocaleString()}원
+                        </span>
+                      )}
+                    </div>
+                    {j.fills.length === 0 ? (
+                      <p className="text-[13px] text-faint">
+                        {j.date === new Date().toISOString().slice(0, 10)
+                          ? "아직 등록된 체결이 없습니다 — 장 마감 후 위 주문표의 '체결 등록'으로 입력하세요."
+                          : "없음"}
+                      </p>
+                    ) : (
+                      <table className="w-full text-[14px]">
+                        <thead><tr className="text-left text-xs text-faint">
+                          <th className="pb-1 font-medium">구분</th><th className="pb-1 font-medium">종목</th>
+                          <th className="pb-1 font-medium">방향</th>
+                          <th className="pb-1 text-right font-medium">체결가/금액</th>
+                          <th className="pb-1 text-right font-medium">수량</th>
+                          <th className="pb-1 text-right font-medium">금액</th>
+                        </tr></thead>
+                        <tbody>
+                          {j.fills.map((t) => (
+                            <tr key={t.id} className="border-t border-line/40">
+                              <td className="py-1.5 text-muted">{t.memo && t.memo.length <= 10 ? t.memo : TX_KO[t.kind]}</td>
+                              <td className="py-1.5">{t.name ?? "—"}</td>
+                              <td className={`py-1.5 font-semibold ${t.kind === "buy" ? "text-up" : t.kind === "sell" ? "text-down" : "text-muted"}`}>{TX_KO[t.kind]}</td>
+                              <td className="table-num py-1.5">{(t.price ?? t.amount ?? 0).toLocaleString()}</td>
+                              <td className="table-num py-1.5">{t.qty ? t.qty.toLocaleString() : "—"}</td>
+                              <td className="table-num py-1.5 text-muted">{t.price && t.qty ? (t.price * t.qty).toLocaleString() : (t.amount ?? 0).toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                  {j.account && (
+                    <div className="col-span-full flex flex-wrap gap-x-6 gap-y-1 border-t border-line pt-3 text-[13.5px] text-muted">
+                      {j.e_target !== null && <span>노출 E <b className="text-ink">{(j.e_target * 100).toFixed(1)}%</b></span>}
+                      <span>현금 <b className="text-ink">{j.account.cash.toLocaleString()}원</b></span>
+                      <span>보유 200 ETF <b className="text-ink">{j.account.qty_200.toLocaleString()}주</b></span>
+                      <span>레버리지 <b className="text-ink">{j.account.qty_lev.toLocaleString()}주</b></span>
                     </div>
                   )}
                 </div>

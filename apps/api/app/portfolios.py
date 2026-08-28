@@ -582,6 +582,8 @@ def portfolio_journal(portfolio_id: int | None = None, days: int = 60,
             "regime": pl.get("regime") if pl else None,
             "planned": pl.get("orders", []) if pl else None,   # None = 스냅샷 없음(주문표 미조회일)
             "gap_cancel_below": pl.get("gap_cancel_below") if pl else None,
+            "account": pl.get("account") if pl else None,       # 계획 시점 현금·보유 (하단 현황줄)
+            "e_target": pl.get("e_target") if pl else None,
             "fills": [
                 {"id": t.id, "kind": t.kind,
                  "code": inst_of(t.instrument_id).code if t.instrument_id else None,

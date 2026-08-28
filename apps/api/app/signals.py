@@ -183,7 +183,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
         PortfolioPlan.portfolio_id == pid, PortfolioPlan.trade_date == exec_day))
     payload = {"regime": regime.value, "signal_date": base_day.isoformat(),
                "orders": out["orders"], "gap_cancel_below": p.gap_cancel_below,
-               "account": out["account"]}
+               "account": out["account"], "e_target": p.e_target}
     if row is None:
         session.add(PortfolioPlan(portfolio_id=pid, trade_date=exec_day, payload=payload))
     else:
