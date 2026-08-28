@@ -26,6 +26,10 @@
 
 - [2026-08-28] compose 서비스 재생성 시 nginx가 업스트림 IP를 캐시해 502를 반환한다 — api/web 재생성 후에는 `docker compose restart nginx` 필요. (근거: /api/health 502 재현 후 재시작으로 해소. 운영 개선: resolver + 변수 proxy_pass 는 TODO)
 
+## Docker / compose (이미지 공유)
+
+- [2026-08-28] compose에서 같은 build 컨텍스트라도 서비스마다 `build:`를 선언하면 **서비스별 별도 이미지**(exitme-api/exitme-worker/exitme-scheduler)가 생긴다 — `build api`만 재빌드하면 worker/scheduler는 옛 이미지로 남아 의존성 누락(ModuleNotFoundError)이 조용히 발생. api에 `image: stocklab-api`를 지정하고 worker/scheduler가 그 이미지를 공유하도록 통일. `restart`는 이미지를 갱신하지 않으므로 이미지 변경 후에는 `up -d --force-recreate`. (근거: 백테스트 QUEUED 고착 재현 후 해결)
+
 ## Next.js / lightweight-charts
 
 - [2026-08-28] **Windows Docker bind mount 는 파일 변경 이벤트를 컨테이너에 전달하지 못한다** — Next dev 가 stale 컴파일을 계속 서빙(수정한 페이지가 반영 안 됨). `WATCHPACK_POLLING=true`(+CHOKIDAR_USEPOLLING) 로 해결, 소스 수정 → 8초 내 반영 실검증. (근거: 홈 리다이렉트 미반영 재현 후 해결)

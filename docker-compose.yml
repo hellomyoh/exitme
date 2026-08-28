@@ -31,6 +31,7 @@ services:
 
   api:
     build: ./apps/api
+    image: stocklab-api    # api/worker/scheduler 가 동일 이미지 공유 (개별 stale 이미지 방지, NOTES.md)
     env_file: .env
     environment:
       - SERVICE_ROLE=api
@@ -47,7 +48,7 @@ services:
         condition: service_healthy
 
   worker:
-    build: ./apps/api
+    image: stocklab-api
     env_file: .env
     environment:
       - SERVICE_ROLE=worker
@@ -64,7 +65,7 @@ services:
         condition: service_healthy
 
   scheduler:
-    build: ./apps/api
+    image: stocklab-api
     env_file: .env
     environment:
       - SERVICE_ROLE=scheduler
