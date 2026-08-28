@@ -26,6 +26,14 @@ type JournalDay = {
   qty_200: number; qty_lev: number; cash: number; planned: JournalOrder[]; fills: JournalOrder[];
 };
 
+type PortfolioTx = {
+  id: number; kind: string; code: string | null; name: string | null;
+  qty: number | null; price: number | null; amount: number | null;
+  realized_pnl: number | null; executed_at: string; memo: string | null;
+};
+// 시작 시드(보유분 등록·백테스트 이관)는 매매 이력이 아님 — 이력 섹션에서 제외
+const SEED_MEMOS = new Set(["보유분 등록", "백테스트 보유분 이관"]);
+
 const REGIME = {
   BULL: { ko: "상승장", color: "var(--color-up)", tone: "up" as const, desc: "그리드로 사되 익절 없이 보유(코어) — 추세를 끝까지 탑니다. 레버리지 허용" },
   NEUTRAL: { ko: "중립장", color: "var(--color-accent)", tone: "accent" as const, desc: "그리드 왕복 — 떨어지면 사고, +Grid% 오르면 익절 (횡보 차익)" },
@@ -77,6 +85,7 @@ export default function SignalsPage() {
   const [portfolios, setPortfolios] = useState<PortfolioItem[]>([]);
   const [basisPid, setBasisPid] = useState<number | null>(null);
   const [journal, setJournal] = useState<JournalDay[] | null>(null);
+  const [pfHistory, setPfHistory] = useState<PortfolioTx[] | null>(null);
 
   async function loadSignal(pid: number | null) {
     const res = await apiFetch(`/signals/daily${pid ? `?portfolio_id=${pid}` : ""}`);
@@ -84,6 +93,8 @@ export default function SignalsPage() {
   }
 
   useEffect(() => {
+    setJournal(null);
+    setPfHistory(null);  // 기준 변경 → 이력도 그 기준으로 다시 (2026-08-28 검토 반영)
     void ensureSession().then(async (ok) => {
       if (!ok) { router.push("/login"); return; }
       await loadSignal(basisPid);
@@ -246,9 +257,53 @@ export default function SignalsPage() {
             </div>
           </Card>
 
-          {/* 최근 신호 이력 (모델 포트) — 신호의 맥락 (2026-08-28 검토 반영) */}
+          {/* 최근 이력 — 주문 기준과 연동: 내 포트면 그 포트의 실제 매매 기록, 모델이면 모델 시뮬 이력 (2026-08-28 검토 반영) */}
+          {sig.basis === "portfolio" ? (
           <Card>
-            <CardTitle>최근 신호 이력 <span className="normal-case text-faint">· 모델 포트 기준 — 어떤 매매를 해왔는지</span></CardTitle>
+            <CardTitle>내 포트 매매 이력 <span className="normal-case text-faint">· 이 포트에 실제 기록된 체결만</span></CardTitle>
+            {!pfHistory ? (
+              <button className="btn" onClick={() => void (async () => {
+                const res = await apiFetch(`/portfolio/transactions?portfolio_id=${basisPid}`);
+                if (!res.ok) return;
+                const items = ((await res.json()) as { items: PortfolioTx[] }).items;
+                setPfHistory(items.filter((t) => (t.kind === "buy" || t.kind === "sell") && !SEED_MEMOS.has(t.memo ?? "")));
+              })()}>이 포트의 매매 이력 불러오기</button>
+            ) : pfHistory.length === 0 ? (
+              <p className="text-[14px] text-faint">아직 매매 이력이 없습니다 — 오늘 시작한 포트는 첫 체결을 등록하면 여기에 쌓입니다. (시작 시 입력한 보유분 등록은 매매가 아니라 표시하지 않습니다)</p>
+            ) : (
+              <div className="grid gap-1.5">
+                {Object.entries(pfHistory.reduce<Record<string, PortfolioTx[]>>((acc, t) => {
+                  const d = t.executed_at.slice(0, 10);
+                  (acc[d] = acc[d] ?? []).push(t);
+                  return acc;
+                }, {})).map(([d, txs]) => (
+                  <details key={d} className="rounded-xl border border-line bg-inset">
+                    <summary className="flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-1 rounded-xl px-4 py-2.5 text-[14px] transition-colors hover:bg-raised/60">
+                      <b className="w-24">{d}</b>
+                      <span className="text-[13px] text-muted">거래 {txs.length}건</span>
+                      {(() => { const pnl = txs.reduce((a, t) => a + (t.realized_pnl ?? 0), 0);
+                        return pnl !== 0 ? (
+                          <span className={`ml-auto text-[13px] font-bold ${pnl > 0 ? "text-up" : "text-down"}`}>실현 {pnl.toLocaleString()}원</span>
+                        ) : null; })()}
+                    </summary>
+                    <div className="grid gap-1 border-t border-line px-4 py-3 text-[13.5px]">
+                      {txs.map((t) => (
+                        <span key={t.id}>
+                          <b className={t.kind === "buy" ? "text-up" : "text-down"}>{t.kind === "buy" ? "매수" : "매도"}</b>
+                          {" "}{t.name ?? t.code} {(t.qty ?? 0).toLocaleString()}주 @ {(t.price ?? 0).toLocaleString()}원
+                          {t.memo && <span className="text-faint"> — {t.memo}</span>}
+                        </span>
+                      ))}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            )}
+            <p className="mt-3 text-[13px] text-faint">전략 시뮬 관점의 최근 흐름이 궁금하면 주문 기준을 &quot;모델&quot;로 바꾸면 모델 이력이 표시됩니다. 전체 기록·입출금은 실전매매 &gt; 거래 내역 참조.</p>
+          </Card>
+          ) : (
+          <Card>
+            <CardTitle>최근 신호 이력 <span className="normal-case text-faint">· 모델 포트(1억) 시뮬 기준 — 내 계좌 기록 아님</span></CardTitle>
             {!journal ? (
               <button className="btn" onClick={() => void (async () => {
                 const res = await apiFetch("/signals/journal?days=20");
@@ -284,6 +339,7 @@ export default function SignalsPage() {
               </div>
             )}
           </Card>
+          )}
 
           {/* 계산 근거 */}
           <details className="card group">
