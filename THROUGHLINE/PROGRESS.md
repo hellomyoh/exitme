@@ -2,29 +2,25 @@
 
 ## 현재 Phase
 
-초기화 완료 — Phase 0 (인프라 골격) 착수 대기
-
-## 초기화 진행 단계
-
-완료 (2026-08-28, KICKOFF 27단계 전체 수행 — 산출물 commit 포함)
+Phase 1 (시세 데이터 파이프라인) — 진행 중 (Phase 0 완료). 브랜치 `feat/market-data`
 
 ## 완료된 작업
 
-- 프로젝트 초기화: ARCHITECTURE·PLAN·feature 6종·docs 3종·qa 4종·personas 7종·ADR 6종·discussion 로그 5종·루트 3파일
-- 핵심 기능 2종(전략 엔진·백테스트) 병렬 서브에이전트 검토 및 합의안 반영
+- 초기화(2026-08-28), Phase 0 완료: compose 7서비스 healthy·e2e 스모크·CI 정의
+- Phase 1 코어: 스키마(하이퍼테이블)·KIS 클라이언트·pykrx 폴백·검증/멱등 적재·시딩 스크립트·daily_ingest·/ohlcv API — 테스트 18/18 통과
 
 ## 진행 중인 작업
 
-- 없음
+- Phase 1 잔여: **KIS 키 기입 대기** → 실 10년 시딩, beat 스케줄 KST 16:00 crontab 확정, 일일 배치 3거래일 검증, WS /ws/quotes(장중 폴링)
 
 ## 남은 작업
 
-- Phase 0~6 ([PLAN.md](PLAN.md) 참조)
+- Phase 1 잔여 → Phase 2~6 ([PLAN.md](PLAN.md))
 
 ## QA 상태
 
-- 코드 없음 — 테스트 미실행 (초기화는 문서 산출물만)
+- 자동: 18/18 green (2026-08-28, HISTORY 기록). 수동: 실 KIS 배치 완주·키 마스킹 grep 미수행(키 대기)
 
 ## 다음 세션 첫 명령
 
-"DEVELOPINIT.md를 읽고 Phase 0 (인프라 골격)을 시작하세요 — docker compose 7서비스 + FastAPI/Next.js 스캐폴드 + CI. 완료 조건은 PLAN.md Phase 0."
+"사용자가 .env에 KIS 키를 기입했는지 확인 후 `docker compose run --rm api python -m scripts.seed --years 10`으로 실 시딩을 완주하고, KODEX 200/레버리지 데이터 검증 리포트를 만든 뒤 Phase 1 잔여(WS quotes, crontab, 3거래일 배치 검증)를 진행하세요."

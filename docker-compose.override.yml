@@ -1,0 +1,21 @@
+# 개발용 override (기본 적용): 소스 bind mount + hot reload
+services:
+  api:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./apps/api:/srv/app
+
+  worker:
+    volumes:
+      - ./apps/api:/srv/app
+
+  scheduler:
+    volumes:
+      - ./apps/api:/srv/app
+
+  web:
+    command: npm run dev
+    volumes:
+      - ./apps/web:/srv/web
+      - /srv/web/node_modules
+      - /srv/web/.next

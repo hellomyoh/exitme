@@ -8,7 +8,7 @@
 - **산출물**: docker-compose 3종, 7서비스 healthcheck, FastAPI/Next.js 스캐폴드, Alembic 마이그레이션 골격, GitHub Actions(테스트+compose e2e), `.env.example`
 - **완료 조건**: `docker compose up -d` 한 줄 기동, 스모크 테스트(각 서비스 health) 실제 실행·통과
 - **QA 완료 조건**: CI green 1회
-- **의존**: 없음 | **상태**: 대기
+- **의존**: 없음 | **상태**: **완료** (2026-08-28 — compose 7서비스 healthy, e2e 스모크 통과, CI 정의)
 - **관련**: [ARCHITECTURE §2·§8](ARCHITECTURE.md), [ADR-001](adr/001-compose-monolith.md)
 
 ## Phase 1 — 시세 데이터 파이프라인
@@ -17,7 +17,7 @@
 - **산출물**: 스키마(ohlcv_daily/intraday·instruments·status_history·corporate_actions·calendar·batch_runs), 10년 시딩, 일일 배치, KIS/pykrx 클라이언트, `GET /ohlcv`·종목 검색·`WS /ws/quotes`
 - **완료 조건**: [feature-market-data.md §13](features/feature-market-data.md) — 자동 테스트 실제 통과 + 시딩 완주 + 배치 3거래일 연속 성공
 - **QA 완료 조건**: 회귀 체크리스트 "데이터 파이프라인" 절 통과
-- **의존**: Phase 0 | **상태**: 대기
+- **의존**: Phase 0 | **상태**: **진행 중** (스키마·KIS 클라이언트·시딩·/ohlcv 완료. 남은 것: KIS 키 기입 후 실 시딩, 일일 배치 crontab 확정·3거래일 검증, WS /ws/quotes, 종목 검색 확장)
 - **관련**: [feature-market-data.md](features/feature-market-data.md), [ADR-002](adr/002-timescaledb.md), [ADR-004](adr/004-market-data-source.md)
 
 ## Phase 2 — 주식 차트
