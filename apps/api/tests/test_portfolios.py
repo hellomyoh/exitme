@@ -364,3 +364,42 @@ def test_delete_portfolio_with_plan_snapshot():
     assert client.get(f"/signals/daily?portfolio_id={pid}", headers=h).status_code == 200  # 스냅샷 생성
     r = client.delete(f"/portfolios/{pid}", headers=h)
     assert r.status_code == 200, r.text
+
+
+def test_delete_transaction_rebuilds_ledger():
+    """2026-08-29 오입력 정정: 거래 삭제 → 재생으로 로트·실현손익 재구성, 불가능하면 409."""
+    from tests.test_backtest_api import seed_synthetic
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _u
+    token = client.post("/auth/register", json={"email": f"rx{_u.uuid4().hex[:8]}@stocklab.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "fix"}, headers=h).json()["id"]
+    t0 = datetime(2025, 1, 10, tzinfo=timezone.utc)
+    def post(body):
+        r = client.post("/positions", json=body, headers=h)
+        assert r.status_code == 201, r.text
+        return r.json()
+    post({"portfolio_id": pid, "kind": "deposit", "amount": 20_000_000, "executed_at": t0.isoformat()})
+    post({"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 100, "price": 70000,
+          "executed_at": t0.isoformat()})
+    sell = post({"portfolio_id": pid, "kind": "sell", "code": "069500", "qty": 30, "price": 72000,
+                 "executed_at": datetime(2025, 1, 15, tzinfo=timezone.utc).isoformat()})
+    s1 = client.get(f"/portfolio/summary?portfolio_id={pid}", headers=h).json()
+    assert s1["positions"][0]["qty"] == 70 and s1["realized_pnl"] == 60_000
+    # 매도 오입력 삭제 → 보유 100 복원, 실현손익 0
+    assert client.delete(f"/positions/{sell['id']}", headers=h).status_code == 200
+    s2 = client.get(f"/portfolio/summary?portfolio_id={pid}", headers=h).json()
+    assert s2["positions"][0]["qty"] == 100 and s2["realized_pnl"] == 0
+    # 매도 재등록 후 그 매도의 근거 매수를 삭제하려 하면 409 (재생 불가)
+    sell2 = post({"portfolio_id": pid, "kind": "sell", "code": "069500", "qty": 30, "price": 72000,
+                  "executed_at": datetime(2025, 1, 15, tzinfo=timezone.utc).isoformat()})
+    txs = client.get(f"/portfolio/transactions?portfolio_id={pid}", headers=h).json()["items"]
+    buy_id = next(t["id"] for t in txs if t["kind"] == "buy")
+    assert client.delete(f"/positions/{buy_id}", headers=h).status_code == 409
+    # 여전히 일관 상태 (매도 유지)
+    s3 = client.get(f"/portfolio/summary?portfolio_id={pid}", headers=h).json()
+    assert s3["positions"][0]["qty"] == 70
+    assert sell2["realized_pnl"] == 60_000

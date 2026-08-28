@@ -90,6 +90,13 @@ export default function PortfolioPage() {
     });
   }, [pid, load, router]);
 
+  async function deleteTx(id: number) {
+    if (!window.confirm("이 거래를 삭제할까요? 남은 거래로 보유·실현손익이 다시 계산됩니다.")) return;
+    const res = await apiFetch(`/positions/${id}`, { method: "DELETE" });
+    if (res.ok) { void load(pid); }
+    else window.alert(((await res.json()) as { detail?: string }).detail ?? `삭제 실패 (${res.status})`);
+  }
+
   async function submit() {
     setMsg("");
     const body: Record<string, unknown> = {
@@ -527,6 +534,7 @@ export default function PortfolioPage() {
                           <th className="pb-1 text-right font-medium">체결가/금액</th>
                           <th className="pb-1 text-right font-medium">수량</th>
                           <th className="pb-1 text-right font-medium">금액</th>
+                          <th className="pb-1" />
                         </tr></thead>
                         <tbody>
                           {j.fills.map((t) => (
@@ -537,6 +545,10 @@ export default function PortfolioPage() {
                               <td className="table-num py-1.5">{(t.price ?? t.amount ?? 0).toLocaleString()}</td>
                               <td className="table-num py-1.5">{t.qty ? t.qty.toLocaleString() : "—"}</td>
                               <td className="table-num py-1.5 text-muted">{t.price && t.qty ? (t.price * t.qty).toLocaleString() : (t.amount ?? 0).toLocaleString()}</td>
+                              <td className="py-1.5 pl-2 text-right">
+                                <button className="text-[12px] text-faint transition-colors hover:text-down" title="오입력 삭제 — 남은 거래로 재계산"
+                                  onClick={() => void deleteTx(t.id)}>✕</button>
+                              </td>
                             </tr>
                           ))}
                         </tbody>

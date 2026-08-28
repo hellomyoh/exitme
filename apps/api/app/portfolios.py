@@ -182,6 +182,72 @@ def register_transaction(body: TransactionIn, user_id: int = Depends(current_use
     return {"id": tx.id, "portfolio_id": pf.id, "realized_pnl": realized}
 
 
+def _rebuild_ledger(session: Session, pf_id: int) -> None:
+    """포트의 로트·실현손익을 거래 재생으로 재구성 — 거래 삭제(오입력 정정) 후 호출 (2026-08-29).
+
+    등록 시점에 로트를 직접 변형하는 구조라, 과거 거래를 지우면 역산이 아니라
+    남은 거래 전체를 시간순으로 다시 재생하는 것이 유일하게 안전하다.
+    재생 불가능(매도가 보유 초과, 현금 음수)이면 409 로 거부한다.
+    """
+    txs = session.scalars(select(TradeTransaction).where(TradeTransaction.portfolio_id == pf_id)
+                          .order_by(TradeTransaction.executed_at, TradeTransaction.id)).all()
+    session.query(PositionLot).filter(PositionLot.portfolio_id == pf_id).delete()
+    session.flush()
+    cash = 0
+    fifo: dict[int, list[PositionLot]] = {}
+    for t in txs:
+        if t.kind == "deposit":
+            cash += t.amount
+        elif t.kind == "withdraw":
+            cash -= t.amount
+            if cash < 0:
+                raise HTTPException(status_code=409,
+                                    detail=f"삭제 후 {t.executed_at.date()} 출금이 현금 잔고를 초과합니다 — 해당 출금을 먼저 삭제하세요")
+        elif t.kind == "buy":
+            cash -= t.qty * t.price
+            lot = PositionLot(portfolio_id=pf_id, instrument_id=t.instrument_id,
+                              qty_open=t.qty, price=t.price, opened_at=t.executed_at)
+            session.add(lot)
+            fifo.setdefault(t.instrument_id, []).append(lot)
+        elif t.kind == "sell":
+            cash += t.qty * t.price
+            lots = [l for l in fifo.get(t.instrument_id, []) if l.qty_open > 0 and l.opened_at <= t.executed_at]
+            held = sum(l.qty_open for l in lots)
+            if t.qty > held:
+                raise HTTPException(status_code=409,
+                                    detail=f"삭제 후 {t.executed_at.date()} 매도({t.qty}주)가 보유({held}주)를 초과합니다 — 이 매도를 먼저 삭제하세요")
+            remaining, realized = t.qty, 0
+            for l in lots:
+                if remaining <= 0:
+                    break
+                take = min(l.qty_open, remaining)
+                realized += (t.price - l.price) * take
+                l.qty_open -= take
+                remaining -= take
+            t.realized_pnl = realized
+    # 잔여 0 로트 정리
+    for lots in fifo.values():
+        for l in lots:
+            if l.qty_open == 0:
+                session.delete(l)
+    session.flush()
+
+
+@router.delete("/positions/{tx_id}")
+def delete_transaction(tx_id: int, user_id: int = Depends(current_user_id),
+                       session: Session = Depends(get_session)) -> dict:
+    """거래 삭제 — 오입력 정정용. 남은 거래를 재생해 로트·실현손익·현금을 재구성한다 (2026-08-29 지시)."""
+    tx = session.get(TradeTransaction, tx_id)
+    if tx is None:
+        raise HTTPException(status_code=404, detail="transaction not found")
+    pf = _owned_portfolio(session, tx.portfolio_id, user_id)
+    session.delete(tx)
+    session.flush()
+    _rebuild_ledger(session, pf.id)
+    session.commit()
+    return {"deleted": tx_id}
+
+
 class MetaIn(BaseModel):
     target_price: int | None = None
     stop_price: int | None = None
