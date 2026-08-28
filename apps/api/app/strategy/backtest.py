@@ -117,7 +117,8 @@ class Cancelled(RuntimeError):
 
 def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
                  params: Params, start_index: int | None = None,
-                 collect_plans: bool = False, progress_cb=None) -> BacktestResult:
+                 collect_plans: bool = False, progress_cb=None,
+                 plan_final: bool = False) -> BacktestResult:
     """bars: [{date, open, high, low, close, volume}] 두 시계열은 날짜 정렬·동일 길이 가정."""
     if len(bars_200) != len(bars_lev):
         raise ValueError("bars_200 and bars_lev must be aligned")
@@ -251,6 +252,13 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
         regimes.append(regime.value)
         exposures.append(p.e_target if p.status == "OK" else 0.0)
         out_dates.append(dates[nxt])
+
+    if plan_final:
+        # 마지막 바(최신 종가) 기준 계획 — 일일 시그널 엔진용. 체결은 하지 않는다.
+        # 백테스트를 d+1개 바로 절단 실행하면 이 계획이 전체 실행의 plans[d]와 동일하다 (ADR-005).
+        last = len(dates) - 1
+        p_final = plan(last, m200, mlev, regime, pf, params)
+        plans.append(p_final)
 
     kpi = compute_kpi(equity_curve, capital, ledger.closed)
     return BacktestResult(out_dates, equity_curve, bench_curve, regimes, exposures,

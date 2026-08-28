@@ -23,6 +23,7 @@ celery_app.conf.update(
     task_routes={
         "app.worker.daily_ingest": {"queue": "ingest"},
         "app.worker.run_backtest_job": {"queue": "backtest"},
+        "app.worker.daily_signal": {"queue": "ingest"},
     },
     task_acks_late=True,
     timezone="Asia/Seoul",
@@ -87,7 +88,10 @@ def daily_ingest(target: str | None = None) -> dict:
         status = "ok" if not totals["failed"] else "failed"
         finish_batch(session, run, status, totals)
         session.commit()
-        return {"status": status, **totals}
+    if status == "ok":
+        # 시세 확보 → 전략 엔진 배치 트리거 (feature-market-data §5)
+        daily_signal.apply_async(args=[target_date.isoformat()], queue="ingest")
+    return {"status": status, **totals}
 
 
 @celery_app.task(name="app.worker.poll_quotes", ignore_result=True)
@@ -210,3 +214,27 @@ def run_backtest_job(bt_id: int) -> dict:
             publish({"id": bt_id, "status": "FAILED", "error": str(exc)[:500]})
             logger.exception("backtest %s failed", bt_id)
             return {"status": "FAILED"}
+
+
+@celery_app.task(name="app.worker.daily_signal", max_retries=2, autoretry_for=(Exception,), retry_backoff=60)
+def daily_signal(target: str | None = None) -> dict:
+    """일일 시그널 배치 — 주문표 생성 (feature-strategy-engine §5.8). batch_runs 기록."""
+    from datetime import date as _date
+
+    from app.db import SessionLocal
+    from app.services.ingest import finish_batch, start_batch
+    from app.signals import run_signal_batch
+
+    with SessionLocal() as session:
+        run = start_batch(session, "daily_signal", {"target": target})
+        try:
+            snap = run_signal_batch(session, _date.fromisoformat(target) if target else None)
+            finish_batch(session, run, "ok" if snap.status == "OK" else "failed",
+                         {"signal_status": snap.status, "trade_date": snap.trade_date.isoformat(),
+                          "version": snap.version})
+            session.commit()
+            return {"status": snap.status, "trade_date": snap.trade_date.isoformat()}
+        except Exception as exc:
+            finish_batch(session, run, "failed", {"error": str(exc)[:500]})
+            session.commit()
+            raise

@@ -177,3 +177,37 @@ class BacktestEquity(Base):
     benchmark: Mapped[float] = mapped_column(Numeric, nullable=False)
     regime: Mapped[str] = mapped_column(Text, nullable=False)
     exposure: Mapped[float] = mapped_column(Numeric, nullable=False)
+
+
+class SignalSnapshot(TimestampMixin, Base):
+    """일일 시그널 — append-only, is_current 체인 (feature-strategy-engine §7)."""
+
+    __tablename__ = "signal_snapshots"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)   # 신호 기준일 (종가 확정일)
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)        # OK | INSUFFICIENT_HISTORY | MISSING | FAILED
+    regime: Mapped[str | None] = mapped_column(Text)
+    e_target: Mapped[float | None] = mapped_column(Numeric)
+    w_200: Mapped[float | None] = mapped_column(Numeric)
+    w_lev: Mapped[float | None] = mapped_column(Numeric)
+    gap_cancel_below: Mapped[int | None] = mapped_column(BigInteger)
+    indicators: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    detail: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class OrderSheetRow(Base):
+    """주문표 행 — append-only (수정 금지)."""
+
+    __tablename__ = "order_sheets"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    signal_id: Mapped[int] = mapped_column(ForeignKey("signal_snapshots.id"), nullable=False)
+    instrument: Mapped[str] = mapped_column(Text, nullable=False)   # K200 | LEV
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    otype: Mapped[str] = mapped_column(Text, nullable=False)
+    qty: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    price: Mapped[int | None] = mapped_column(BigInteger)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)

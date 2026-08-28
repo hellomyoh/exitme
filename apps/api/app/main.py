@@ -14,12 +14,14 @@ from app.auth import router as auth_router
 from app.backtests import router as backtests_router
 from app.charts import router as charts_router
 from app.quotes import router as quotes_router
+from app.signals import router as signals_router
 
 app = FastAPI(title="StockLab API", version="0.1.0")
 app.include_router(quotes_router)
 app.include_router(auth_router)
 app.include_router(charts_router)
 app.include_router(backtests_router)
+app.include_router(signals_router)
 
 
 def problem(status: int, title: str, detail: str, instance: str) -> JSONResponse:

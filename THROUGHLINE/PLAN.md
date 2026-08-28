@@ -44,7 +44,7 @@
 - **산출물**: 일일 시그널 배치(Celery beat), 주문표 API·화면, 시그널 append-only 체인, **절제 5종 백테스트 실행 리포트 + 파라미터 확정 변경요청**
 - **완료 조건**: [feature-strategy-engine.md §13](features/feature-strategy-engine.md) — 골든·경계·재현성(백테스트=시그널 바이트 동일) 테스트 실제 통과, 실데이터 배치 30분 내 완료
 - **QA 완료 조건**: 회귀 "전략 엔진" 절 통과
-- **의존**: Phase 3 | **상태**: 대기
+- **의존**: Phase 3 | **상태**: **구현 완료 / 실데이터 검증 대기** (시그널 배치·주문표 API/화면·버전 체인·수집→시그널 트리거 완료, R2 동일성 테스트 green. 절제 5종 실데이터 리포트·30분 배치 실측은 KIS 키 기입 후)
 - **관련**: [feature-strategy-engine.md](features/feature-strategy-engine.md), [ADR-005](adr/005-strategy-single-source.md), [ADR-006](adr/006-ravg-v2-adoption.md)
 
 ## Phase 5 — 실전매매 기록
