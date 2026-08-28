@@ -13,8 +13,9 @@ type EquityPoint = { date: string; equity: number; benchmark: number; regime: st
 type Job = { id: number; status: string; progress: number; params: Record<string, unknown>; kpi: Kpi | null; equity?: EquityPoint[]; trades?: Record<string, unknown>[]; stale?: boolean };
 type JournalOrder = { instrument: string; side: string; otype?: string; kind: string; price: number | null; qty: number };
 type JournalDay = {
-  date: string; regime: string; exposure: number; equity: number; day_return: number; total_return: number;
-  cash: number; qty_200: number; qty_lev: number; planned: JournalOrder[]; fills: JournalOrder[];
+  date: string; regime: string; exposure: number; equity: number; day_return: number; day_pnl: number;
+  total_return: number; cash: number; qty_200: number; qty_lev: number;
+  planned: JournalOrder[]; fills: JournalOrder[];
 };
 
 const FLAG_LABELS: [string, string, string][] = [
@@ -342,15 +343,25 @@ export default function SimulatorPage() {
                         <span className={`w-20 text-right font-bold ${d.day_return > 0 ? "text-up" : d.day_return < 0 ? "text-down" : "text-muted"}`}>
                           {(d.day_return * 100).toFixed(2)}%
                         </span>
+                        <span className={`hidden w-28 text-right text-[13px] font-semibold sm:inline ${d.day_pnl > 0 ? "text-up" : d.day_pnl < 0 ? "text-down" : "text-faint"}`}>
+                          {d.day_pnl >= 0 ? "+" : ""}{d.day_pnl.toLocaleString()}원
+                        </span>
                         <span className="hidden text-[13px] text-faint sm:inline">누적 {(d.total_return * 100).toFixed(1)}%</span>
                         <span className="hidden text-[13px] text-muted md:inline">평가 {Math.round(d.equity).toLocaleString()}원</span>
                         <span className="hidden text-[13px] text-faint lg:inline">보유 200ETF {d.qty_200.toLocaleString()} · 레버 {d.qty_lev.toLocaleString()}</span>
                         <span className="ml-auto text-[13px] text-faint">주문 {d.planned.length} · 체결 {d.fills.length}</span>
                       </summary>
-                      <div className="grid gap-4 border-t border-line px-4 py-4 lg:grid-cols-2">
-                        <JournalOrders title="장 시작 전 주문표 (계획)" orders={d.planned} fill={false} />
-                        <JournalOrders title="체결 내역" orders={d.fills} fill={true} />
-                        <div className="col-span-full flex flex-wrap gap-x-6 gap-y-1 text-[13.5px] text-muted">
+                      <div className="grid gap-x-8 gap-y-4 border-t-2 border-line-strong px-4 py-4 lg:grid-cols-2">
+                        <JournalOrders title="📋 장 시작 전 주문표 (계획)" orders={d.planned} fill={false} />
+                        <div className="border-t border-dashed border-line-strong pt-4 lg:border-l lg:border-t-0 lg:border-dashed-0 lg:pl-8 lg:pt-0" style={{ borderLeftStyle: "solid" }}>
+                          <JournalOrders title="✅ 체결 내역" orders={d.fills} fill={true}
+                            extra={d.fills.length > 0 ? (
+                              <span className={`font-bold ${d.day_pnl > 0 ? "text-up" : d.day_pnl < 0 ? "text-down" : "text-muted"}`}>
+                                당일 손익 {d.day_pnl >= 0 ? "+" : ""}{d.day_pnl.toLocaleString()}원
+                              </span>
+                            ) : undefined} />
+                        </div>
+                        <div className="col-span-full flex flex-wrap gap-x-6 gap-y-1 border-t border-line pt-3 text-[13.5px] text-muted">
                           <span>노출 E <b className="text-ink">{(d.exposure * 100).toFixed(1)}%</b></span>
                           <span>현금 <b className="text-ink">{d.cash.toLocaleString()}원</b></span>
                           <span>보유 200 ETF <b className="text-ink">{d.qty_200.toLocaleString()}주</b></span>
@@ -381,10 +392,12 @@ const KIND_KO_J: Record<string, string> = {
   lev_tact_exit: "전술 이탈", lev_liq: "레버 청산",
 };
 
-function JournalOrders({ title, orders, fill }: { title: string; orders: JournalOrder[]; fill: boolean }) {
+function JournalOrders({ title, orders, fill, extra }: { title: string; orders: JournalOrder[]; fill: boolean; extra?: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-1.5 text-[13px] font-semibold text-muted">{title} ({orders.length}건)</div>
+      <div className="mb-2 flex items-center justify-between text-[13.5px] font-semibold text-muted">
+        <span>{title} ({orders.length}건)</span>{extra}
+      </div>
       {orders.length === 0 ? <p className="text-[13px] text-faint">없음</p> : (
         <table className="w-full text-[14px]">
           <thead><tr className="text-left text-xs text-faint">

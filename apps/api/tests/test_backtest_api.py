@@ -169,7 +169,7 @@ def test_journal_daily_records():
     got = client.get(f"/backtests/{bt_id}/journal", headers=h).json()
     assert got["stale"] is False and len(got["items"]) > 100
     first = got["items"][0]
-    assert {"date", "regime", "equity", "day_return", "total_return",
+    assert {"date", "regime", "equity", "day_return", "day_pnl", "total_return",
             "cash", "qty_200", "qty_lev", "planned", "fills"} <= set(first)
     # 체결이 있는 날이 존재하고, 체결 필드 형태 검증
     fill_days = [it for it in got["items"] if it["fills"]]
