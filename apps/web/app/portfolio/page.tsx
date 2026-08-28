@@ -280,6 +280,52 @@ export default function PortfolioPage() {
         </div>
       )}
 
+      {/* 보유 종목 — 상단 현황판 바로 아래 (2026-08-29 지시) */}
+      {sum?.positions.length === 0 ? (
+        <EmptyState icon="📒" title="보유 포지션이 없습니다"
+          desc="HTS에서 체결한 매수 내역을 위 폼으로 등록하면 수익률 추적이 시작됩니다. 입출금도 등록해야 TWR·XIRR이 정확해집니다." />
+      ) : (
+        <div className="mb-4 grid gap-3">
+          {sum?.positions.map((p) => {
+            const t = pnlTone(p.return);
+            const hasBand = p.target_price && p.stop_price && p.target_price > p.stop_price;
+            const ratio = hasBand ? (p.price - p.stop_price!) / (p.target_price! - p.stop_price!) : 0;
+            return (
+              <Card key={p.code}>
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <b className="text-[17px]">{p.name}</b>
+                    <span className="text-xs text-faint">{p.code}</span>
+                    <Badge tone="default">{p.held_days}일 보유</Badge>
+                  </div>
+                  <div className={`text-lg font-extrabold ${toneCls[t]}`}>
+                    {fmtPct(p.return, 2)} <span className="text-[13px] font-semibold">({fmtWon(p.unrealized)})</span>
+                  </div>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-[14.5px] text-muted sm:grid-cols-4 lg:grid-cols-6">
+                  <span>보유 <b className="text-ink">{p.qty.toLocaleString()}주</b></span>
+                  <span>평단 <b className="text-ink">{fmtWon(p.avg_price)}</b></span>
+                  <span>현재가 <b className="text-ink">{fmtWon(p.price)}</b></span>
+                  <span>평가액 <b className="text-ink">{fmtWon(p.value)}</b></span>
+                  <span>연환산 <b className="text-ink">{p.annualized === null ? "— (30일 미만)" : fmtPct(p.annualized)}</b></span>
+                  <span>최고/최저 <b className="text-up">{fmtPct(p.best_return)}</b> / <b className="text-down">{fmtPct(p.worst_return)}</b></span>
+                </div>
+                {hasBand && (
+                  <div className="mt-3">
+                    <div className="mb-1 flex justify-between text-[11px] text-faint">
+                      <span>손절 {fmtWon(p.stop_price!)}</span>
+                      <span>목표 {fmtWon(p.target_price!)}</span>
+                    </div>
+                    <GaugeBar ratio={ratio} color={t === "down" ? "var(--color-down)" : "var(--color-up)"} height={6} />
+                  </div>
+                )}
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+
       {/* 수익률 추이 (2026-08-28 지시 — 시뮬레이터와 동일 스타일, TWR 지수) */}
       <Card className="mb-4">
         <CardTitle right={curve.length > 0 ? (
@@ -376,51 +422,6 @@ export default function PortfolioPage() {
           </p>
         )}
       </Card>
-
-      {/* 포지션 카드 */}
-      {sum?.positions.length === 0 ? (
-        <EmptyState icon="📒" title="보유 포지션이 없습니다"
-          desc="HTS에서 체결한 매수 내역을 위 폼으로 등록하면 수익률 추적이 시작됩니다. 입출금도 등록해야 TWR·XIRR이 정확해집니다." />
-      ) : (
-        <div className="grid gap-3">
-          {sum?.positions.map((p) => {
-            const t = pnlTone(p.return);
-            const hasBand = p.target_price && p.stop_price && p.target_price > p.stop_price;
-            const ratio = hasBand ? (p.price - p.stop_price!) / (p.target_price! - p.stop_price!) : 0;
-            return (
-              <Card key={p.code}>
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <b className="text-[17px]">{p.name}</b>
-                    <span className="text-xs text-faint">{p.code}</span>
-                    <Badge tone="default">{p.held_days}일 보유</Badge>
-                  </div>
-                  <div className={`text-lg font-extrabold ${toneCls[t]}`}>
-                    {fmtPct(p.return, 2)} <span className="text-[13px] font-semibold">({fmtWon(p.unrealized)})</span>
-                  </div>
-                </div>
-                <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-[14.5px] text-muted sm:grid-cols-4 lg:grid-cols-6">
-                  <span>보유 <b className="text-ink">{p.qty.toLocaleString()}주</b></span>
-                  <span>평단 <b className="text-ink">{fmtWon(p.avg_price)}</b></span>
-                  <span>현재가 <b className="text-ink">{fmtWon(p.price)}</b></span>
-                  <span>평가액 <b className="text-ink">{fmtWon(p.value)}</b></span>
-                  <span>연환산 <b className="text-ink">{p.annualized === null ? "— (30일 미만)" : fmtPct(p.annualized)}</b></span>
-                  <span>최고/최저 <b className="text-up">{fmtPct(p.best_return)}</b> / <b className="text-down">{fmtPct(p.worst_return)}</b></span>
-                </div>
-                {hasBand && (
-                  <div className="mt-3">
-                    <div className="mb-1 flex justify-between text-[11px] text-faint">
-                      <span>손절 {fmtWon(p.stop_price!)}</span>
-                      <span>목표 {fmtWon(p.target_price!)}</span>
-                    </div>
-                    <GaugeBar ratio={ratio} color={t === "down" ? "var(--color-down)" : "var(--color-up)"} height={6} />
-                  </div>
-                )}
-              </Card>
-            );
-          })}
-        </div>
-      )}
 
       {/* 날짜별 거래 내역 (2026-08-28 지시 — 시뮬레이터 저널과 동일 UX, 기본 닫힘) */}
       {txs.length > 0 && (() => {
