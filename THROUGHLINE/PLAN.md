@@ -35,7 +35,7 @@
 - **산출물**: 전략 모듈 `strategy/`(순수 함수), 백테스트 워커(벡터화)·체결 시뮬레이션·비용 모델·KPI, 위저드 UI, 취소·진행률 WS, data_fingerprint·stale 배지
 - **완료 조건**: [feature-backtest.md §13](features/feature-backtest.md) — look-ahead·체결·KPI·잡 수명주기 테스트 실제 통과, 단일 종목 5년 < 5s 실측
 - **QA 완료 조건**: 회귀 "백테스트" 절 통과. **종료 시 유니버스 60s 실측 → 유니버스 정의 변경요청 제출**
-- **의존**: Phase 1 (병행 가능: Phase 2) | **상태**: 대기
+- **의존**: Phase 1 (병행 가능: Phase 2) | **상태**: **구현 완료** (전략 모듈+시뮬레이터+잡 인프라+위저드 UI. 테스트 67 green, 5년 99ms 실측. 유니버스 60s 실측·프리셋 서버 저장은 잔여 — 아래 특이사항)
 - **관련**: [feature-backtest.md](features/feature-backtest.md), [ADR-005](adr/005-strategy-single-source.md), [ADR-006](adr/006-ravg-v2-adoption.md)
 
 ## Phase 4 — RAVG v2 전략 엔진 (일일 시그널·주문표)

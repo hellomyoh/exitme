@@ -22,7 +22,7 @@ celery_app.conf.update(
     task_default_queue="ingest",
     task_routes={
         "app.worker.daily_ingest": {"queue": "ingest"},
-        # 백테스트 태스크(Phase 3)는 "backtest" 큐 사용
+        "app.worker.run_backtest_job": {"queue": "backtest"},
     },
     task_acks_late=True,
     timezone="Asia/Seoul",
@@ -133,3 +133,80 @@ def poll_quotes() -> dict:
         except Exception:
             logger.warning("poll_quotes failed for %s", code, exc_info=True)
     return {"pushed": pushed}
+
+
+@celery_app.task(name="app.worker.run_backtest_job")
+def run_backtest_job(bt_id: int) -> dict:
+    """백테스트 잡 실행 — 진행률 1% 발행, 취소 폴링, 결과 단일 트랜잭션 저장 (feature-backtest §8)."""
+    import json as _json
+    from dataclasses import asdict
+    from datetime import date as _date
+
+    import redis as sync_redis
+
+    from app.backtests import CANCEL_KEY, PROGRESS_CH, PROGRESS_KEY, load_aligned_bars
+    from app.db import SessionLocal
+    from app.models import Backtest, BacktestEquity
+    from app.strategy.backtest import Cancelled, run_backtest
+    from app.strategy.params import AblationFlags, Params
+
+    r = sync_redis.from_url(settings.redis_url, decode_responses=True)
+
+    def publish(payload: dict) -> None:
+        data = _json.dumps(payload, ensure_ascii=False)
+        r.set(PROGRESS_KEY.format(id=bt_id), data, ex=3600)
+        r.publish(PROGRESS_CH.format(id=bt_id), data)
+
+    with SessionLocal() as session:
+        bt = session.get(Backtest, bt_id)
+        if bt is None:
+            return {"error": "not found"}
+        try:
+            p = bt.params
+            bars_200, bars_lev, fp = load_aligned_bars(
+                session, _date.fromisoformat(p["date_from"]), _date.fromisoformat(p["date_to"])
+            )
+            bt.status = "RUNNING"
+            bt.data_fingerprint = fp
+            session.commit()
+            publish({"id": bt_id, "status": "RUNNING", "progress": 0})
+
+            params = Params(**p.get("costs", {}), flags=AblationFlags(**p.get("flags", {})))
+
+            def progress_cb(done: int, total: int) -> bool:
+                if r.get(CANCEL_KEY.format(id=bt_id)):
+                    return False
+                pct = int(done * 100 / total)
+                publish({"id": bt_id, "status": "RUNNING", "progress": pct})
+                return True
+
+            result = run_backtest(bars_200, bars_lev, float(p["capital"]), params, progress_cb=progress_cb)
+
+            # 단일 트랜잭션 저장 (부분 저장 없음 → 재시도 멱등)
+            bt.kpi = result.kpi
+            bt.trades = [asdict(t) for t in result.trades]
+            bt.status = "DONE"
+            bt.progress = 100
+            for d, eq, bench, reg, exp in zip(result.dates, result.equity, result.benchmark,
+                                              result.regimes, result.exposures):
+                session.add(BacktestEquity(backtest_id=bt_id, trade_date=_date.fromisoformat(d),
+                                           equity=eq, benchmark=bench, regime=reg, exposure=exp))
+            session.commit()
+            publish({"id": bt_id, "status": "DONE", "progress": 100, "kpi": result.kpi})
+            return {"status": "DONE"}
+        except Cancelled:
+            session.rollback()
+            bt = session.get(Backtest, bt_id)
+            bt.status = "CANCELED"
+            session.commit()
+            publish({"id": bt_id, "status": "CANCELED", "progress": bt.progress})
+            return {"status": "CANCELED"}
+        except Exception as exc:
+            session.rollback()
+            bt = session.get(Backtest, bt_id)
+            bt.status = "FAILED"
+            bt.error = str(exc)[:2000]
+            session.commit()
+            publish({"id": bt_id, "status": "FAILED", "error": str(exc)[:500]})
+            logger.exception("backtest %s failed", bt_id)
+            return {"status": "FAILED"}

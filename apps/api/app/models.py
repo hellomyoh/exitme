@@ -150,3 +150,30 @@ class ChartDrawing(TimestampMixin, Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), nullable=False)
     items: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class Backtest(TimestampMixin, Base):
+    """백테스트 잡 — 결과는 단일 트랜잭션 저장, data_fingerprint 로 stale 판정 (feature-backtest §7·§8)."""
+
+    __tablename__ = "backtests"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    params: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="QUEUED")  # QUEUED|RUNNING|DONE|FAILED|CANCELED
+    progress: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    data_fingerprint: Mapped[str | None] = mapped_column(Text)
+    kpi: Mapped[dict | None] = mapped_column(JSONB)
+    trades: Mapped[list | None] = mapped_column(JSONB)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class BacktestEquity(Base):
+    __tablename__ = "backtest_equity"
+
+    backtest_id: Mapped[int] = mapped_column(ForeignKey("backtests.id"), primary_key=True)
+    trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    equity: Mapped[float] = mapped_column(Numeric, nullable=False)
+    benchmark: Mapped[float] = mapped_column(Numeric, nullable=False)
+    regime: Mapped[str] = mapped_column(Text, nullable=False)
+    exposure: Mapped[float] = mapped_column(Numeric, nullable=False)
