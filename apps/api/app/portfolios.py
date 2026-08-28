@@ -214,7 +214,7 @@ def create_from_backtest(bt_id: int, user_id: int = Depends(current_user_id),
     """
     from datetime import time as _time, timedelta as _td, timezone as _tz
 
-    from app.backtests import load_aligned_bars, pair_from_params
+    from app.backtests import load_bars_with_warmup, pair_from_params
     from app.strategy.backtest import run_backtest
     from app.strategy.params import AblationFlags, Params
 
@@ -226,11 +226,11 @@ def create_from_backtest(bt_id: int, user_id: int = Depends(current_user_id),
 
     p = bt.params
     code_200, code_lev = pair_from_params(p)
-    bars_200, bars_lev, _fp = load_aligned_bars(
+    bars_200, bars_lev, _fp, start_idx = load_bars_with_warmup(
         session, date.fromisoformat(p["date_from"]), date.fromisoformat(p["date_to"]),
         codes=(code_200, code_lev))
     params = Params(**p.get("costs", {}), flags=AblationFlags(**p.get("flags", {})))
-    result = run_backtest(bars_200, bars_lev, float(p["capital"]), params)
+    result = run_backtest(bars_200, bars_lev, float(p["capital"]), params, start_index=start_idx)
 
     pf = TradePortfolio(user_id=user_id, name=f"실전 (백테스트 #{bt_id})",
                         kind="from_backtest", backtest_id=bt_id, params=bt.params)

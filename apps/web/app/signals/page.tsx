@@ -237,24 +237,40 @@ export default function SignalsPage() {
             ) : <p className="py-4 text-center text-muted">오늘은 신규 주문이 없습니다.</p>}
           </Card>
 
-          {/* 조건부 지시문 */}
+          {/* 조건부 지시문 — 선택된 기준의 보유·주문에 해당하는 것만 (2026-08-28 검토 반영) */}
           <Card>
             <CardTitle>조건부 지시문 <span className="normal-case text-faint">· 장중 아래 상황이 오면 직접 실행하세요</span></CardTitle>
-            <div className="grid gap-2.5">
-              {sig.gap_cancel_below && (
-                <Callout icon="⚠️">
+            {(() => {
+              const orders = sig.orders ?? [];
+              const hasGridBuy = orders.some((o) => o.kind.startsWith("grid"));
+              const levLiqOrdered = orders.some((o) => o.kind === "lev_liq");
+              const levQty = sig.basis === "portfolio" ? (sig.account?.qty_lev ?? 0) : (d.model_qty_lev ?? 0);
+              const items: React.ReactNode[] = [];
+              if (hasGridBuy && sig.gap_cancel_below) items.push(
+                <Callout key="gap" icon="⚠️">
                   시가가 <b className="text-ink">{fmtNum(sig.gap_cancel_below)}원 이하</b>(전일종가 −1.5×ATR)로 하락 출발하면
                   잔여 그리드 매수를 <b className="text-ink">전량 취소</b>합니다. (갭 하락일에 3단이 동시에 잡히는 것을 방지)
-                </Callout>
-              )}
-              <Callout icon="🛡️">
-                σ20 = <b className="text-ink">{fmtPct(sig.indicators?.sigma20)}</b> — 종가 기준 <b className="text-ink">25%</b> 돌파 시
-                레버리지를 전량 청산합니다.
-              </Callout>
-              <Callout icon="📉">
-                레짐이 상승에서 이탈하면 목표가를 기다리지 않고 레버리지를 <b className="text-ink">즉시 전량 청산</b>합니다.
-              </Callout>
-            </div>
+                </Callout>);
+              if (levLiqOrdered) items.push(
+                <Callout key="liq" icon="🛡️">
+                  레버리지 <b className="text-ink">전량 청산이 이미 오늘 주문표에 포함</b>되어 있습니다
+                  (σ20 = <b className="text-ink">{fmtPct(sig.indicators?.sigma20)}</b>, 청산 기준 25%) — 장중 추가 감시는 필요 없습니다.
+                </Callout>);
+              else if (levQty > 0) {
+                items.push(
+                  <Callout key="sig20" icon="🛡️">
+                    σ20 = <b className="text-ink">{fmtPct(sig.indicators?.sigma20)}</b> — 종가 기준 <b className="text-ink">25%</b> 돌파 시
+                    레버리지를 전량 청산합니다.
+                  </Callout>);
+                items.push(
+                  <Callout key="regime" icon="📉">
+                    레짐이 상승에서 이탈하면 목표가를 기다리지 않고 레버리지를 <b className="text-ink">즉시 전량 청산</b>합니다.
+                  </Callout>);
+              }
+              return items.length > 0
+                ? <div className="grid gap-2.5">{items}</div>
+                : <p className="text-[14px] text-faint">오늘 해당되는 조건부 지시문이 없습니다 — 그리드 매수 주문과 레버리지 보유가 없으면 장중에 감시할 항목이 없습니다.</p>;
+            })()}
           </Card>
 
           {/* 최근 이력 — 주문 기준과 연동: 내 포트면 그 포트의 실제 매매 기록, 모델이면 모델 시뮬 이력 (2026-08-28 검토 반영) */}

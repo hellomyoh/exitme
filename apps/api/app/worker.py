@@ -160,7 +160,7 @@ def run_backtest_job(bt_id: int) -> dict:
 
     import redis as sync_redis
 
-    from app.backtests import CANCEL_KEY, PROGRESS_CH, PROGRESS_KEY, load_aligned_bars, pair_from_params
+    from app.backtests import CANCEL_KEY, PROGRESS_CH, PROGRESS_KEY, load_bars_with_warmup, pair_from_params
     from app.db import SessionLocal
     from app.models import Backtest, BacktestEquity
     from app.strategy.backtest import Cancelled, run_backtest
@@ -182,7 +182,7 @@ def run_backtest_job(bt_id: int) -> dict:
             return {"status": "already-done"}
         try:
             p = bt.params
-            bars_200, bars_lev, fp = load_aligned_bars(
+            bars_200, bars_lev, fp, start_idx = load_bars_with_warmup(
                 session, _date.fromisoformat(p["date_from"]), _date.fromisoformat(p["date_to"]),
                 codes=pair_from_params(p),
             )
@@ -200,7 +200,8 @@ def run_backtest_job(bt_id: int) -> dict:
                 publish({"id": bt_id, "status": "RUNNING", "progress": pct})
                 return True
 
-            result = run_backtest(bars_200, bars_lev, float(p["capital"]), params, progress_cb=progress_cb)
+            result = run_backtest(bars_200, bars_lev, float(p["capital"]), params,
+                                  start_index=start_idx, progress_cb=progress_cb)
 
             # 단일 트랜잭션 저장 — 재시도 멱등: 이전 시도의 잔여 행을 먼저 제거
             session.query(BacktestEquity).filter(BacktestEquity.backtest_id == bt_id).delete()

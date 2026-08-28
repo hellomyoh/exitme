@@ -210,3 +210,26 @@ def test_delete_backtest_cascade_and_isolation():
     with SessionLocal() as db:
         left = db.scalar(_sel(_f.count()).where(BacktestEquity.backtest_id == bt_id))
         assert left == 0  # 자산곡선 연쇄 삭제
+
+
+def test_short_window_backtest_trades():
+    """2026-08-28 결함 수정: 1년 미만 구간도 워밍업 선행 로드로 거래 발생 (구간만 로드하면 거래 0)."""
+    client = TestClient(app, base_url="https://testserver")
+    h = {"Authorization": f"Bearer {make_user(client)}"}
+    # 합성 데이터 400봉(2024-01-02~) 후반 2개월 — 선행 350여 봉이 워밍업으로 쓰여야 함
+    resp = client.post("/backtests", json={"capital": 100_000_000, "date_from": "2025-05-01",
+                                           "date_to": "2025-07-15"}, headers=h)
+    assert resp.status_code == 202
+    bt_id = resp.json()["id"]
+    run_job_inline(bt_id)
+    body = client.get(f"/backtests/{bt_id}", headers=h).json()
+    assert body["status"] == "DONE"
+    assert body["kpi"]["trades"] >= 0
+    eq = body["equity"]
+    assert eq, "자산곡선이 비어 있으면 안 됨"
+    assert eq[0]["date"] >= "2025-05-01", "곡선은 요청 시작일부터"
+    # 핵심: 구간 전체가 워밍업에 잠식되지 않고 계획이 생성됨 (레짐이 기록됨)
+    assert any(r["regime"] in ("BULL", "NEUTRAL", "BEAR") for r in eq)
+    jr = client.get(f"/backtests/{bt_id}/journal", headers=h).json()["items"]
+    assert jr and jr[0]["date"] >= "2025-05-01"
+    assert any(d["planned"] for d in jr), "짧은 구간에서도 주문 계획이 있어야 함"

@@ -96,10 +96,31 @@ def pair_from_params(params: dict) -> tuple[str, str]:
     return ETF_PAIRS.get(params.get("etf", "KODEX"), ETF_PAIRS["KODEX"])
 
 
+WARMUP_CAL_DAYS = 460  # min_history 270 거래일 ≈ 397 캘린더일 + 휴장 여유
+
+
+def load_bars_with_warmup(session: Session, date_from: date, date_to: date,
+                          codes: tuple[str, str] = ETF_PAIRS["KODEX"]):
+    """지표 워밍업용 선행 봉을 시작일 이전에서 함께 로드 (2026-08-28 결함 수정).
+
+    구간만 로드하면 1년 이하 백테스트가 전부 워밍업(270거래일)에 잠식되어 거래 0 이 된다.
+    반환: (bars_200, bars_lev, fp, start_idx) — start_idx = 요청 시작일 이상 첫 봉.
+    거래·자산곡선은 start_idx 부터 시작한다 (run_backtest 의 start_index).
+    선행 데이터가 부족하면(start_idx < 270) 종전처럼 구간 앞부분이 워밍업으로 쓰인다.
+    """
+    from datetime import timedelta
+
+    bars_200, bars_lev, fp = load_aligned_bars(
+        session, date_from - timedelta(days=WARMUP_CAL_DAYS), date_to, codes)
+    iso = date_from.isoformat()
+    start_idx = next((i for i, b in enumerate(bars_200) if b["date"] >= iso), 0)
+    return bars_200, bars_lev, fp, start_idx
+
+
 def current_fingerprint(session: Session, params: dict) -> str:
-    _, _, fp = load_aligned_bars(session, date.fromisoformat(params["date_from"]),
-                                 date.fromisoformat(params["date_to"]),
-                                 codes=pair_from_params(params))
+    _, _, fp, _ = load_bars_with_warmup(session, date.fromisoformat(params["date_from"]),
+                                        date.fromisoformat(params["date_to"]),
+                                        codes=pair_from_params(params))
     return fp
 
 
@@ -183,12 +204,13 @@ def get_backtest_journal(bt_id: int, user_id: int = Depends(current_user_id),
     if bt.status != "DONE":
         raise HTTPException(status_code=409, detail=f"journal available only for DONE jobs (status={bt.status})")
     p = bt.params
-    bars_200, bars_lev, fp = load_aligned_bars(
+    bars_200, bars_lev, fp, start_idx = load_bars_with_warmup(
         session, date.fromisoformat(p["date_from"]), date.fromisoformat(p["date_to"]),
         codes=pair_from_params(p),
     )
     params = Params(**p.get("costs", {}), flags=AblationFlags(**p.get("flags", {})))
-    r = run_backtest(bars_200, bars_lev, float(p["capital"]), params, collect_plans=True)
+    r = run_backtest(bars_200, bars_lev, float(p["capital"]), params,
+                     start_index=start_idx, collect_plans=True)
 
     fills_by_date: dict[str, list] = {}
     for f in r.fills:
