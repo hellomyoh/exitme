@@ -17,6 +17,11 @@
 - [2026-08-28] busybox wget(alpine 계열 이미지)은 `localhost`를 IPv6(::1)로 먼저 해석한다 — IPv4만 리슨하는 서비스(Next dev, nginx `listen 80`)의 healthcheck는 `127.0.0.1`을 써야 한다. (근거: web/nginx healthcheck connection refused 재현 후 해결)
 - [2026-08-28] compose exec-form healthcheck(`["CMD", ...]`)에서는 `$$VAR` 셸 확장이 일어나지 않는다(셸이 없음) — celery ping은 `-d celery@$$HOSTNAME` 없이 전체 ping으로. (근거: worker unhealthy 재현 후 해결)
 
+## Docker / compose (계속)
+
+- [2026-08-28] compose 익명 볼륨(`/srv/web/node_modules`)은 이미지를 재빌드해도 기존 컨테이너의 것을 재사용한다 — 의존성 추가 후에는 `docker compose up -d -V <svc>`로 익명 볼륨을 갱신해야 한다. (근거: lightweight-charts 미해석 500 재현 후 -V로 해결)
+- [2026-08-28] email-validator(pydantic EmailStr)는 `.local` 등 특수 도메인을 기본 거부한다 — 테스트 계정은 실 TLD 형태 사용. `Secure` 쿠키는 http TestClient로 전송되지 않는다 — `base_url="https://testserver"` 사용. (근거: 테스트 실패 재현)
+
 ## KIS Open API
 
 - [2026-08-28] 일봉 API(FHKST03010100)는 호출당 최대 100건 — 140 달력일 창으로 페이지네이션하면 안전하다. 모의(vps)에서 TR ID V-치환은 주문 계열(T…)만 적용되고 시세 TR(FHKST…)은 공통. (근거: 공식 GitHub https://github.com/koreainvestment/open-trading-api 예제 분석; 실 호출 검증은 키 기입 후 예정)

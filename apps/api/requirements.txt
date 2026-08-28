@@ -3,11 +3,14 @@ uvicorn[standard]==0.32.*
 sqlalchemy==2.0.*
 psycopg[binary]==3.2.*
 alembic==1.14.*
-pydantic==2.*
+pydantic[email]==2.*
 pydantic-settings==2.*
 celery[redis]==5.4.*
 redis==5.*
 requests==2.32.*
+PyJWT==2.*
+bcrypt==4.*
+cryptography==44.*
 pandas==2.2.*
 pykrx==1.0.*
 setuptools>=75,<81  # pykrx가 pkg_resources 사용 — 81부터 제거되어 상한 고정

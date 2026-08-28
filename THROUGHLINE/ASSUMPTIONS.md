@@ -20,3 +20,6 @@
 - 2026-08-28 | 운영 | 초기화 commit은 main 직접 수행(그린필드 부트스트랩 예외, KICKOFF 3.1) | 브랜치 보호·협업자 없음 | active
 - 2026-08-28 | 데이터 | 시딩 소스를 pykrx→KIS 1순위로 전환(pykrx는 폴백 유지), KIS 키 미설정 시 시딩은 명시적 실패 | KRX가 pykrx 요청 차단(NOTES.md 실측), ADR-004의 "KIS 우선" 방향과 일치 | active
 - 2026-08-28 | 인프라 | 웹 스캐폴드는 최소 구성(Tailwind v4/shadcn은 차트 Phase에서 도입), beat 스케줄은 임시 24h 간격(Phase 1 마감 시 KST 16:00 crontab 확정) | Phase 0 범위 최소화 | active
+- 2026-08-28 | 전략/차트 | ATR20은 Wilder 평활 채택 (py/TS 동일 구현·교차 검증) | 정본 §3은 "ATR20"만 지정 — 업계 표준 | active
+- 2026-08-28 | 인증 | 가입 방식 = 이메일+비밀번호(bcrypt), 이메일 인증 없음(v1) | REQUIREMENTS §9 미지정 — 최소 구성 | active
+- 2026-08-28 | 차트 | 드로잉 v1 범위 = 수평선(저장 포함), 나머지 4종 TODO 백로그 | 커스텀 프리미티브 구현 규모 — 점진 확대 | active

@@ -118,3 +118,35 @@ class SeedCheckpoint(Base):
     completed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class User(TimestampMixin, Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ChartLayout(TimestampMixin, Base):
+    """차트 레이아웃 — 지표 구성·주기 등 JSON (feature-chart §7). 소유자 격리."""
+
+    __tablename__ = "chart_layouts"
+    __table_args__ = (UniqueConstraint("user_id", "name"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class ChartDrawing(TimestampMixin, Base):
+    """종목별 드로잉 JSON (feature-chart §7). 소유자 격리."""
+
+    __tablename__ = "chart_drawings"
+    __table_args__ = (UniqueConstraint("user_id", "instrument_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), nullable=False)
+    items: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

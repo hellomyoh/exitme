@@ -26,7 +26,7 @@
 - **산출물**: 차트 화면(4-툴바), 지표 TS 구현 + Web Worker, 드로잉 5종·레이아웃 저장, 인증(JWT) 기반 사용자 스캐폴드
 - **완료 조건**: [feature-chart.md §13](features/feature-chart.md) — 지표 교차 검증 포함 자동 테스트 실제 통과
 - **QA 완료 조건**: 수동 60fps 계측 기록
-- **의존**: Phase 1 | **상태**: 대기
+- **의존**: Phase 1 | **상태**: **구현 완료 / 수동 QA 대기** (자동 테스트 green — py 29 + TS 교차검증 4. 드로잉은 5종 중 수평선만 구현, 4종은 TODO 백로그. 60fps 계측은 시딩 데이터 확보 후)
 - **관련**: [feature-chart.md](features/feature-chart.md), [ADR-003](adr/003-auth-jwt.md), [ADR-005](adr/005-strategy-single-source.md)
 
 ## Phase 3 — 백테스트 엔진 + 3스텝 위저드
