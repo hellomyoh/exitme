@@ -451,6 +451,7 @@ export default function PortfolioPage() {
               <details key={j.date} className="rounded-xl border border-line bg-inset">
                 <summary className="flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-1 rounded-xl px-4 py-3 text-[14.5px] transition-colors hover:bg-raised/60">
                   <b className="w-24">{j.date}</b>
+                  {j.date > new Date().toISOString().slice(0, 10) && <Badge tone="default">다음 거래일 예정</Badge>}
                   {j.regime && (
                     <Badge tone={j.regime === "BULL" ? "up" : j.regime === "BEAR" ? "down" : "accent"}>{REGIME_KO2[j.regime]}</Badge>
                   )}
@@ -465,7 +466,7 @@ export default function PortfolioPage() {
                       실현 {j.realized_pnl >= 0 ? "+" : ""}{j.realized_pnl.toLocaleString()}원
                     </span>
                   )}
-                  <span className="ml-auto text-[13px] text-faint">주문 {j.planned ? j.planned.length : "—"} · 체결 {j.fills.length}</span>
+                  <span className="ml-auto text-[13px] text-faint">주문 {j.planned ? j.planned.length : "—"} · 체결 {j.date > new Date().toISOString().slice(0, 10) ? "—" : j.fills.length}</span>
                 </summary>
                 <div className="border-t-2 border-line-strong px-4 py-3">
                   <div className="mb-1.5 text-[12.5px] font-semibold uppercase tracking-wide text-faint">장 시작 전 주문표</div>

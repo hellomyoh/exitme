@@ -154,14 +154,20 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
 
     user_pf = Portfolio(cash=float(cash), lots=lots)
     p = plan(last, m200, mlev, regime, user_pf, params)
+    # 표시용 병합 — 로트별 익절이 같은 가격이면 한 주문으로 (HTS 에는 하나로 넣으면 됨, 2026-08-29 검토)
+    merged: dict[tuple, dict] = {}
+    for o in p.orders:
+        key = (o.instrument, o.side, o.otype, o.price, o.kind)
+        if key in merged:
+            merged[key]["qty"] += o.qty
+        else:
+            merged[key] = {"instrument": o.instrument, "side": o.side, "otype": o.otype,
+                           "qty": o.qty, "price": o.price, "kind": o.kind}
     out = {
         "basis": "portfolio", "portfolio": {"id": pf_row.id, "name": pf_row.name},
         "account": {"cash": cash, "qty_200": qty_200, "qty_lev": qty_lev,
                     "equity": round(user_pf.equity(m200.closes[last], mlev.closes[last]))},
-        "orders": [
-            {"instrument": o.instrument, "side": o.side, "otype": o.otype,
-             "qty": o.qty, "price": o.price, "kind": o.kind} for o in p.orders
-        ],
+        "orders": list(merged.values()),
         "gap_cancel_below": p.gap_cancel_below,
     }
     # '그날의 주문표' 보존 — 일자별 매매 일지의 계획 vs 체결 대조 (2026-08-29 지시).
