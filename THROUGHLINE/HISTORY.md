@@ -190,3 +190,8 @@
 - 작업 내용: KIS 해외주식 기간별시세(HHDFS76240000)로 QQQ·QLD·TQQQ 전 이력(2007-08~) 수집(Yahoo 대신 한투 API — 사용자 지시). 센트 정수 스케일·미국 비용 모델로 현행 파라미터 그대로 스모크 백테스트. `Params.lev_multiple` 신설(3배 ETF 가치 ×2/3 보정, 기본 2.0 불변). 결과: 두 케이스 성립 — MDD −22% vs QQQ 매수보유 −53%(2008 포함), CAGR 10% vs 17%(방어 대가), 3배 배율 보정 등가성 실증(B2≈A), 무보정 시 노출 초과 확인. 상세: docs/us-backtest-20260831.md.
 - 테스트 결과: 전략 44/44 통과 (기본값 불변).
 - Git commit: feat: lev_multiple param and US market backtest study
+
+## [2026-08-31] feat | 미국 ETF 일봉 DB 적재 (QQQ/QLD/TQQQ)
+
+- 작업 내용: `ingest_us_daily`(KIS 해외 기간별시세, 증분·페이지네이션) 신설 후 전량 적재 — QQQ 4,788 / QLD 4,787 / TQQQ 4,166봉 (2007-08~2026-08, 센트 정수·NASDAQ 마켓, ASSUMPTIONS 규약 기록). 증분 재실행 0건·`load_aligned_bars(codes=("QQQ","QLD"))` 로드 검증. 스케줄 배치는 미등록(실험용).
+- Git commit: feat: US ETF daily ingestion into DB
