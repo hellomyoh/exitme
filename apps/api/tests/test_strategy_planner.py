@@ -183,9 +183,9 @@ def test_bear_stops_grid_and_liquidates_leverage():
     assert len(liq) == 1 and liq[0].qty == 500
 
 
-# ── σ20 > 25% 강제청산 (상승장이어도)
+# ── σ20 > 35% 강제청산 (상승장이어도) — 2026-08-31 임계 상향
 def test_sigma20_forces_leverage_liquidation():
-    m = mk_market(sigma20=0.26)
+    m = mk_market(sigma20=0.36)
     lev_lot = Lot(LEV, 300, 20000, "lev_tact1", None, 0)
     p = plan(I, m, mk_lev(), Regime.BULL, pf_with(5e7, [lev_lot]), P)
     assert [o for o in p.orders if o.kind == "lev_liq"]

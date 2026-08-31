@@ -45,7 +45,7 @@ class Params:
     lev_strategic_ratio: float = 0.7
     lev_tact1_mult: float = 0.75
     lev_tact2_mult: float = 1.5
-    sigma20_liquidate: float = 0.25
+    sigma20_liquidate: float = 0.35  # 2026-08-31 사용자 승인 상향(25→35%) — 스윕: 10년 +140→+150%, MDD 불변, 위기 방어는 레짐 이탈이 선행
     # 워밍업·안전 (feature-strategy-engine §5.2·§5.3)
     min_history: int = 270
     # 비용 (feature-backtest §5.2)

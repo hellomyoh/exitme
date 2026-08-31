@@ -305,12 +305,12 @@ function SignalsPage() {
               if (levLiqOrdered) items.push(
                 <Callout key="liq" icon="🛡️">
                   레버리지 <b className="text-ink">전량 청산이 이미 오늘 주문표에 포함</b>되어 있습니다
-                  (σ20 = <b className="text-ink">{fmtPct(sig.indicators?.sigma20)}</b>, 청산 기준 25%) — 장중 추가 감시는 필요 없습니다.
+                  (σ20 = <b className="text-ink">{fmtPct(sig.indicators?.sigma20)}</b>, 청산 기준 35%) — 장중 추가 감시는 필요 없습니다.
                 </Callout>);
               else if (levQty > 0) {
                 items.push(
                   <Callout key="sig20" icon="🛡️">
-                    σ20 = <b className="text-ink">{fmtPct(sig.indicators?.sigma20)}</b> — 종가 기준 <b className="text-ink">25%</b> 돌파 시
+                    σ20 = <b className="text-ink">{fmtPct(sig.indicators?.sigma20)}</b> — 종가 기준 <b className="text-ink">35%</b> 돌파 시
                     레버리지를 전량 청산합니다.
                   </Callout>);
                 items.push(
