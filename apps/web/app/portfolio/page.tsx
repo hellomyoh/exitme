@@ -403,7 +403,7 @@ function PortfolioPage() {
               <thead><tr className="border-b border-line text-left text-[13px] text-faint">
                 <th className="pb-2 font-medium">구분</th><th className="pb-2 font-medium">종목</th>
                 <th className="pb-2 font-medium">방향</th>
-                <th className="pb-2 text-right font-medium">지정가</th>
+                <th className="pb-2 text-right font-medium">방식 · 가격</th>
                 <th className="pb-2 text-right font-medium">수량{signal?.basis === "portfolio" ? " (내 계좌 기준)" : " (모델 1억)"}</th>
                 <th className="pb-2 pl-4 font-medium">체결</th>
               </tr></thead>
@@ -413,7 +413,11 @@ function PortfolioPage() {
                     <td className="py-2"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge></td>
                     <td className="py-2">{o.instrument === "K200" ? (market === "US" ? "QQQ" : "KODEX 200") : (market === "US" ? "레버리지(QLD/TQQQ)" : "KODEX 레버리지")}</td>
                     <td className={`py-2 font-bold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
-                    <td className="table-num py-2 font-semibold">{o.price ? fpx(o.price) : "시가"}</td>
+                    <td className="table-num py-2 font-semibold">
+                      {o.price
+                        ? <><span className="mr-1 rounded bg-raised px-1.5 py-0.5 text-[11px] font-bold text-muted">지정가</span>{fpx(o.price)}</>
+                        : <><span className="mr-1 rounded bg-accent/15 px-1.5 py-0.5 text-[11px] font-bold text-accent">시장가</span><span className="text-[12px] text-faint">시가</span></>}
+                    </td>
                     <td className="table-num py-2">{o.qty.toLocaleString()}주</td>
                     <td className="py-2 pl-4">
                       <button className="btn !px-2.5 !py-1 text-[12.5px]" onClick={() => {
@@ -517,7 +521,7 @@ function PortfolioPage() {
                         <thead><tr className="text-left text-xs text-faint">
                           <th className="pb-1 font-medium">구분</th><th className="pb-1 font-medium">종목</th>
                           <th className="pb-1 font-medium">방향</th>
-                          <th className="pb-1 text-right font-medium">지정가</th>
+                          <th className="pb-1 text-right font-medium">방식 · 가격</th>
                           <th className="pb-1 text-right font-medium">수량</th>
                           <th className="pb-1 text-right font-medium">금액</th>
                         </tr></thead>
@@ -527,7 +531,11 @@ function PortfolioPage() {
                               <td className="py-1.5 text-muted">{ORDER_KIND_KO[o.kind] ?? o.kind}</td>
                               <td className="py-1.5">{o.instrument === "K200" ? (market === "US" ? "QQQ" : "200 ETF") : "레버리지"}</td>
                               <td className={`py-1.5 font-semibold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
-                              <td className="table-num py-1.5">{o.price ? fpx(o.price) : "시가"}</td>
+                              <td className="table-num py-1.5">
+                              {o.price
+                                ? <><span className="mr-1 rounded bg-raised px-1 py-0.5 text-[10.5px] font-bold text-muted">지정가</span>{fpx(o.price)}</>
+                                : <><span className="mr-1 rounded bg-accent/15 px-1 py-0.5 text-[10.5px] font-bold text-accent">시장가</span></>}
+                            </td>
                               <td className="table-num py-1.5">{o.qty.toLocaleString()}</td>
                               <td className="table-num py-1.5 text-muted">{o.price ? fm(o.price * o.qty) : "—"}</td>
                             </tr>

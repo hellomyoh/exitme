@@ -505,7 +505,7 @@ function JournalOrders({ title, orders, fill, extra, fpx, fm }: { title: string;
           <thead><tr className="text-left text-xs text-faint">
             <th className="pb-1 font-medium">구분</th><th className="pb-1 font-medium">종목</th>
             <th className="pb-1 font-medium">방향</th>
-            <th className="pb-1 text-right font-medium">{fill ? "체결가" : "지정가"}</th>
+            <th className="pb-1 text-right font-medium">{fill ? "체결가" : "방식 · 가격"}</th>
             <th className="pb-1 text-right font-medium">수량</th>
             <th className="pb-1 text-right font-medium">금액</th>
           </tr></thead>
@@ -515,7 +515,13 @@ function JournalOrders({ title, orders, fill, extra, fpx, fm }: { title: string;
                 <td className="py-1.5 text-muted">{KIND_KO_J[o.kind] ?? o.kind}</td>
                 <td className="py-1.5">{o.instrument === "K200" ? "200 ETF" : "레버리지"}</td>
                 <td className={`py-1.5 font-semibold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
-                <td className="table-num py-1.5">{o.price ? fpx(o.price) : "시가"}</td>
+                <td className="table-num py-1.5">
+                {fill
+                  ? (o.price ? fpx(o.price) : "—")
+                  : o.price
+                    ? <><span className="mr-1 rounded bg-raised px-1 py-0.5 text-[10.5px] font-bold text-muted">지정가</span>{fpx(o.price)}</>
+                    : <><span className="mr-1 rounded bg-accent/15 px-1 py-0.5 text-[10.5px] font-bold text-accent">시장가</span></>}
+              </td>
                 <td className="table-num py-1.5">{o.qty.toLocaleString()}</td>
                 <td className="table-num py-1.5 text-muted">{o.price ? fm(o.price * o.qty) : "—"}</td>
               </tr>

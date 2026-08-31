@@ -143,7 +143,7 @@ function SignalsPage() {
 
   return (
     <main>
-      <PageTitle title={`주문표 · ${MARKET_LABEL[market]}`} sub="RAVG v2 전략이 계산한 다음 거래일 지정가 주문 — 발주는 본인 HTS에서 직접 수행합니다. 모의 계산이며 투자 권유가 아닙니다." />
+      <PageTitle title={`주문표 · ${MARKET_LABEL[market]}`} sub="RAVG v2 전략이 계산한 다음 거래일 주문 — 그리드 매수·익절은 지정가, 축소·레버리지는 시장가. 발주는 본인 HTS에서 직접 수행합니다. 모의 계산이며 투자 권유가 아닙니다." />
 
       {sig.status !== "OK" ? (
         <EmptyState icon="🛰️" title={sig.status === "INSUFFICIENT_HISTORY" ? "데이터 워밍업 중" : "시그널이 아직 없습니다"}
@@ -263,7 +263,7 @@ function SignalsPage() {
                       <th className="pb-2 font-medium">구분</th>
                       <th className="pb-2 font-medium">종목</th>
                       <th className="pb-2 font-medium">방향</th>
-                      <th className="pb-2 text-right font-medium">지정가</th>
+                      <th className="pb-2 text-right font-medium">방식 · 가격</th>
                       <th className="pb-2 text-right font-medium">수량</th>
                       {sig.basis !== "portfolio" && scale && <th className="pb-2 text-right font-medium text-accent">내 수량<div className="font-normal">(투자금 {fm(cap)} 어림)</div></th>}
                       <th className="pb-2 pl-4 font-medium">실행 조건</th>
@@ -275,7 +275,11 @@ function SignalsPage() {
                         <td className="py-3"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{KIND_KO[o.kind] ?? o.kind}</Badge></td>
                         <td className="py-3 font-medium">{NAME_X[o.instrument]}</td>
                         <td className={`py-3 font-bold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
-                        <td className="table-num py-3 font-semibold">{o.price ? fpx(o.price) : "시가"}</td>
+                        <td className="table-num py-3 font-semibold">
+                          {o.price
+                            ? <><span className="mr-1 rounded bg-raised px-1.5 py-0.5 text-[11.5px] font-bold text-muted">지정가</span>{fpx(o.price)}</>
+                            : <><span className="mr-1 rounded bg-accent/15 px-1.5 py-0.5 text-[11.5px] font-bold text-accent">시장가</span><span className="text-[12.5px] text-faint">다음날 시가</span></>}
+                        </td>
                         <td className="table-num py-3">{fmtNum(o.qty)}주</td>
                         {sig.basis !== "portfolio" && scale && <td className="table-num py-3 font-bold text-accent">{fmtNum(Math.floor(o.qty * scale))}주</td>}
                         <td className="py-3 pl-4 text-[13.5px] text-muted">{orderDesc(o, sig)}</td>
