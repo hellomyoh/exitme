@@ -169,6 +169,19 @@ def create_backtest(body: BacktestIn, user_id: int = Depends(current_user_id),
     algo = user_algo_overrides(session, user_id)
     if algo:
         job_params["algo"] = algo  # 실행 시점 설정 스냅샷 — 이후 설정 변경과 무관하게 재현 (2026-08-31)
+    # 동일 조건 + 동일 데이터면 결과가 결정론적으로 같음 — 중복 기록 대신 기존 잡 재사용 (2026-08-31 검토).
+    # 시세가 갱신됐으면(지문 상이) 새로 실행한다.
+    dup = session.scalars(
+        select(Backtest).where(Backtest.user_id == user_id, Backtest.status == "DONE",
+                               Backtest.params == job_params)
+        .order_by(Backtest.id.desc()).limit(1)
+    ).first()
+    if dup is not None:
+        try:
+            if dup.data_fingerprint == current_fingerprint(session, job_params):
+                return {"id": dup.id, "status": "DONE", "reused": True}
+        except HTTPException:
+            pass
     bt = Backtest(user_id=user_id, params=job_params, status="QUEUED")
     session.add(bt)
     from app.dashboard import record_event

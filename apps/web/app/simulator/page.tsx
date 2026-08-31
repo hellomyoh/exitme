@@ -106,7 +106,12 @@ function SimulatorPage() {
       setError(((await res.json()) as { detail?: string }).detail ?? `실행 실패 (${res.status})`);
       return;
     }
-    const { id } = (await res.json()) as { id: number };
+    const { id, reused } = (await res.json()) as { id: number; reused?: boolean };
+    if (reused) {
+      // 동일 조건·동일 데이터 — 기존 결과 재사용 (중복 기록 생성 안 함)
+      await showResult(id);
+      return;
+    }
     setJobId(id); setProgress(0); setStep(2);
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/backtests/${id}`);
     ws.onmessage = async (ev) => {

@@ -180,8 +180,8 @@ def test_journal_daily_records():
     assert any(it["planned"] for it in got["items"])
     # 보유량·현금은 음수 불가
     assert all(it["qty_200"] >= 0 and it["qty_lev"] >= 0 for it in got["items"])
-    # 미완료 잡 저널 409
-    q_id = client.post("/backtests", json={"capital": 100_000_000, "date_from": "2024-01-02",
+    # 미완료 잡 저널 409 — 동일 조건은 재사용되므로(2026-08-31) 조건을 달리해 QUEUED 잡 생성
+    q_id = client.post("/backtests", json={"capital": 100_000_001, "date_from": "2024-01-02",
                                            "date_to": "2025-08-01"}, headers=h).json()["id"]
     assert client.get(f"/backtests/{q_id}/journal", headers=h).status_code == 409
 
@@ -233,3 +233,18 @@ def test_short_window_backtest_trades():
     jr = client.get(f"/backtests/{bt_id}/journal", headers=h).json()["items"]
     assert jr and jr[0]["date"] >= "2025-05-01"
     assert any(d["planned"] for d in jr), "짧은 구간에서도 주문 계획이 있어야 함"
+
+
+def test_identical_backtest_reused():
+    """2026-08-31 검토: 동일 조건 + 동일 데이터 지문 재실행 → 새 잡 대신 기존 DONE 재사용."""
+    client = TestClient(app, base_url="https://testserver")
+    h = {"Authorization": f"Bearer {make_user(client)}"}
+    body = {"capital": 30_000_000, "date_from": "2024-06-03", "date_to": "2025-07-01"}
+    first = client.post("/backtests", json=body, headers=h).json()
+    assert "reused" not in first
+    run_job_inline(first["id"])
+    second = client.post("/backtests", json=body, headers=h).json()
+    assert second.get("reused") is True and second["id"] == first["id"]
+    # 조건이 다르면 새 잡
+    third = client.post("/backtests", json={**body, "capital": 31_000_000}, headers=h).json()
+    assert third["id"] != first["id"]
