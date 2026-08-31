@@ -48,9 +48,6 @@ export default function LoginPage() {
           <button className="btn" disabled={busy} onClick={() => void submit("register")}>새 계정 가입</button>
           {msg && <p className="text-[13px] text-up">{msg}</p>}
         </div>
-        <p className="mt-5 text-[11px] leading-relaxed text-faint">
-          모의·과거 데이터 기반 서비스이며 투자 권유가 아닙니다.
-        </p>
       </Card>
     </main>
   );
