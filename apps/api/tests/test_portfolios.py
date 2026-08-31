@@ -323,6 +323,10 @@ def test_portfolio_journal_plan_and_fills():
     with SessionLocal() as s:
         seed_synthetic(s, "069500", "KODEX 200")
         seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+        # 신선한 DB(CI)에는 시그널 스냅샷이 없음 — 자급자족 (2026-09-01 CI 결함 수정)
+        from app.signals import run_signal_batch
+        run_signal_batch(s)
+        s.commit()
     client = TestClient(app, base_url="https://testserver")
     import uuid as _u
     token = client.post("/auth/register", json={"email": f"jn{_u.uuid4().hex[:8]}@stocklab.dev",
