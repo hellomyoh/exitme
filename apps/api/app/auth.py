@@ -122,3 +122,10 @@ def change_password(body: PasswordChange, user_id: int = Depends(current_user_id
     user.password_hash = bcrypt.hashpw(body.new_password.encode(), bcrypt.gensalt()).decode()
     session.commit()
     return {"changed": True}
+
+
+@router.post("/logout")
+def logout(response: Response) -> dict:
+    """로그아웃 — refresh 쿠키 삭제 (2026-08-31 지시). access 는 클라이언트 메모리에서 폐기."""
+    response.delete_cookie("refresh_token", path="/", secure=True, httponly=True, samesite="strict")
+    return {"logged_out": True}
