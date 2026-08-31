@@ -100,7 +100,8 @@ export function RegimeTip() {
     <span>
       <b className="text-up">상승장</b>: 종가&gt;200일선 <b>그리고</b> 20일선&gt;60일선 → 그리드로 사서 <b className="text-ink">익절 없이 보유</b>, 레버리지 허용<br />
       <b className="text-accent">중립장</b>: 상승·하락 어느 쪽도 아닌 구간 → 떨어지면 사고 <b className="text-ink">+Grid% 오르면 익절</b>(왕복)<br />
-      <b className="text-down">하락장</b>: 종가&lt;200일선 <b>그리고</b> 20일선&lt;60일선 → 신규 매수 정지·보유 축소(최대 20%)·레버리지 청산
+      <b className="text-down">하락장</b>: 종가&lt;200일선 <b>그리고</b> 20일선&lt;60일선 → 신규 매수 정지·보유 축소(최대 20%)·레버리지 청산<br />
+      <span className="text-faint">※ 이탈에는 완충 2%: 경계를 2% 관통해야 판정이 바뀝니다 (잦은 전환 방지). 반대 조건 동시 충족 시엔 즉시 직행.</span>
     </span>
   );
 }

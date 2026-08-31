@@ -20,7 +20,7 @@ class AblationFlags:
 @dataclass(frozen=True)
 class Params:
     # 노출 (정본 §5)
-    target_downside_vol: float = 0.13
+    target_downside_vol: float = 0.20  # 2026-08-31 사용자 승인 상향(0.13→0.20) — KR IS·OOS 동시 개선, t_OOS +3.02, MDD 불변
     target_total_vol_v1: float = 0.18
     blend_abs: float = 0.5
     sigma_down_floor: float = 0.03
@@ -30,6 +30,7 @@ class Params:
     emax_bear: float = 0.20
     # 레짐 (정본 §4)
     regime_buffer: float = 0.02
+    ma200_exit_buffer: float = 0.02  # 2026-08-31 승인 — BULL/BEAR 이탈의 MA200 다리 히스테리시스 (docs/regime-buffer-study-20260831.md, 3중 검증)
     slope_lookback_v1: int = 20
     # 그리드 (정본 §6)
     grid_coef: float = 0.75

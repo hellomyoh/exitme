@@ -77,12 +77,12 @@ def test_golden_allocation_formula(sd, e_expect, wlev, w200):
 
 
 def test_allocation_three_points():
-    # σd·σref 를 조절해 E_raw 를 정확히 유도: E_raw = 0.5×0.13/sd + 0.5×sref/sd
-    # sd=sref=s 이면 E_raw = 0.5×(0.13+s)/s
+    # σd·σref 를 조절해 E_raw 를 정확히 유도: E_raw = 0.5×0.20/sd + 0.5×sref/sd (목표σ 0.20, 2026-08-31)
+    # sd=sref=s 이면 E_raw = 0.5×(0.20+s)/s
     cases = [
-        (0.26, 0.75, 0.0, 0.75),       # E_raw = 0.5×0.39/0.26 = 0.75 → BULL emax 1.3 → E=0.75
-        (0.10, 1.15, 0.15, 0.85),      # E_raw = 0.5×0.23/0.10 = 1.15
-        (0.05, 1.30, 0.30, 0.70),      # E_raw = 1.8 → emax 1.30 캡
+        (0.40, 0.75, 0.0, 0.75),       # E_raw = 0.5×0.60/0.40 = 0.75 → BULL emax 1.3 → E=0.75
+        (0.20 / 1.3, 1.15, 0.15, 0.85),  # 0.5×(0.20+s)/s = 1.15 ⇔ s = 0.20/1.3
+        (0.05, 1.30, 0.30, 0.70),      # E_raw = 2.5 → emax 1.30 캡
     ]
     for s, e, wlev, w200 in cases:
         m = mk_market(sigma_down=s, sigma_ref=s)
@@ -95,11 +95,11 @@ def test_allocation_three_points():
 
 
 def test_e_one_boundary_leverage_zero_vs_positive():
-    # E_raw = 1.0 정확히: 0.5×(0.13+s)/s = 1 → s = 0.13
-    m = mk_market(sigma_down=0.13, sigma_ref=0.13)
+    # E_raw = 1.0 정확히: 0.5×(0.20+s)/s = 1 → s = 0.20
+    m = mk_market(sigma_down=0.20, sigma_ref=0.20)
     p = plan(I, m, mk_lev(), Regime.BULL, pf_with(1e8), P)
     assert p.e_target == pytest.approx(1.0) and p.w_lev == 0.0
-    m2 = mk_market(sigma_down=0.1299, sigma_ref=0.1299)
+    m2 = mk_market(sigma_down=0.1999, sigma_ref=0.1999)
     p2 = plan(I, m2, mk_lev(), Regime.BULL, pf_with(1e8), P)
     assert p2.w_lev > 0.0
 
@@ -162,8 +162,8 @@ def test_budget_rule_no_orders_when_full():
 
 # ── 리밸런싱 밴드 (B7): 5%p 이내 미실행 / 초과 실행
 def test_band_reduce_only_beyond_5pp():
-    m = mk_market(sigma_down=0.26, sigma_ref=0.26)  # E = 0.75
-    # equity 1억: target_200 = 0.75×0.995×1e8 ≈ 74.6M
+    m = mk_market(sigma_down=0.40, sigma_ref=0.40)  # E = 0.5×(0.20+0.40)/0.40 = 0.75 (목표σ 0.20)
+    # equity 1억: target_200 = 0.75×1e8 = 75M
     lots_small_excess = [Lot(K200, 1120, 70000, "core", None, 0)]   # 78.4M — 초과 ~3.8%p
     p1 = plan(I, m, mk_lev(), Regime.BULL, pf_with(100_000_000 - 78_400_000, lots_small_excess), P)
     assert not [o for o in p1.orders if o.kind == "reduce"]
@@ -256,7 +256,7 @@ def test_sell_orders_never_exceed_holdings():
 # ── 2026-08-28 공식 검증 소견 회귀 고정 (discussion/review-formulas 참조)
 def test_leverage_liquidated_when_e_drops_below_one():
     """검증 ①① 치명: BULL 유지 중 E≤1.0 이 되면 레버리지 전량 매도 (정본 §5.2 '자동 0')."""
-    m = mk_market(sigma_down=0.20, sigma_ref=0.20, sigma20=0.15)  # E=0.825 → w_lev=0
+    m = mk_market(sigma_down=0.22, sigma_ref=0.22, sigma20=0.15)  # E<1 → w_lev=0 (목표σ 0.20 기준)
     lots = [Lot(LEV, 500, 20000, "lev_strat", None, 0), Lot(LEV, 100, 20000, "lev_tact1", None, 0)]
     p = plan(I, m, mk_lev(close=21500.0, ema20=21000.0), Regime.BULL, pf_with(5e7, lots), P)
     assert p.regime is Regime.BULL and p.w_lev == 0.0
@@ -266,7 +266,7 @@ def test_leverage_liquidated_when_e_drops_below_one():
 
 def test_tactical_exit_fires_even_when_wlev_zero_band():
     """검증 ①①: EMA20 회복 시 전술 이탈은 w_lev 값과 무관하게 발행."""
-    m = mk_market(sigma_down=0.118, sigma_ref=0.118)  # E≈1.05 → w_lev≈0.05 (밴드 미만)
+    m = mk_market(sigma_down=0.118, sigma_ref=0.118)  # E>1 → 레버리지 보유 상태에서 이탈 평가
     lots = [Lot(LEV, 100, 20000, "lev_tact1", None, 0)]
     p = plan(I, m, mk_lev(close=21500.0, ema20=21000.0), Regime.BULL, pf_with(1e8, lots), P)
     assert [o for o in p.orders if o.kind == "lev_tact_exit"]
@@ -298,7 +298,7 @@ def test_core_lot_gets_tp_on_transition_day():
 
 def test_strategic_track_enters_at_small_wlev():
     """검증 ①④: 전략 트랙 신규 진입은 밴드 예외 — 소액 w_lev 에서도 70:30 유지."""
-    m = mk_market(sigma_down=0.118181, sigma_ref=0.118181)  # E≈1.05, w_lev≈0.05
+    m = mk_market(sigma_down=0.118181, sigma_ref=0.118181)  # E>1 — 신규 진입 밴드 예외 확인
     p = plan(I, m, mk_lev(close=20000.0, ema20=21000.0, atr=500.0), Regime.BULL, pf_with(1e8), P)
     kinds = {o.kind for o in p.orders if o.instrument == LEV and o.side == "buy"}
     assert "lev_strat" in kinds, "신규 진입이 밴드에 막히면 안 됨"
@@ -322,3 +322,20 @@ def test_gap_exact_threshold_boundary():
     assert p.gap_cancel_below == int(exact)
     # 경계: 98,541 ≤ exact → 발동 / 98,542 > exact → 미발동
     assert 98541 <= p.gap_cancel_exact and not (98542 <= p.gap_cancel_exact)
+
+
+
+def test_ma200_exit_buffer_hysteresis():
+    """2026-08-31 승인: MA200 이탈 다리 히스테리시스 ε=2% — 관통해야 이탈, 진입·직행은 무완충."""
+    P2 = P
+    # BULL 유지: 종가가 MA200 아래지만 −2% 이내
+    assert next_regime(Regime.BULL, close=65000 * 0.99, ma20=71000, ma60=69000, ma200=65000.0, params=P2) is Regime.BULL
+    # 정확히 −2% 경계 → '<' 미충족 → 유지
+    assert next_regime(Regime.BULL, close=65000 * 0.98, ma20=71000, ma60=69000, ma200=65000.0, params=P2) is Regime.BULL
+    # −2% 관통 → 이탈
+    assert next_regime(Regime.BULL, close=65000 * 0.98 - 1, ma20=71000, ma60=69000, ma200=65000.0, params=P2) is Regime.NEUTRAL
+    # BEAR 대칭: +2% 이내 반등은 유지, 관통 시 이탈
+    assert next_regime(Regime.BEAR, close=65000 * 1.01, ma20=68000, ma60=69000, ma200=65000.0, params=P2) is Regime.BEAR
+    assert next_regime(Regime.BEAR, close=65000 * 1.02 + 1, ma20=68000, ma60=69000, ma200=65000.0, params=P2) is Regime.NEUTRAL
+    # 급락 직행(BEAR 진입)은 무완충 — MA200 1원 아래 + MA20<MA60 이면 즉시 BEAR
+    assert next_regime(Regime.BULL, close=64999.0, ma20=68000, ma60=69000, ma200=65000.0, params=P2) is Regime.BEAR

@@ -46,13 +46,17 @@ def next_regime(
     # ② Bull 진입
     if bull_entry:
         return Regime.BULL
-    # ③ 현재 상태의 이탈 → Neutral (완충: 2% 관통해야 이탈)
+    # ③ 현재 상태의 이탈 → Neutral — 두 다리 모두 히스테리시스:
+    #    MA20/MA60 다리는 buf(2%), MA200 다리는 ε(ma200_exit_buffer, 2026-08-31 승인).
+    #    이탈의 95% 가 MA200 다리에서 발생하는데 완충이 없어 마이크로 전환을 유발했음
+    #    (docs/regime-buffer-study-20260831.md — KR·US 3중 검증). 급락 직행(①)은 무완충 유지.
+    eps = params.ma200_exit_buffer
     if prev is Regime.BULL:
-        if close < ma200 or ma20 < ma60 * (1 - buf):
+        if close < ma200 * (1 - eps) or ma20 < ma60 * (1 - buf):
             return Regime.NEUTRAL
         return Regime.BULL
     if prev is Regime.BEAR:
-        if close > ma200 or ma20 > ma60 * (1 + buf):
+        if close > ma200 * (1 + eps) or ma20 > ma60 * (1 + buf):
             return Regime.NEUTRAL
         return Regime.BEAR
     return Regime.NEUTRAL
