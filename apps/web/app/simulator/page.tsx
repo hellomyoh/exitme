@@ -496,6 +496,17 @@ const KIND_KO_J: Record<string, string> = {
 };
 
 function JournalOrders({ title, orders, fill, extra, fpx, fm }: { title: string; orders: JournalOrder[]; fill: boolean; extra?: React.ReactNode; fpx: (v: number) => string; fm: (v: number) => string }) {
+  if (!fill) {
+    // 계획 표시는 동일 (구분·종목·방향·가격) 병합 — 로트별 익절이 같은 가격이면 한 주문으로 (2026-08-31 검토)
+    const merged = new Map<string, JournalOrder>();
+    for (const o of orders) {
+      const key = `${o.kind}|${o.instrument}|${o.side}|${o.price ?? "mkt"}`;
+      const prev = merged.get(key);
+      if (prev) merged.set(key, { ...prev, qty: prev.qty + o.qty });
+      else merged.set(key, { ...o });
+    }
+    orders = Array.from(merged.values());
+  }
   return (
     <div>
       <div className="mb-2 flex items-center justify-between text-[13.5px] font-semibold text-muted">
