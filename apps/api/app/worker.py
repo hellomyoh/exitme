@@ -160,7 +160,7 @@ def run_backtest_job(bt_id: int) -> dict:
 
     import redis as sync_redis
 
-    from app.backtests import CANCEL_KEY, PROGRESS_CH, PROGRESS_KEY, load_bars_with_warmup, pair_from_params
+    from app.backtests import CANCEL_KEY, PROGRESS_CH, PROGRESS_KEY, load_bars_with_warmup, pair_from_params, params_from_job
     from app.db import SessionLocal
     from app.models import Backtest, BacktestEquity
     from app.strategy.backtest import Cancelled, run_backtest
@@ -174,7 +174,10 @@ def run_backtest_job(bt_id: int) -> dict:
         r.publish(PROGRESS_CH.format(id=bt_id), data)
 
     with SessionLocal() as session:
-        bt = session.get(Backtest, bt_id)
+        # 행 잠금 — 동시 실행(acks_late 재전달·수동 재실행 경합) 시 두 번째가 대기 후 DONE 을 보고 반환 (2026-08-31)
+        bt = session.execute(
+            select(Backtest).where(Backtest.id == bt_id).with_for_update()
+        ).scalar_one_or_none()
         if bt is None:
             return {"error": "not found"}
         if bt.status == "DONE":
@@ -191,7 +194,7 @@ def run_backtest_job(bt_id: int) -> dict:
             session.commit()
             publish({"id": bt_id, "status": "RUNNING", "progress": 0})
 
-            params = Params(**p.get("costs", {}), flags=AblationFlags(**p.get("flags", {})))
+            params = params_from_job(p)
 
             def progress_cb(done: int, total: int) -> bool:
                 if r.get(CANCEL_KEY.format(id=bt_id)):

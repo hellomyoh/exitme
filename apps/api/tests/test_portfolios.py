@@ -403,3 +403,66 @@ def test_delete_transaction_rebuilds_ledger():
     s3 = client.get(f"/portfolio/summary?portfolio_id={pid}", headers=h).json()
     assert s3["positions"][0]["qty"] == 70
     assert sell2["realized_pnl"] == 60_000
+
+
+# ── 2026-08-31 한국/미국 분리 + 설정
+def test_us_portfolio_market_separation():
+    """미국 포트: market 저장·KR 종목 거부·목록 market 노출."""
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _u
+    token = client.post("/auth/register", json={"email": f"us{_u.uuid4().hex[:8]}@stocklab.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "us", "market": "US"}, headers=h).json()["id"]
+    items = client.get("/portfolios", headers=h).json()["items"]
+    assert next(i for i in items if i["id"] == pid)["market"] == "US"
+    ts = datetime(2026, 8, 20, tzinfo=timezone.utc).isoformat()
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 1_000_000,
+                                    "executed_at": ts}, headers=h)
+    # KR 종목을 US 포트에 → 409 (통화 혼합 방지)
+    from tests.test_backtest_api import seed_synthetic
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+    r = client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500",
+                                        "qty": 1, "price": 70000, "executed_at": ts}, headers=h)
+    assert r.status_code == 409
+
+
+def test_algo_settings_roundtrip():
+    """알고리즘 설정: 조회·저장(범위 검증)·초기화 + 잡 파라미터 스냅샷."""
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _u
+    token = client.post("/auth/register", json={"email": f"st{_u.uuid4().hex[:8]}@stocklab.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    body = client.get("/settings/algorithm", headers=h).json()
+    assert any(i["key"] == "regime_buffer" and i["editable"] for i in body["items"])
+    assert any(i["key"] == "tick" and not i["editable"] for i in body["items"])
+    assert client.put("/settings/algorithm", json={"values": {"emax_bull": 9.9}}, headers=h).status_code == 422
+    out = client.put("/settings/algorithm", json={"values": {"emax_neutral": 0.7}}, headers=h).json()
+    assert out["overridden_keys"] == ["emax_neutral"]
+    # 잡 생성 시 스냅샷 고정
+    from tests.test_backtest_api import seed_synthetic
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+    bt = client.post("/backtests", json={"capital": 10_000_000, "date_from": "2024-06-01",
+                                         "date_to": "2025-07-01"}, headers=h).json()
+    job = client.get(f"/backtests/{bt['id']}", headers=h).json()
+    assert job["params"]["algo"] == {"emax_neutral": 0.7}
+    assert client.post("/settings/algorithm/reset", headers=h).json()["reset"] is True
+    body = client.get("/settings/algorithm", headers=h).json()
+    assert all(not i["overridden"] for i in body["items"])
+
+
+def test_change_password_flow():
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _u
+    email = f"pw{_u.uuid4().hex[:8]}@stocklab.dev"
+    token = client.post("/auth/register", json={"email": email, "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    assert client.post("/auth/change-password", json={"current_password": "wrong",
+                                                      "new_password": "newpass1234"}, headers=h).status_code == 403
+    assert client.post("/auth/change-password", json={"current_password": "password123",
+                                                      "new_password": "newpass1234"}, headers=h).status_code == 200
+    assert client.post("/auth/login", json={"email": email, "password": "newpass1234"}).status_code == 200

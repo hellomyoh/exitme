@@ -195,3 +195,9 @@
 
 - 작업 내용: `ingest_us_daily`(KIS 해외 기간별시세, 증분·페이지네이션) 신설 후 전량 적재 — QQQ 4,788 / QLD 4,787 / TQQQ 4,166봉 (2007-08~2026-08, 센트 정수·NASDAQ 마켓, ASSUMPTIONS 규약 기록). 증분 재실행 0건·`load_aligned_bars(codes=("QQQ","QLD"))` 로드 검증. 스케줄 배치는 미등록(실험용).
 - Git commit: feat: US ETF daily ingestion into DB
+
+## [2026-08-31] feat | 한국/미국 마켓 분리 + 설정 메뉴 + 사이드바 개편 (사용자 지시)
+
+- 작업 내용: (1) **마켓 분리** — `portfolios.market`(KR|US, 0009 마이그레이션), ETF_PAIRS 에 QQQ_QLD/QQQ_TQQQ, 마켓별 기본 파라미터(`base_costs_for`: 센트 호가·미국 비용·배율 3x)·`params_from_job` 일원화. 미국 신호는 라이브 계산(`_live_us_model`, 모델 $1M), 포트 기준 주문표는 포트 마켓 자동 인식(TQQQ 보유 시 3배 파라미터, QLD/TQQQ 혼합 409). KR/US 종목 교차 등록 409(통화 혼합 방지), 대시보드 KRW 스냅샷·흐름은 KR 포트 한정. (2) **설정 메뉴** — 일반(비밀번호 변경 `/auth/change-password`·세션·로그아웃)과 알고리즘(`user_settings` 테이블, PARAM_REGISTRY 23항목: 라벨·롤오버 도움말·범위 검증·기본값 disabled 표시·변경됨 배지·기본값 초기화). 오버라이드는 잡 생성 시점 스냅샷(`params["algo"]`)·포트 주문표·미국 신호에 적용, 공용 KR 모델 배치는 기본값. (3) **웹 개편** — 좌측 고정 사이드바(🇰🇷/🇺🇸/⚙️ 그룹, 모바일 슬라이드 오버), 주문표·시뮬레이터·실전매매가 `?market=US` 로 분기, 통화 표기 헬퍼(`lib/market.ts`: 센트→달러)·마켓별 종목 옵션·차트에 QQQ/QLD/TQQQ 추가. (4) 워커 잡 행 잠금(`with_for_update`) — 동시 실행 시 equity 중복 삽입 FAILED 결함 수정.
+- 테스트 결과: api **121 passed** (신규: US 포트 분리·설정 왕복·비밀번호 변경). tsc 무오류, 전 페이지(마켓 변형 포함) 200, 미국 잡 E2E DONE(+126.8%, algo 스냅샷 확인).
+- Git commit: feat: KR/US market separation, settings menu, sidebar redesign

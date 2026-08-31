@@ -4,9 +4,10 @@
  * 주문표 — 기준(모델 포트) 설명 + 내 투자금 환산 + 조건 설명 열 + 레짐 도움말 (2026-08-28 재설계).
  * 주문표의 기준: 시딩 시작일부터 전략을 그대로 따라온 "모델 포트폴리오(초기 1억)"의 현재 상태.
  */
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch, ensureSession } from "../../lib/api";
+import { fmtMoneyM, fmtPriceM, marketOf, MARKET_LABEL } from "../../lib/market";
 import { Badge, Callout, Card, CardTitle, EmptyState, fmtNum, fmtPct, GaugeBar, PageTitle, RegimeTip, Tip } from "../../components/ui";
 
 type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
@@ -44,7 +45,8 @@ const KIND_KO: Record<string, string> = {
   reduce: "축소", lev_strat: "레버리지 전략", lev_tact1: "레버리지 전술 1차",
   lev_tact2: "레버리지 전술 2차", lev_tact_exit: "전술 이탈", lev_liq: "레버리지 청산",
 };
-const NAME: Record<string, string> = { K200: "KODEX 200", LEV: "KODEX 레버리지" };
+const NAME_KR: Record<string, string> = { K200: "KODEX 200", LEV: "KODEX 레버리지" };
+const NAME_US: Record<string, string> = { K200: "QQQ", LEV: "레버리지 (QLD/TQQQ)" };
 
 function orderDesc(o: OrderRow, sig: Signal): string {
   const grid = sig.indicators?.grid ?? 0;
@@ -78,8 +80,17 @@ const IND_ROWS: { key: string; label: string; fmt: (v: number) => string }[] = [
   { key: "sigma_ref", label: "σ_ref (250일 중위)", fmt: (v) => fmtPct(v, 1) },
 ];
 
-export default function SignalsPage() {
+export default function SignalsPageWrapper() {
+  return <Suspense fallback={null}><SignalsPage /></Suspense>;
+}
+
+function SignalsPage() {
   const router = useRouter();
+  const sp = useSearchParams();
+  const market = marketOf(sp);
+  const fm = (v: number) => fmtMoneyM(market, v);
+  const NAME_X = market === "US" ? NAME_US : NAME_KR;
+  const fpx = (v: number) => fmtPriceM(market, v);
   const [sig, setSig] = useState<Signal | null>(null);
   const [myCapital, setMyCapital] = useState("");
   const [portfolios, setPortfolios] = useState<PortfolioItem[]>([]);
@@ -88,7 +99,7 @@ export default function SignalsPage() {
   const [pfHistory, setPfHistory] = useState<PortfolioTx[] | null>(null);
 
   async function loadSignal(pid: number | null) {
-    const res = await apiFetch(`/signals/daily${pid ? `?portfolio_id=${pid}` : ""}`);
+    const res = await apiFetch(`/signals/daily${pid ? `?portfolio_id=${pid}` : `?market=${market}`}`);
     if (res.ok) setSig((await res.json()) as Signal);
   }
 
@@ -99,29 +110,31 @@ export default function SignalsPage() {
       if (!ok) { router.push("/login"); return; }
       await loadSignal(basisPid);
       const pl = await apiFetch("/portfolios");
-      if (pl.ok) setPortfolios(((await pl.json()) as { items: PortfolioItem[] }).items);
+      if (pl.ok) setPortfolios(((await pl.json()) as { items: PortfolioItem[] }).items
+        .filter((it) => ((it as unknown as { market?: string }).market ?? "KR") === market));
     });
     try { setMyCapital(localStorage.getItem("myCapital") ?? ""); } catch { /* ignore */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router, basisPid]);
+  }, [router, basisPid, market]);
 
   function saveCapital(v: string) {
     setMyCapital(v);
     try { localStorage.setItem("myCapital", v); } catch { /* ignore */ }
   }
 
-  if (!sig) return <main><PageTitle title="주문표" /><p className="text-muted">불러오는 중…</p></main>;
+  if (!sig) return <main><PageTitle title={`주문표 · ${MARKET_LABEL[market]}`} /><p className="text-muted">불러오는 중…</p></main>;
 
   const r = REGIME[(sig.regime ?? "NEUTRAL") as keyof typeof REGIME] ?? REGIME.NEUTRAL;
   const cashRatio = sig.e_target !== undefined ? Math.max(1 - (sig.w_200 ?? 0) - (sig.w_lev ?? 0), 0) : 0;
   const d = sig.detail ?? {};
   const modelEquity = d.model_equity ?? d.model_capital ?? 100_000_000;
-  const cap = Number(myCapital.replaceAll(",", ""));
+  const capInput = Number(myCapital.replaceAll(",", ""));
+  const cap = market === "US" ? capInput * 100 : capInput;  // 미국은 달러 입력 → 센트
   const scale = cap > 0 ? cap / modelEquity : null;
 
   return (
     <main>
-      <PageTitle title="주문표" sub="RAVG v2 전략이 계산한 다음 거래일 지정가 주문 — 발주는 본인 HTS에서 직접 수행합니다. 모의 계산이며 투자 권유가 아닙니다." />
+      <PageTitle title={`주문표 · ${MARKET_LABEL[market]}`} sub="RAVG v2 전략이 계산한 다음 거래일 지정가 주문 — 발주는 본인 HTS에서 직접 수행합니다. 모의 계산이며 투자 권유가 아닙니다." />
 
       {sig.status !== "OK" ? (
         <EmptyState icon="🛰️" title={sig.status === "INSUFFICIENT_HISTORY" ? "데이터 워밍업 중" : "시그널이 아직 없습니다"}
@@ -148,8 +161,8 @@ export default function SignalsPage() {
             </Callout>
           ) : (
             <Callout icon="ℹ️">
-              <b className="text-ink">모델 포트폴리오</b>(데이터 시작일부터 전략을 따라온 가상 계좌, 초기 1억 → 현재 평가
-              <b className="text-ink"> {fmtNum(modelEquity)}원</b>) 기준의 참고 신호입니다.
+              <b className="text-ink">모델 포트폴리오</b>(데이터 시작일부터 전략을 따라온 가상 계좌, {market === "US" ? "초기 $1M" : "초기 1억"} → 현재 평가
+              <b className="text-ink"> {fm(modelEquity)}</b>) 기준의 참고 신호입니다.
               {(d.model_qty_200 ?? 0) === 0 && (d.model_qty_lev ?? 0) === 0 && " 모델 포트는 현재 전량 현금(직전 익절 완료) 상태라 신규 매수 그리드만 발주됩니다."}
               {" "}위에서 <b className="text-ink">내 실전매매</b>를 선택하면 내 보유·현금 기준 주문으로 바뀝니다.
             </Callout>
@@ -210,18 +223,18 @@ export default function SignalsPage() {
             <Card>
               <CardTitle>{sig.basis === "portfolio" ? "내 계좌 현황" : "모델 포트 현황"} <span className="normal-case text-faint">· 주문 수량의 기준</span></CardTitle>
               <div className="grid gap-1.5 text-[14.5px]">
-                <div className="flex justify-between"><span className="text-faint">평가액</span><b>{fmtNum(sig.basis === "portfolio" ? (sig.account?.equity ?? 0) : modelEquity)}원</b></div>
-                <div className="flex justify-between"><span className="text-faint">현금</span><b>{fmtNum(sig.basis === "portfolio" ? (sig.account?.cash ?? 0) : (d.model_cash ?? 0))}원</b></div>
+                <div className="flex justify-between"><span className="text-faint">평가액</span><b>{fm(sig.basis === "portfolio" ? (sig.account?.equity ?? 0) : modelEquity)}</b></div>
+                <div className="flex justify-between"><span className="text-faint">현금</span><b>{fm(sig.basis === "portfolio" ? (sig.account?.cash ?? 0) : (d.model_cash ?? 0))}</b></div>
                 <div className="flex justify-between"><span className="text-faint">보유 200 ETF</span><b>{fmtNum(sig.basis === "portfolio" ? (sig.account?.qty_200 ?? 0) : (d.model_qty_200 ?? 0))}주</b></div>
                 <div className="flex justify-between"><span className="text-faint">보유 레버리지</span><b>{fmtNum(sig.basis === "portfolio" ? (sig.account?.qty_lev ?? 0) : (d.model_qty_lev ?? 0))}주</b></div>
               </div>
               {sig.basis !== "portfolio" && (
                 <div className="mt-3 border-t border-line pt-3">
-                  <label className="text-[13.5px] font-semibold text-muted">내 투자금으로 어림 환산(원)</label>
+                  <label className="text-[13.5px] font-semibold text-muted">내 투자금으로 어림 환산({market === "US" ? "$" : "원"})</label>
                   <input className="input mt-1 w-full" placeholder="예: 50000000" value={myCapital}
                     onChange={(e) => saveCapital(e.target.value)} />
                   <p className="mt-1.5 text-[12.5px] leading-relaxed text-faint">
-                    위 주문 수량은 가상 모델 계좌(현재 평가 {fmtNum(modelEquity)}원) 기준입니다. 여기에 내 투자금을 입력하면
+                    위 주문 수량은 가상 모델 계좌(현재 평가 {fm(modelEquity)}) 기준입니다. 여기에 내 투자금을 입력하면
                     <b className="text-muted"> 내 투자금 ÷ 모델 평가액</b> 비율로 줄인 &quot;내 수량&quot; 열이 주문표에 추가됩니다.
                     보유·현금이 반영되지 않은 어림값이므로, 실제 주문은 위 &quot;주문 기준&quot;에서 내 실전매매 포트를 선택해 계산하세요.
                   </p>
@@ -232,7 +245,7 @@ export default function SignalsPage() {
 
           {/* 주문 테이블 */}
           <Card>
-            <CardTitle>다음 거래일 주문 <span className="normal-case text-faint">· {sig.basis === "portfolio" ? "내 계좌 기준 수량" : "모델 1억 기준 수량"}</span></CardTitle>
+            <CardTitle>다음 거래일 주문 <span className="normal-case text-faint">· {sig.basis === "portfolio" ? "내 계좌 기준 수량" : (market === "US" ? "모델 $1M 기준 수량" : "모델 1억 기준 수량")}</span></CardTitle>
             {sig.orders && sig.orders.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-[15px]">
@@ -243,7 +256,7 @@ export default function SignalsPage() {
                       <th className="pb-2 font-medium">방향</th>
                       <th className="pb-2 text-right font-medium">지정가</th>
                       <th className="pb-2 text-right font-medium">수량</th>
-                      {sig.basis !== "portfolio" && scale && <th className="pb-2 text-right font-medium text-accent">내 수량<div className="font-normal">(투자금 {fmtNum(cap)}원 어림)</div></th>}
+                      {sig.basis !== "portfolio" && scale && <th className="pb-2 text-right font-medium text-accent">내 수량<div className="font-normal">(투자금 {fm(cap)} 어림)</div></th>}
                       <th className="pb-2 pl-4 font-medium">실행 조건</th>
                     </tr>
                   </thead>
@@ -251,9 +264,9 @@ export default function SignalsPage() {
                     {sig.orders.map((o, i) => (
                       <tr key={i} className="border-b border-line/50 transition-colors last:border-0 hover:bg-inset">
                         <td className="py-3"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{KIND_KO[o.kind] ?? o.kind}</Badge></td>
-                        <td className="py-3 font-medium">{NAME[o.instrument]}</td>
+                        <td className="py-3 font-medium">{NAME_X[o.instrument]}</td>
                         <td className={`py-3 font-bold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
-                        <td className="table-num py-3 font-semibold">{o.price ? fmtNum(o.price) : "시가"}</td>
+                        <td className="table-num py-3 font-semibold">{o.price ? fpx(o.price) : "시가"}</td>
                         <td className="table-num py-3">{fmtNum(o.qty)}주</td>
                         {sig.basis !== "portfolio" && scale && <td className="table-num py-3 font-bold text-accent">{fmtNum(Math.floor(o.qty * scale))}주</td>}
                         <td className="py-3 pl-4 text-[13.5px] text-muted">{orderDesc(o, sig)}</td>
@@ -277,7 +290,7 @@ export default function SignalsPage() {
               const items: React.ReactNode[] = [];
               if (hasGridBuy && sig.gap_cancel_below) items.push(
                 <Callout key="gap" icon="⚠️">
-                  시가가 <b className="text-ink">{fmtNum(sig.gap_cancel_below)}원 이하</b>(전일종가 −1.5×ATR)로 하락 출발하면
+                  시가가 <b className="text-ink">{fpx(sig.gap_cancel_below)} 이하</b>(전일종가 −1.5×ATR)로 하락 출발하면
                   잔여 그리드 매수를 <b className="text-ink">전량 취소</b>합니다. (갭 하락일에 3단이 동시에 잡히는 것을 방지)
                 </Callout>);
               if (levLiqOrdered) items.push(
@@ -348,7 +361,7 @@ export default function SignalsPage() {
           </Card>
           ) : (
           <Card>
-            <CardTitle>최근 신호 이력 <span className="normal-case text-faint">· 모델 포트(1억) 시뮬 기준 — 내 계좌 기록 아님</span></CardTitle>
+            <CardTitle>최근 신호 이력 <span className="normal-case text-faint">· 모델 포트({market === "US" ? "$1M" : "1억"}) 시뮬 기준 — 내 계좌 기록 아님</span></CardTitle>
             {!journal ? (
               <button className="btn" onClick={() => void (async () => {
                 const res = await apiFetch("/signals/journal?days=20");

@@ -105,3 +105,20 @@ def refresh(response: Response, refresh_token: str | None = Cookie(default=None)
     user_id = _decode(refresh_token, "refresh")
     _set_refresh_cookie(response, user_id)  # 회전
     return TokenOut(access_token=_make_token(user_id, "access", ACCESS_TTL))
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+@router.post("/change-password")
+def change_password(body: PasswordChange, user_id: int = Depends(current_user_id),
+                    session: Session = Depends(get_session)) -> dict:
+    """비밀번호 변경 — 현재 비밀번호 확인 후 교체 (2026-08-31 설정 메뉴)."""
+    user = session.get(User, user_id)
+    if user is None or not bcrypt.checkpw(body.current_password.encode(), user.password_hash.encode()):
+        raise HTTPException(status_code=403, detail="현재 비밀번호가 일치하지 않습니다")
+    user.password_hash = bcrypt.hashpw(body.new_password.encode(), bcrypt.gensalt()).decode()
+    session.commit()
+    return {"changed": True}

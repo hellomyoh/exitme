@@ -126,6 +126,10 @@ def register_transaction(body: TransactionIn, user_id: int = Depends(current_use
         inst = session.scalar(select(Instrument).where(Instrument.code == body.code))
         if inst is None:
             raise HTTPException(status_code=404, detail=f"unknown code {body.code}")
+        code_market = "US" if inst.market == "NASDAQ" else "KR"
+        if code_market != pf.market:
+            raise HTTPException(status_code=409,
+                                detail=f"{body.code} 는 {code_market} 종목 — {pf.market} 포트에 등록할 수 없습니다 (통화 혼합 방지)")
     if body.kind in ("deposit", "withdraw") and not body.amount:
         raise HTTPException(status_code=422, detail="deposit/withdraw requires amount")
     if body.kind == "withdraw":
@@ -280,9 +284,8 @@ def create_from_backtest(bt_id: int, user_id: int = Depends(current_user_id),
     """
     from datetime import time as _time, timedelta as _td, timezone as _tz
 
-    from app.backtests import load_bars_with_warmup, pair_from_params
+    from app.backtests import load_bars_with_warmup, market_of_etf, pair_from_params, params_from_job
     from app.strategy.backtest import run_backtest
-    from app.strategy.params import AblationFlags, Params
 
     bt = session.get(Backtest, bt_id)
     if bt is None or bt.user_id != user_id:
@@ -295,11 +298,12 @@ def create_from_backtest(bt_id: int, user_id: int = Depends(current_user_id),
     bars_200, bars_lev, _fp, start_idx = load_bars_with_warmup(
         session, date.fromisoformat(p["date_from"]), date.fromisoformat(p["date_to"]),
         codes=(code_200, code_lev))
-    params = Params(**p.get("costs", {}), flags=AblationFlags(**p.get("flags", {})))
+    params = params_from_job(p)
     result = run_backtest(bars_200, bars_lev, float(p["capital"]), params, start_index=start_idx)
 
     pf = TradePortfolio(user_id=user_id, name=f"실전 (백테스트 #{bt_id})",
-                        kind="from_backtest", backtest_id=bt_id, params=bt.params)
+                        kind="from_backtest", backtest_id=bt_id, params=bt.params,
+                        market=market_of_etf(p.get("etf", "KODEX")))
     session.add(pf)
     session.flush()
 
@@ -358,16 +362,17 @@ def list_transactions(portfolio_id: int | None = None, limit: int = 500,
 
 class PortfolioIn(BaseModel):
     name: str = Field(min_length=1, max_length=60)
+    market: str = Field(default="KR", pattern="^(KR|US)$")
 
 
 @router.post("/portfolios", status_code=201)
 def create_portfolio(body: PortfolioIn, user_id: int = Depends(current_user_id),
                      session: Session = Depends(get_session)) -> dict:
     """실전매매 포트 추가 — 여러 실전매매 동시 진행 (2026-08-28 지시)."""
-    pf = TradePortfolio(user_id=user_id, name=body.name, kind="manual")
+    pf = TradePortfolio(user_id=user_id, name=body.name, kind="manual", market=body.market)
     session.add(pf)
     session.commit()
-    return {"id": pf.id, "name": pf.name}
+    return {"id": pf.id, "name": pf.name, "market": pf.market}
 
 
 @router.delete("/portfolios/{pid}")
@@ -390,7 +395,8 @@ def delete_portfolio(pid: int, user_id: int = Depends(current_user_id),
 def list_portfolios(user_id: int = Depends(current_user_id),
                     session: Session = Depends(get_session)) -> dict:
     rows = session.scalars(select(TradePortfolio).where(TradePortfolio.user_id == user_id)).all()
-    return {"items": [{"id": r.id, "name": r.name, "kind": r.kind, "backtest_id": r.backtest_id} for r in rows]}
+    return {"items": [{"id": r.id, "name": r.name, "kind": r.kind, "backtest_id": r.backtest_id,
+                       "market": r.market} for r in rows]}
 
 
 @router.get("/portfolio/summary")
@@ -506,7 +512,8 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
     twr_val = _compute_twr(session, pf.id, txs)
 
     return {
-        "portfolio": {"id": pf.id, "name": pf.name, "kind": pf.kind, "backtest_id": pf.backtest_id},
+        "portfolio": {"id": pf.id, "name": pf.name, "kind": pf.kind, "backtest_id": pf.backtest_id,
+                      "market": pf.market},
         "as_of": as_of.isoformat() if as_of else None, "delayed": True,
         "cash": cash, "stock_value": round(total_value), "total_equity": round(total_equity),
         "realized_pnl": realized_total,

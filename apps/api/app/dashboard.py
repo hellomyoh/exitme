@@ -31,7 +31,8 @@ def user_flows_between(session: Session, user_id: int, d_from: date, d_to: date)
     """
     from app.models import TradeTransaction
 
-    pids = select(TradePortfolio.id).where(TradePortfolio.user_id == user_id)
+    pids = select(TradePortfolio.id).where(TradePortfolio.user_id == user_id,
+                                            TradePortfolio.market == "KR")
     txs = session.scalars(select(TradeTransaction).where(
         TradeTransaction.portfolio_id.in_(pids),
         TradeTransaction.kind.in_(("deposit", "withdraw")))).all()
@@ -52,7 +53,9 @@ def compute_user_snapshot(session: Session, user_id: int, snap_date: date) -> As
     from app.portfolios import latest_close
     from app.models import PositionLot, TradeTransaction
 
-    pfs = session.scalars(select(TradePortfolio).where(TradePortfolio.user_id == user_id)).all()
+    # KRW 스냅샷 — 미국 포트(센트 단위)는 환율 모델 도입 전까지 제외 (통화 혼합 방지, 2026-08-31)
+    pfs = session.scalars(select(TradePortfolio).where(
+        TradePortfolio.user_id == user_id, TradePortfolio.market == "KR")).all()
     stock = 0.0
     cash = 0
     for pf in pfs:

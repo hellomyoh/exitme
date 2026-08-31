@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import current_user_id
 from app.db import get_session
-from app.models import OrderSheetRow, SignalSnapshot
+from app.models import OrderSheetRow, SignalSnapshot, TradePortfolio
 from app.strategy.backtest import run_backtest
 from app.strategy.params import Params
 
@@ -100,8 +100,26 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="portfolio not found")
 
-    bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1))
-    params = Params()
+    from app.backtests import base_costs_for, user_algo_overrides
+    if pf_row.market == "US":
+        # 보유 레버리지에 따라 페어 결정 (TQQQ 보유 시 3배 파라미터)
+        held_codes = {
+            session.get(Instrument, l.instrument_id).code
+            for l in session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pid)).all()
+        }
+        if "TQQQ" in held_codes and "QLD" in held_codes:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=409, detail="QLD 와 TQQQ 혼합 보유 — 한 포트에는 한 레버리지만 운용하세요")
+        etf = "QQQ_TQQQ" if "TQQQ" in held_codes else "QQQ_QLD"
+        codes = ("QQQ", "TQQQ" if "TQQQ" in held_codes else "QLD")
+    else:
+        etf, codes = "KODEX", (None, None)
+    algo = user_algo_overrides(session, user_id)
+    if codes[0]:
+        bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1), codes=codes)
+    else:
+        bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1))
+    params = Params(**{**base_costs_for(etf), **algo})
     result = run_backtest(bars_200, bars_lev, MODEL_CAPITAL, params)
     regime = Regime(result.regimes[-1])  # 시장 레짐은 가격만의 함수 — 포트와 무관
 
@@ -132,17 +150,19 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
     ).all()
     lots: list[Lot] = []
     qty_200 = qty_lev = 0
-    SUPPORTED = {"069500", "102110", "122630"}
+    SUPPORTED = ({"QQQ", "QLD", "TQQQ"} if pf_row.market == "US"
+                 else {"069500", "102110", "122630"})
+    LEV_CODES = {"122630", "QLD", "TQQQ"}
     for l in lots_rows:
         code = session.get(Instrument, l.instrument_id).code
         if code not in SUPPORTED:
             from fastapi import HTTPException
             raise HTTPException(status_code=409,
                                 detail=f"전략 대상 외 종목({code}) 보유 — 이 포트 기준 주문표를 계산할 수 없습니다")
-        if code == "122630":
+        if code in LEV_CODES:
             lots.append(Lot(LEV, l.qty_open, l.price, "lev_strat", None, 0))
             qty_lev += l.qty_open
-        else:  # 069500 / 102110 → 200 레그
+        else:  # 1배 주력(069500/102110/QQQ) → 200 레그
             if regime is Regime.BULL and params.flags.f1_no_tp_in_bull:
                 lots.append(Lot(K200, l.qty_open, l.price, "core", None, 0))
             else:
@@ -193,16 +213,21 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
 
 
 @router.get("/signals/journal")
-def get_signal_journal(days: int = 20, _user: int = Depends(current_user_id),
+def get_signal_journal(days: int = 20, market: str = "KR", _user: int = Depends(current_user_id),
                        session: Session = Depends(get_session)) -> dict:
     """모델 포트의 최근 매매 이력 — 주문표 신호의 맥락 (계획·체결·수익률·보유)."""
-    from app.backtests import load_aligned_bars
+    from app.backtests import base_costs_for, load_aligned_bars
 
     try:
-        bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1))
+        if market == "US":
+            bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1),
+                                                      codes=("QQQ", "QLD"))
+        else:
+            bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1))
     except Exception:
         return {"items": []}
-    r = run_backtest(bars_200, bars_lev, MODEL_CAPITAL, Params(), collect_plans=True)
+    params = Params(**base_costs_for("QQQ_QLD")) if market == "US" else Params()
+    r = run_backtest(bars_200, bars_lev, MODEL_CAPITAL, params, collect_plans=True)
     fills_by_date: dict[str, list] = {}
     for f in r.fills:
         fills_by_date.setdefault(f.date, []).append(
@@ -229,11 +254,51 @@ def get_signal_journal(days: int = 20, _user: int = Depends(current_user_id),
     return {"items": items}
 
 
+def _live_us_model(session: Session, user_id: int) -> dict:
+    """미국 모델 신호 — 라이브 계산 (KR 처럼 배치 체인을 두지 않음, 2026-08-31).
+
+    모델 자본 $1,000,000(센트). 사용자 알고리즘 오버라이드 적용.
+    """
+    from app.backtests import base_costs_for, load_aligned_bars as _load, user_algo_overrides
+
+    try:
+        bars_200, bars_lev, _ = _load(session, date(1990, 1, 1), date(2100, 1, 1), codes=("QQQ", "QLD"))
+    except Exception as exc:
+        return {"status": "MISSING", "reason": str(exc)[:300], "market": "US"}
+    params = Params(**{**base_costs_for("QQQ_QLD"), **user_algo_overrides(session, user_id)})
+    result = run_backtest(bars_200, bars_lev, MODEL_CAPITAL, params, collect_plans=True, plan_final=True)
+    lp = result.plans[-1]
+    return {
+        "status": lp.status, "trade_date": bars_200[-1]["date"], "version": 0, "market": "US",
+        "regime": lp.regime.value if lp.status == "OK" else None,
+        "e_target": lp.e_target, "w_200": lp.w_200, "w_lev": lp.w_lev,
+        "gap_cancel_below": lp.gap_cancel_below,
+        "indicators": {k: v for k, v in lp.indicators.items() if v is not None},
+        "detail": {
+            "model_capital": MODEL_CAPITAL,
+            "model_equity": round(result.equity[-1]) if result.equity else MODEL_CAPITAL,
+            "model_cash": round(result.cash_curve[-1]) if result.cash_curve else MODEL_CAPITAL,
+            "model_qty_200": result.qty_200[-1] if result.qty_200 else 0,
+            "model_qty_lev": result.qty_lev[-1] if result.qty_lev else 0,
+        },
+        "orders": [
+            {"instrument": o.instrument, "side": o.side, "otype": o.otype,
+             "qty": o.qty, "price": o.price, "kind": o.kind} for o in lp.orders
+        ],
+        "basis": "model",
+    }
+
+
 @router.get("/signals/daily")
 def get_daily_signal(date_: date | None = Query(default=None, alias="date"),
                      portfolio_id: int | None = None,
+                     market: str = "KR",
                      _user: int = Depends(current_user_id),
                      session: Session = Depends(get_session)) -> dict:
+    if portfolio_id is not None:
+        pass  # 포트 기준이면 포트의 market 을 따름 (아래 분기)
+    elif market == "US":
+        return _live_us_model(session, _user)
     q = select(SignalSnapshot).where(SignalSnapshot.is_current)
     if date_ is not None:
         q = q.where(SignalSnapshot.trade_date == date_)
@@ -244,6 +309,17 @@ def get_daily_signal(date_: date | None = Query(default=None, alias="date"),
         select(OrderSheetRow).where(OrderSheetRow.signal_id == snap.id).order_by(OrderSheetRow.id)
     ).all()
     extra: dict = {"basis": "model"}
+    if portfolio_id is not None:
+        pf_row = session.get(TradePortfolio, portfolio_id)
+        if pf_row is not None and pf_row.market == "US":
+            # 미국 포트 — KR 스냅샷과 무관하게 라이브 모델 + 포트 주문 결합
+            base = _live_us_model(session, _user)
+            if base["status"] != "OK":
+                return base
+            extra = _portfolio_orders(session, portfolio_id, _user)
+            base.update(extra)
+            base["gap_cancel_below"] = extra.get("gap_cancel_below") or base.get("gap_cancel_below")
+            return base
     if portfolio_id is not None and snap.status == "OK":
         # 내 실전 포트 기준 주문표 (2026-08-28 검토 반영) — 주문·계좌 현황을 내 포트 기준으로 교체
         extra = _portfolio_orders(session, portfolio_id, _user)

@@ -243,6 +243,7 @@ class TradePortfolio(TimestampMixin, Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False, default="manual")  # manual | from_backtest
+    market: Mapped[str] = mapped_column(Text, nullable=False, default="KR")     # KR | US (US 는 센트 단위)
     backtest_id: Mapped[int | None] = mapped_column(ForeignKey("backtests.id"))
     params: Mapped[dict | None] = mapped_column(JSONB)
 
@@ -276,6 +277,20 @@ class PositionLot(Base):
     qty_open: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)  # 🔒 잔여 수량
     price: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)     # 🔒 체결 단가
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class UserSettings(TimestampMixin, Base):
+    """사용자별 알고리즘 파라미터 오버라이드 — 기본값과의 차이만 저장 (2026-08-31 지시).
+
+    적용 범위: 시뮬레이터 잡 생성 시점 스냅샷·포트 기준 주문표·미국 라이브 신호.
+    공용 모델 신호 배치(KR)는 항상 기본값으로 계산한다.
+    """
+
+    __tablename__ = "user_settings"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False)
+    algo_params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
 
 class PortfolioPlan(TimestampMixin, Base):

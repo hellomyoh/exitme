@@ -1,11 +1,12 @@
 "use client";
 
 /** 실전매매 — 현황·보유·수익률 + 오늘의 주문표(체결 등록) + 일자별 매매 일지 (feature-portfolio §9, 2026-08-29 개편). */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { createChart, IChartApi, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
-import { Badge, Card, CardTitle, EmptyState, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone, Stat, Tip } from "../../components/ui";
+import { fmtMoneyM, fmtPriceM, MARKET_CODES, MARKET_LABEL, marketOf, priceToApi } from "../../lib/market";
+import { Badge, Card, CardTitle, EmptyState, fmtPct, GaugeBar, PageTitle, pnlTone, Stat, Tip } from "../../components/ui";
 
 type Position = {
   code: string; name: string; qty: number; avg_price: number; price: number; value: number;
@@ -18,7 +19,7 @@ type Summary = {
   realized_pnl: number; unrealized_pnl: number; estimated_costs: number;
   twr: number | null; xirr: number | null; positions: Position[];
 };
-type PortfolioItem = { id: number; name: string; kind: string };
+type PortfolioItem = { id: number; name: string; kind: string; market?: string };
 type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
 type JournalFill = {
   id: number; kind: string; code: string | null; name: string | null; qty: number | null;
@@ -41,13 +42,22 @@ const ORDER_KIND_KO: Record<string, string> = {
 
 const toneCls = { up: "text-up", down: "text-down", default: "text-ink" };
 
-export default function PortfolioPage() {
+export default function PortfolioPageWrapper() {
+  return <Suspense fallback={null}><PortfolioPage /></Suspense>;
+}
+
+function PortfolioPage() {
   const router = useRouter();
+  const sp = useSearchParams();
+  const market = marketOf(sp);
+  const fm = (v: number) => fmtMoneyM(market, v);
+  const fpx = (v: number) => fmtPriceM(market, v);
+  const unit = market === "US" ? "$" : "원";
   const [portfolios, setPortfolios] = useState<PortfolioItem[]>([]);
   const [pid, setPid] = useState<number | null>(null);
   const [sum, setSum] = useState<Summary | null>(null);
   const [includeCosts, setIncludeCosts] = useState(true);
-  const [form, setForm] = useState({ kind: "buy", code: "069500", qty: "", price: "", amount: "", memo: "" });
+  const [form, setForm] = useState({ kind: "buy", code: market === "US" ? "QQQ" : "069500", qty: "", price: "", amount: "", memo: "" });
   const [msg, setMsg] = useState("");
   const [txDays, setTxDays] = useState(15);  // 거래 내역 기본 표시 일수 — 무한 나열 방지 (2026-08-29 검토)
   const [newName, setNewName] = useState("");
@@ -55,7 +65,7 @@ export default function PortfolioPage() {
   const [startMode, setStartMode] = useState<"fresh" | "holdings">("fresh");
   const [startCash, setStartCash] = useState("");
   const [holdings, setHoldings] = useState<{ code: string; qty: string; price: string }[]>([
-    { code: "069500", qty: "", price: "" },
+    { code: market === "US" ? "QQQ" : "069500", qty: "", price: "" },
   ]);
   const [journal, setJournal] = useState<JournalItem[]>([]);
   const [entryOpen, setEntryOpen] = useState(false);  // 체결 입력 폼 펼침 (2026-08-29 일지 개편)
@@ -66,14 +76,24 @@ export default function PortfolioPage() {
 
   const load = useCallback(async (id: number | null) => {
     let sid: number | null = id;
-    const res = await apiFetch(`/portfolio/summary${id ? `?portfolio_id=${id}` : ""}`);
+    const pl = await apiFetch("/portfolios");
+    let mine: PortfolioItem[] = [];
+    if (pl.ok) {
+      mine = ((await pl.json()) as { items: PortfolioItem[] }).items
+        .filter((it) => (it.market ?? "KR") === market);
+      setPortfolios(mine);
+    }
+    if (id === null && market === "US") {
+      // 미국은 기본 계좌 개념 없음 — 첫 미국 포트 자동 선택, 없으면 시작 패널만
+      if (mine.length === 0) { setSum(null); setSignal(null); setJournal([]); setCurve([]); return; }
+      sid = mine[0].id;
+    }
+    const res = await apiFetch(`/portfolio/summary${sid ? `?portfolio_id=${sid}` : ""}`);
     if (res.ok) {
       const sm = (await res.json()) as Summary;
       setSum(sm);
       sid = sm.portfolio.id;  // 기본 계좌 포함 — 주문표를 이 포트 기준으로
     }
-    const pl = await apiFetch("/portfolios");
-    if (pl.ok) setPortfolios(((await pl.json()) as { items: PortfolioItem[] }).items);
     // 오늘의 주문표 — 선택된 실전 포트의 보유·현금 기준. 조회 시 '그날의 주문표'가 스냅샷 저장됨
     const sg = await apiFetch(`/signals/daily${sid ? `?portfolio_id=${sid}` : ""}`);
     if (sg.ok) setSignal((await sg.json()) as Signal);
@@ -81,7 +101,8 @@ export default function PortfolioPage() {
     if (jr.ok) setJournal(((await jr.json()) as { items: JournalItem[] }).items);
     const eq = await apiFetch(`/portfolio/equity${sid ? `?portfolio_id=${sid}` : ""}`);
     if (eq.ok) setCurve(((await eq.json()) as { items: { date: string; equity: number; index: number }[] }).items);
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [market]);
 
   useEffect(() => {
     void ensureSession().then((ok) => {
@@ -89,6 +110,8 @@ export default function PortfolioPage() {
       void load(pid);
     });
   }, [pid, load, router]);
+
+  useEffect(() => { setPid(null); }, [market]);  // 마켓 전환 시 선택 초기화
 
   async function deleteTx(id: number) {
     if (!window.confirm("이 거래를 삭제할까요? 남은 거래로 보유·실현손익이 다시 계산됩니다.")) return;
@@ -104,14 +127,14 @@ export default function PortfolioPage() {
       executed_at: new Date().toISOString(),
     };
     if (form.kind === "buy" || form.kind === "sell") {
-      body.code = form.code; body.qty = Number(form.qty); body.price = Number(form.price);
+      body.code = form.code; body.qty = Number(form.qty); body.price = priceToApi(market, form.price);
     } else {
-      body.amount = Number(form.amount);
+      body.amount = priceToApi(market, form.amount);
     }
     const res = await apiFetch("/positions", { method: "POST", body: JSON.stringify(body) });
     if (res.ok) {
       const out = (await res.json()) as { realized_pnl: number | null };
-      setMsg(out.realized_pnl !== null ? `등록됨 — 실현손익 ${fmtWon(out.realized_pnl)}` : "등록됨");
+      setMsg(out.realized_pnl !== null ? `등록됨 — 실현손익 ${fm(out.realized_pnl)}` : "등록됨");
       void load(pid);
     } else {
       setMsg(((await res.json()) as { detail?: string }).detail ?? `등록 실패 (${res.status})`);
@@ -120,11 +143,11 @@ export default function PortfolioPage() {
 
   async function startPortfolio() {
     const name = newName.trim() || `실전매매 ${new Date().toISOString().slice(0, 10)}`;
-    const res = await apiFetch("/portfolios", { method: "POST", body: JSON.stringify({ name }) });
+    const res = await apiFetch("/portfolios", { method: "POST", body: JSON.stringify({ name, market }) });
     if (!res.ok) return;
     const { id } = (await res.json()) as { id: number };
     const now = new Date().toISOString();
-    const cash = Number(startCash.replaceAll(",", "")) || 0;
+    const cash = startCash.trim() ? priceToApi(market, startCash) : 0;
     if (startMode === "fresh") {
       // 오늘부터 새로 시작 — 이전 기록 없음, (선택) 초기 입금만
       if (cash > 0) {
@@ -137,7 +160,7 @@ export default function PortfolioPage() {
       for (const h of holdings) {
         const qty = Number(h.qty);
         if (qty <= 0) continue;
-        let price = Number(h.price);
+        let price = h.price.trim() ? priceToApi(market, h.price) : 0;
         if (!price) {
           const to = new Date().toISOString().slice(0, 10);
           const from = new Date(Date.now() - 15 * 86400e3).toISOString().slice(0, 10);
@@ -162,7 +185,7 @@ export default function PortfolioPage() {
       }
     }
     setShowStart(false); setNewName(""); setStartCash("");
-    setHoldings([{ code: "069500", qty: "", price: "" }]);
+    setHoldings([{ code: market === "US" ? "QQQ" : "069500", qty: "", price: "" }]);
     setPid(id);
   }
 
@@ -199,7 +222,7 @@ export default function PortfolioPage() {
 
   return (
     <main>
-      <PageTitle title="실전매매" sub="체결 내역을 등록해 매수 시점 기준 수익률을 추적합니다 — 지연 시세 기준" />
+      <PageTitle title={`실전매매 · ${MARKET_LABEL[market]}`} sub="체결 내역을 등록해 매수 시점 기준 수익률을 추적합니다 — 지연 시세 기준" />
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <select className="input" value={pid ?? ""} onChange={(e) => setPid(e.target.value ? Number(e.target.value) : null)}>
@@ -236,7 +259,7 @@ export default function PortfolioPage() {
               <label className="grid gap-1 text-[13px] text-faint">이름
                 <input className="input w-52" placeholder={`실전매매 ${new Date().toISOString().slice(0, 10)}`}
                   value={newName} onChange={(e) => setNewName(e.target.value)} /></label>
-              <label className="grid gap-1 text-[13px] text-faint">{startMode === "fresh" ? "초기 입금(원, 선택)" : "보유 외 현금(원)"}
+              <label className="grid gap-1 text-[13px] text-faint">{startMode === "fresh" ? `초기 입금(${unit}, 선택)` : `보유 외 현금(${unit})`}
                 <input className="input w-44" placeholder="예: 50000000" value={startCash}
                   onChange={(e) => setStartCash(e.target.value)} /></label>
             </div>
@@ -251,9 +274,7 @@ export default function PortfolioPage() {
                   <div key={i} className="flex flex-wrap items-center gap-2">
                     <select className="input !py-2" value={h.code}
                       onChange={(e) => setHoldings(holdings.map((x, j) => j === i ? { ...x, code: e.target.value } : x))}>
-                      <option value="069500">KODEX 200</option>
-                      <option value="102110">TIGER 200</option>
-                      <option value="122630">KODEX 레버리지</option>
+                      {MARKET_CODES[market].map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
                     </select>
                     <input className="input w-28 !py-2" placeholder="수량(주)" value={h.qty}
                       onChange={(e) => setHoldings(holdings.map((x, j) => j === i ? { ...x, qty: e.target.value } : x))} />
@@ -264,7 +285,7 @@ export default function PortfolioPage() {
                     )}
                   </div>
                 ))}
-                <button className="btn-ghost btn w-fit !py-1.5 text-[13.5px]" onClick={() => setHoldings([...holdings, { code: "069500", qty: "", price: "" }])}>
+                <button className="btn-ghost btn w-fit !py-1.5 text-[13.5px]" onClick={() => setHoldings([...holdings, { code: market === "US" ? "QQQ" : "069500", qty: "", price: "" }])}>
                   ＋ 종목 추가
                 </button>
               </div>
@@ -283,12 +304,12 @@ export default function PortfolioPage() {
 
       {sum && (
         <div className="mb-4 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
-          <Stat label="총자산" value={fmtWon(sum.total_equity)} tip="현금 + 보유 주식 평가액(최근 종가 기준)의 합" />
-          <Stat label="현금" value={fmtWon(sum.cash)} tip="입금 − 출금 − 매수금액 + 매도금액의 원장 잔액" />
-          <Stat label="주식" value={fmtWon(sum.stock_value)} tip="보유 수량 × 최근 종가 (지연 시세)" />
-          <Stat label="실현손익" value={fmtWon(sum.realized_pnl)} tone={pnlTone(sum.realized_pnl)} tip="매도로 확정된 손익의 누적 — 매도가와 매수가(FIFO 선입선출 매칭)의 차이" />
-          <Stat label="평가손익" value={fmtWon(sum.unrealized_pnl)} tone={pnlTone(sum.unrealized_pnl)} tip="아직 팔지 않은 보유분의 손익 — (현재가 − 평균단가) × 보유 수량" />
-          <Stat label={`순손익${includeCosts ? " (비용차감)" : ""}`} value={fmtWon(net)} tone={pnlTone(net)} tip="실현손익 + 평가손익 − 추정 수수료(체크 시). 이 계좌의 전체 성과 금액" />
+          <Stat label="총자산" value={fm(sum.total_equity)} tip="현금 + 보유 주식 평가액(최근 종가 기준)의 합" />
+          <Stat label="현금" value={fm(sum.cash)} tip="입금 − 출금 − 매수금액 + 매도금액의 원장 잔액" />
+          <Stat label="주식" value={fm(sum.stock_value)} tip="보유 수량 × 최근 종가 (지연 시세)" />
+          <Stat label="실현손익" value={fm(sum.realized_pnl)} tone={pnlTone(sum.realized_pnl)} tip="매도로 확정된 손익의 누적 — 매도가와 매수가(FIFO 선입선출 매칭)의 차이" />
+          <Stat label="평가손익" value={fm(sum.unrealized_pnl)} tone={pnlTone(sum.unrealized_pnl)} tip="아직 팔지 않은 보유분의 손익 — (현재가 − 평균단가) × 보유 수량" />
+          <Stat label={`순손익${includeCosts ? " (비용차감)" : ""}`} value={fm(net)} tone={pnlTone(net)} tip="실현손익 + 평가손익 − 추정 수수료(체크 시). 이 계좌의 전체 성과 금액" />
           <Stat label="TWR" value={fmtPct(sum.twr, 2)} tip="시간가중수익률 — 입출금 시점의 영향을 제거한 운용 성과. 펀드 수익률과 같은 방식이며, 입금이 많아도 왜곡되지 않습니다" />
           <Stat label="XIRR" value={fmtPct(sum.xirr, 2)} tip="내부수익률(연환산) — 입출금 현금흐름과 현재 평가액으로 계산한 '내 돈 기준' 연 수익률" />
         </div>
@@ -313,22 +334,22 @@ export default function PortfolioPage() {
                     <Badge tone="default">{p.held_days}일 보유</Badge>
                   </div>
                   <div className={`text-lg font-extrabold ${toneCls[t]}`}>
-                    {fmtPct(p.return, 2)} <span className="text-[13px] font-semibold">({fmtWon(p.unrealized)})</span>
+                    {fmtPct(p.return, 2)} <span className="text-[13px] font-semibold">({fm(p.unrealized)})</span>
                   </div>
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-[14.5px] text-muted sm:grid-cols-4 lg:grid-cols-6">
                   <span>보유 <b className="text-ink">{p.qty.toLocaleString()}주</b></span>
-                  <span>평단 <b className="text-ink">{fmtWon(p.avg_price)}</b></span>
-                  <span>현재가 <b className="text-ink">{fmtWon(p.price)}</b></span>
-                  <span>평가액 <b className="text-ink">{fmtWon(p.value)}</b></span>
+                  <span>평단 <b className="text-ink">{fm(p.avg_price)}</b></span>
+                  <span>현재가 <b className="text-ink">{fm(p.price)}</b></span>
+                  <span>평가액 <b className="text-ink">{fm(p.value)}</b></span>
                   <span>연환산 <b className="text-ink">{p.annualized === null ? "— (30일 미만)" : fmtPct(p.annualized)}</b></span>
                   <span>최고/최저 <b className="text-up">{fmtPct(p.best_return)}</b> / <b className="text-down">{fmtPct(p.worst_return)}</b></span>
                 </div>
                 {hasBand && (
                   <div className="mt-3">
                     <div className="mb-1 flex justify-between text-[11px] text-faint">
-                      <span>손절 {fmtWon(p.stop_price!)}</span>
-                      <span>목표 {fmtWon(p.target_price!)}</span>
+                      <span>손절 {fm(p.stop_price!)}</span>
+                      <span>목표 {fm(p.target_price!)}</span>
                     </div>
                     <GaugeBar ratio={ratio} color={t === "down" ? "var(--color-down)" : "var(--color-up)"} height={6} />
                   </div>
@@ -384,14 +405,17 @@ export default function PortfolioPage() {
                 {signal.orders.map((o, i) => (
                   <tr key={i} className="border-b border-line/50 last:border-0">
                     <td className="py-2"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge></td>
-                    <td className="py-2">{o.instrument === "K200" ? "KODEX 200" : "KODEX 레버리지"}</td>
+                    <td className="py-2">{o.instrument === "K200" ? (market === "US" ? "QQQ" : "KODEX 200") : (market === "US" ? "레버리지(QLD/TQQQ)" : "KODEX 레버리지")}</td>
                     <td className={`py-2 font-bold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
-                    <td className="table-num py-2 font-semibold">{o.price ? o.price.toLocaleString() : "시가"}</td>
+                    <td className="table-num py-2 font-semibold">{o.price ? fpx(o.price) : "시가"}</td>
                     <td className="table-num py-2">{o.qty.toLocaleString()}주</td>
                     <td className="py-2 pl-4">
                       <button className="btn !px-2.5 !py-1 text-[12.5px]" onClick={() => {
-                        const code200 = sum?.positions.find((pp) => pp.code === "102110") ? "102110" : "069500";
-                        setForm({ kind: o.side, code: o.instrument === "LEV" ? "122630" : code200,
+                        const code200 = market === "US" ? "QQQ"
+                          : sum?.positions.find((pp) => pp.code === "102110") ? "102110" : "069500";
+                        const codeLev = market === "US"
+                          ? (sum?.positions.find((pp) => pp.code === "TQQQ") ? "TQQQ" : "QLD") : "122630";
+                        setForm({ kind: o.side, code: o.instrument === "LEV" ? codeLev : code200,
                           qty: String(o.qty), price: o.price ? String(o.price) : "", amount: "",
                           memo: ORDER_KIND_KO[o.kind] ?? o.kind });
                         setEntryOpen(true);
@@ -402,7 +426,7 @@ export default function PortfolioPage() {
               </tbody>
             </table>
             {signal.gap_cancel_below && (
-              <p className="mt-2 text-[13px] text-faint">⚠️ 시가 {signal.gap_cancel_below.toLocaleString()}원 이하 출발 시 그리드 전량 취소 — 상세는 전체 주문표 참조</p>
+              <p className="mt-2 text-[13px] text-faint">⚠️ 시가 {fpx(signal.gap_cancel_below)} 이하 출발 시 그리드 전량 취소 — 상세는 전체 주문표 참조</p>
             )}
           </div>
         ) : (
@@ -428,18 +452,16 @@ export default function PortfolioPage() {
             <>
               <label className="grid gap-1 text-xs text-faint">종목
                 <select className="input" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })}>
-                  <option value="069500">KODEX 200</option>
-                  <option value="102110">TIGER 200</option>
-                  <option value="122630">KODEX 레버리지</option>
+                  {MARKET_CODES[market].map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
                 </select>
               </label>
               <label className="grid gap-1 text-xs text-faint">수량
                 <input className="input w-24" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></label>
-              <label className="grid gap-1 text-xs text-faint">단가(원)
+              <label className="grid gap-1 text-xs text-faint">wontouch
                 <input className="input w-32" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} /></label>
             </>
           ) : (
-            <label className="grid gap-1 text-xs text-faint">금액(원)
+            <label className="grid gap-1 text-xs text-faint">금액({unit})
               <input className="input w-40" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></label>
           )}
           <label className="grid gap-1 text-xs text-faint">메모
@@ -469,10 +491,10 @@ export default function PortfolioPage() {
                       {(j.day_return * 100).toFixed(2)}%
                     </span>
                   )}
-                  {j.equity !== null && <span className="hidden text-[13px] text-muted md:inline">평가 {j.equity.toLocaleString()}원</span>}
+                  {j.equity !== null && <span className="hidden text-[13px] text-muted md:inline">평가 {fm(j.equity)}</span>}
                   {j.realized_pnl !== 0 && (
                     <span className={`text-[13.5px] font-bold ${j.realized_pnl > 0 ? "text-up" : "text-down"}`}>
-                      실현 {j.realized_pnl >= 0 ? "+" : ""}{j.realized_pnl.toLocaleString()}원
+                      실현 {j.realized_pnl >= 0 ? "+" : ""}{fm(j.realized_pnl)}
                     </span>
                   )}
                   <span className="ml-auto text-[13px] text-faint">주문 {j.planned ? j.planned.length : "—"} · 체결 {j.date > new Date().toISOString().slice(0, 10) ? "—" : j.fills.length}</span>
@@ -497,11 +519,11 @@ export default function PortfolioPage() {
                           {j.planned.map((o, i) => (
                             <tr key={i} className="border-t border-line/40">
                               <td className="py-1.5 text-muted">{ORDER_KIND_KO[o.kind] ?? o.kind}</td>
-                              <td className="py-1.5">{o.instrument === "K200" ? "200 ETF" : "레버리지"}</td>
+                              <td className="py-1.5">{o.instrument === "K200" ? (market === "US" ? "QQQ" : "200 ETF") : "레버리지"}</td>
                               <td className={`py-1.5 font-semibold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
-                              <td className="table-num py-1.5">{o.price ? o.price.toLocaleString() : "시가"}</td>
+                              <td className="table-num py-1.5">{o.price ? fpx(o.price) : "시가"}</td>
                               <td className="table-num py-1.5">{o.qty.toLocaleString()}</td>
-                              <td className="table-num py-1.5 text-muted">{o.price ? (o.price * o.qty).toLocaleString() : "—"}</td>
+                              <td className="table-num py-1.5 text-muted">{o.price ? fm(o.price * o.qty) : "—"}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -516,7 +538,7 @@ export default function PortfolioPage() {
                       <span>✅ 체결 내역 ({j.fills.length}건)</span>
                       {j.realized_pnl !== 0 && (
                         <span className={`font-bold ${j.realized_pnl > 0 ? "text-up" : "text-down"}`}>
-                          당일 실현손익 {j.realized_pnl >= 0 ? "+" : ""}{j.realized_pnl.toLocaleString()}원
+                          당일 실현손익 {j.realized_pnl >= 0 ? "+" : ""}{fm(j.realized_pnl)}
                         </span>
                       )}
                     </div>
@@ -542,9 +564,9 @@ export default function PortfolioPage() {
                               <td className="py-1.5 text-muted">{t.memo && t.memo.length <= 10 ? t.memo : TX_KO[t.kind]}</td>
                               <td className="py-1.5">{t.name ?? "—"}</td>
                               <td className={`py-1.5 font-semibold ${t.kind === "buy" ? "text-up" : t.kind === "sell" ? "text-down" : "text-muted"}`}>{TX_KO[t.kind]}</td>
-                              <td className="table-num py-1.5">{(t.price ?? t.amount ?? 0).toLocaleString()}</td>
+                              <td className="table-num py-1.5">{fpx(t.price ?? t.amount ?? 0)}</td>
                               <td className="table-num py-1.5">{t.qty ? t.qty.toLocaleString() : "—"}</td>
-                              <td className="table-num py-1.5 text-muted">{t.price && t.qty ? (t.price * t.qty).toLocaleString() : (t.amount ?? 0).toLocaleString()}</td>
+                              <td className="table-num py-1.5 text-muted">{fm(t.price && t.qty ? t.price * t.qty : (t.amount ?? 0))}</td>
                               <td className="py-1.5 pl-2 text-right">
                                 <button className="text-[12px] text-faint transition-colors hover:text-down" title="오입력 삭제 — 남은 거래로 재계산"
                                   onClick={() => void deleteTx(t.id)}>✕</button>
@@ -558,7 +580,7 @@ export default function PortfolioPage() {
                   {j.account && (
                     <div className="col-span-full flex flex-wrap gap-x-6 gap-y-1 border-t border-line pt-3 text-[13.5px] text-muted">
                       {j.e_target !== null && <span>노출 E <b className="text-ink">{(j.e_target * 100).toFixed(1)}%</b></span>}
-                      <span>현금 <b className="text-ink">{j.account.cash.toLocaleString()}원</b></span>
+                      <span>현금 <b className="text-ink">{fm(j.account.cash)}</b></span>
                       <span>보유 200 ETF <b className="text-ink">{j.account.qty_200.toLocaleString()}주</b></span>
                       <span>레버리지 <b className="text-ink">{j.account.qty_lev.toLocaleString()}주</b></span>
                     </div>

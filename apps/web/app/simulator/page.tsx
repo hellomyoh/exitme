@@ -1,10 +1,11 @@
 "use client";
 
 /** 백테스트 3스텝 위저드 — 조건 → 실행(WS 진행률) → 결과 (feature-backtest §9). */
-import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AreaSeries, createChart, IChartApi, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
+import { DEFAULT_CAPITAL, fmtMoneyM, fmtPriceM, MARKET_LABEL, marketOf } from "../../lib/market";
 import { Badge, Callout, Card, CardTitle, fmtPct, GaugeBar, PageTitle, Stat } from "../../components/ui";
 
 type Flags = Record<string, boolean>;
@@ -25,16 +26,29 @@ const FLAG_LABELS: [string, string, string][] = [
   ["f4_leverage", "④ 레버리지 모듈", "Emax 1.30 · E>1 초과분만"],
   ["f5_gap_filter", "⑤ 갭 필터 + 잔여예산", "갭 하락 방어 · 예산 초과 미발주"],
 ];
-const ETF_INFO: Record<string, { label: string; fee: number }> = {
-  KODEX: { label: "KODEX 200", fee: 0.0015 },
-  TIGER: { label: "TIGER 200", fee: 0.0005 },
+type EtfKey = "KODEX" | "TIGER" | "QQQ_QLD" | "QQQ_TQQQ";
+const ETF_INFO: Record<EtfKey, { label: string; fee: number; market: "KR" | "US" }> = {
+  KODEX: { label: "KODEX 200", fee: 0.0015, market: "KR" },
+  TIGER: { label: "TIGER 200", fee: 0.0005, market: "KR" },
+  QQQ_QLD: { label: "QQQ + QLD (2x)", fee: 0.002, market: "US" },
+  QQQ_TQQQ: { label: "QQQ + TQQQ (3x)", fee: 0.002, market: "US" },
 };
 
-export default function SimulatorPage() {
+export default function SimulatorPageWrapper() {
+  return <Suspense fallback={null}><SimulatorPage /></Suspense>;
+}
+
+function SimulatorPage() {
   const router = useRouter();
   const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [etf, setEtf] = useState<"KODEX" | "TIGER">("KODEX");
-  const [capital, setCapital] = useState("100000000");
+  const sp = useSearchParams();
+  const market = marketOf(sp);
+  const fm = (v: number) => fmtMoneyM(market, v);
+  const fpx = (v: number) => fmtPriceM(market, v);
+  const ETF_KEYS = (Object.keys(ETF_INFO) as EtfKey[]).filter((k) => ETF_INFO[k].market === market);
+  const [etf, setEtf] = useState<EtfKey>(market === "US" ? "QQQ_QLD" : "KODEX");
+  // 자본 입력은 표기 통화 (미국: 달러) — 전송 시 API 단위(센트)로 변환
+  const [capital, setCapital] = useState(market === "US" ? String(DEFAULT_CAPITAL.US / 100) : "100000000");
   const [dateFrom, setDateFrom] = useState(new Date(Date.now() - 365 * 86400e3).toISOString().slice(0, 10)); // 기본 1년 전 (2026-08-28 지시)
   const [dateTo, setDateTo] = useState(new Date().toISOString().slice(0, 10));
   const [flags, setFlags] = useState<Flags>(Object.fromEntries(FLAG_LABELS.map(([k]) => [k, true])));
@@ -77,7 +91,8 @@ export default function SimulatorPage() {
     const res = await apiFetch("/backtests", {
       method: "POST",
       body: JSON.stringify({
-        capital: Number(capital), date_from: dateFrom, date_to: dateTo, etf, flags,
+        capital: market === "US" ? Math.round(Number(capital) * 100) : Number(capital),
+        date_from: dateFrom, date_to: dateTo, etf, flags,
         costs: { fee_200: ETF_INFO[etf].fee },
       }),
     });
@@ -180,8 +195,8 @@ export default function SimulatorPage() {
 
   function clone(j: Job) {
     const p = j.params as { capital: number; date_from: string; date_to: string; etf?: string; flags?: Flags };
-    setCapital(String(p.capital)); setDateFrom(p.date_from); setDateTo(p.date_to);
-    if (p.etf === "KODEX" || p.etf === "TIGER") setEtf(p.etf);
+    setCapital(market === "US" ? String(p.capital / 100) : String(p.capital)); setDateFrom(p.date_from); setDateTo(p.date_to);
+    if (p.etf && p.etf in ETF_INFO) setEtf(p.etf as EtfKey);
     if (p.flags) setFlags(p.flags);
     setStep(1);
   }
@@ -190,7 +205,7 @@ export default function SimulatorPage() {
 
   return (
     <main>
-      <PageTitle title="시뮬레이터" sub="RAVG v2 백테스트 — 조건 설정 → 실행 → 결과. 모의 계산이며 투자 권유가 아닙니다." />
+      <PageTitle title={`시뮬레이터 · ${MARKET_LABEL[market]}`} sub="RAVG v2 백테스트 — 조건 설정 → 실행 → 결과. 모의 계산이며 투자 권유가 아닙니다." />
 
       {/* 스텝 인디케이터 */}
       <div className="mb-5 flex items-center gap-2 text-[13px]">
@@ -211,11 +226,11 @@ export default function SimulatorPage() {
           <Card>
             <CardTitle>주력 ETF</CardTitle>
             <div className="grid grid-cols-2 gap-2">
-              {(Object.keys(ETF_INFO) as ("KODEX" | "TIGER")[]).map((k) => (
+              {ETF_KEYS.map((k) => (
                 <button key={k} onClick={() => setEtf(k)}
                   className={`rounded-xl border p-4 text-left transition-colors ${etf === k ? "border-accent bg-accent-dim" : "border-line bg-inset hover:border-line-strong"}`}>
                   <div className="font-bold">{ETF_INFO[k].label}</div>
-                  <div className="mt-0.5 text-xs text-faint">총보수 연 {(ETF_INFO[k].fee * 100).toFixed(2)}% · 레버리지는 KODEX 공통</div>
+                  <div className="mt-0.5 text-xs text-faint">총보수 연 {(ETF_INFO[k].fee * 100).toFixed(2)}%{ETF_INFO[k].market === "KR" ? " · 레버리지는 KODEX 공통" : " · 신호는 QQQ 기준"}</div>
                 </button>
               ))}
             </div>
@@ -227,7 +242,7 @@ export default function SimulatorPage() {
                 <input type="date" className="input" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} /></label>
               <label className="grid gap-1 text-xs text-faint">종료일
                 <input type="date" className="input" value={dateTo} onChange={(e) => setDateTo(e.target.value)} /></label>
-              <label className="grid gap-1 text-xs text-faint">자본금(원)
+              <label className="grid gap-1 text-xs text-faint">자본금({market === "US" ? "$" : "원"})
                 <input className="input" value={capital} onChange={(e) => setCapital(e.target.value)} /></label>
             </div>
           </Card>
@@ -258,6 +273,8 @@ export default function SimulatorPage() {
               <div className="grid gap-1">
                 {history.slice(0, 8).map((j) => {
                   const p = j.params as { etf?: string; capital?: number; date_from?: string; date_to?: string; flags?: Flags };
+                  const jobMarket = (p.etf ?? "KODEX").startsWith("QQQ") ? "US" : "KR";
+                  if (jobMarket !== market) return null;
                   const offFlags = p.flags ? FLAG_LABELS.filter(([k]) => p.flags![k] === false).map(([, l]) => l.slice(0, 1)) : [];
                   return (
                     <div key={j.id} className="rounded-lg px-2 py-2 hover:bg-raised">
@@ -279,7 +296,7 @@ export default function SimulatorPage() {
                         </span>
                       </div>
                       <div className="mt-1 pl-10 text-[12.5px] text-faint">
-                        {p.date_from} ~ {p.date_to} · 자본 {p.capital ? Math.round(p.capital / 10000).toLocaleString() + "만원" : "—"}
+                        {p.date_from} ~ {p.date_to} · 자본 {p.capital ? fm(p.capital) : "—"}
                         {offFlags.length > 0 && <span className="text-warn"> · 절제 OFF: {offFlags.join(" ")}</span>}
                       </div>
                     </div>
@@ -311,9 +328,9 @@ export default function SimulatorPage() {
             return (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[14px] text-muted">
                 <Badge tone="default">#{job.id}</Badge>
-                <span>주력 ETF <b className="text-ink">{p.etf === "TIGER" ? "TIGER 200" : "KODEX 200"}</b></span>
+                <span>주력 ETF <b className="text-ink">{ETF_INFO[(p.etf ?? "KODEX") as EtfKey]?.label ?? p.etf}</b></span>
                 <span>기간 <b className="text-ink">{p.date_from} ~ {p.date_to}</b></span>
-                <span>자본금 <b className="text-ink">{p.capital?.toLocaleString()}원</b></span>
+                <span>자본금 <b className="text-ink">{p.capital != null ? fm(p.capital) : "—"}</b></span>
                 <span>{offFlags.length > 0
                   ? <span className="text-warn">절제 OFF: {offFlags.join(", ")}</span>
                   : "전 모듈 ON (RAVG v2 기본)"}</span>
@@ -418,26 +435,26 @@ export default function SimulatorPage() {
                           {(d.day_return * 100).toFixed(2)}%
                         </span>
                         <span className={`hidden w-28 text-right text-[13px] font-semibold sm:inline ${d.day_pnl > 0 ? "text-up" : d.day_pnl < 0 ? "text-down" : "text-faint"}`}>
-                          {d.day_pnl >= 0 ? "+" : ""}{d.day_pnl.toLocaleString()}원
+                          {d.day_pnl >= 0 ? "+" : ""}{fm(d.day_pnl)}
                         </span>
                         <span className="hidden text-[13px] text-faint sm:inline">누적 {(d.total_return * 100).toFixed(1)}%</span>
-                        <span className="hidden text-[13px] text-muted md:inline">평가 {Math.round(d.equity).toLocaleString()}원</span>
+                        <span className="hidden text-[13px] text-muted md:inline">평가 {fm(d.equity)}</span>
                         <span className="hidden text-[13px] text-faint lg:inline">보유 200ETF {d.qty_200.toLocaleString()} · 레버 {d.qty_lev.toLocaleString()}</span>
                         <span className="ml-auto text-[13px] text-faint">주문 {d.planned.length} · 체결 {d.fills.length}</span>
                       </summary>
                       <div className="grid gap-x-8 gap-y-4 border-t-2 border-line-strong px-4 py-4 lg:grid-cols-2">
-                        <JournalOrders title="📋 장 시작 전 주문표 (계획)" orders={d.planned} fill={false} />
+                        <JournalOrders title="📋 장 시작 전 주문표 (계획)" orders={d.planned} fill={false} fpx={fpx} fm={fm} />
                         <div className="border-t border-dashed border-line-strong pt-4 lg:border-l lg:border-t-0 lg:border-dashed-0 lg:pl-8 lg:pt-0" style={{ borderLeftStyle: "solid" }}>
-                          <JournalOrders title="✅ 체결 내역" orders={d.fills} fill={true}
+                          <JournalOrders title="✅ 체결 내역" orders={d.fills} fill={true} fpx={fpx} fm={fm}
                             extra={d.fills.length > 0 ? (
                               <span className={`font-bold ${d.day_pnl > 0 ? "text-up" : d.day_pnl < 0 ? "text-down" : "text-muted"}`}>
-                                당일 손익 {d.day_pnl >= 0 ? "+" : ""}{d.day_pnl.toLocaleString()}원
+                                당일 손익 {d.day_pnl >= 0 ? "+" : ""}{fm(d.day_pnl)}
                               </span>
                             ) : undefined} />
                         </div>
                         <div className="col-span-full flex flex-wrap gap-x-6 gap-y-1 border-t border-line pt-3 text-[13.5px] text-muted">
                           <span>노출 E <b className="text-ink">{(d.exposure * 100).toFixed(1)}%</b></span>
-                          <span>현금 <b className="text-ink">{d.cash.toLocaleString()}원</b></span>
+                          <span>현금 <b className="text-ink">{fm(d.cash)}</b></span>
                           <span>보유 200 ETF <b className="text-ink">{d.qty_200.toLocaleString()}주</b></span>
                           <span>레버리지 <b className="text-ink">{d.qty_lev.toLocaleString()}주</b></span>
                         </div>
@@ -466,7 +483,7 @@ const KIND_KO_J: Record<string, string> = {
   lev_tact_exit: "전술 이탈", lev_liq: "레버 청산",
 };
 
-function JournalOrders({ title, orders, fill, extra }: { title: string; orders: JournalOrder[]; fill: boolean; extra?: React.ReactNode }) {
+function JournalOrders({ title, orders, fill, extra, fpx, fm }: { title: string; orders: JournalOrder[]; fill: boolean; extra?: React.ReactNode; fpx: (v: number) => string; fm: (v: number) => string }) {
   return (
     <div>
       <div className="mb-2 flex items-center justify-between text-[13.5px] font-semibold text-muted">
@@ -487,9 +504,9 @@ function JournalOrders({ title, orders, fill, extra }: { title: string; orders: 
                 <td className="py-1.5 text-muted">{KIND_KO_J[o.kind] ?? o.kind}</td>
                 <td className="py-1.5">{o.instrument === "K200" ? "200 ETF" : "레버리지"}</td>
                 <td className={`py-1.5 font-semibold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
-                <td className="table-num py-1.5">{o.price ? o.price.toLocaleString() : "시가"}</td>
+                <td className="table-num py-1.5">{o.price ? fpx(o.price) : "시가"}</td>
                 <td className="table-num py-1.5">{o.qty.toLocaleString()}</td>
-                <td className="table-num py-1.5 text-muted">{o.price ? (o.price * o.qty).toLocaleString() : "—"}</td>
+                <td className="table-num py-1.5 text-muted">{o.price ? fm(o.price * o.qty) : "—"}</td>
               </tr>
             ))}
           </tbody>

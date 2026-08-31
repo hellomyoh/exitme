@@ -18,6 +18,9 @@ const PRESETS = [
   { code: "069500", label: "KODEX 200" },
   { code: "102110", label: "TIGER 200" },
   { code: "122630", label: "KODEX 레버리지" },
+  { code: "QQQ", label: "QQQ 🇺🇸" },
+  { code: "QLD", label: "QLD 🇺🇸" },
+  { code: "TQQQ", label: "TQQQ 🇺🇸" },
 ];
 const MA_STYLES: [string, string, string][] = [
   ["ma20", "MA20", "#b45309"], ["ma60", "MA60", "#2563eb"], ["ma200", "MA200", "#7c3aed"], ["ema20", "EMA20", "#0e9f6e"],
@@ -45,11 +48,16 @@ export default function ChartPage() {
     setStatus("불러오는 중…");
     const to = new Date().toISOString().slice(0, 10);
     const from = new Date(Date.now() - 3650 * 86400e3).toISOString().slice(0, 10);
+    const usScale = ["QQQ", "QLD", "TQQQ"].includes(c) ? 0.01 : 1;  // 센트 → 달러
     const res = await fetch(`/api/ohlcv?code=${c}&from=${from}&to=${to}&limit=10000`);
     if (!res.ok) { setStatus(`데이터 없음 (${res.status}) — 시세 시딩이 필요할 수 있습니다`); return; }
     const body = (await res.json()) as { items: Bar[]; as_of: string | null };
     setAsOf(body.as_of);
     if (body.items.length === 0) { setStatus("데이터 0건 — 시딩을 먼저 실행하세요"); return; }
+    if (usScale !== 1) {
+      body.items = body.items.map((b) => ({ ...b, open: b.open * usScale, high: b.high * usScale,
+                                            low: b.low * usScale, close: b.close * usScale }));
+    }
     setStatus("");
     draw(body.items);
     if (hasToken()) {

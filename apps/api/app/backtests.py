@@ -28,6 +28,8 @@ CANCEL_KEY = "backtests:cancel:{id}"
 ETF_PAIRS = {
     "KODEX": ("069500", "122630"),
     "TIGER": ("102110", "122630"),
+    "QQQ_QLD": ("QQQ", "QLD"),      # 미국 — 센트 단위 (2026-08-31)
+    "QQQ_TQQQ": ("QQQ", "TQQQ"),
 }
 CODE_200, CODE_LEV = ETF_PAIRS["KODEX"]  # 기본값 (전략 정본 기준)
 
@@ -52,7 +54,7 @@ class BacktestIn(BaseModel):
     capital: int = Field(gt=1_000_000, le=100_000_000_000)
     date_from: date
     date_to: date
-    etf: str = Field(default="KODEX", pattern="^(KODEX|TIGER)$")
+    etf: str = Field(default="KODEX", pattern="^(KODEX|TIGER|QQQ_QLD|QQQ_TQQQ)$")
     costs: Costs = Costs()
     flags: Flags = Flags()
 
@@ -96,6 +98,40 @@ def pair_from_params(params: dict) -> tuple[str, str]:
     return ETF_PAIRS.get(params.get("etf", "KODEX"), ETF_PAIRS["KODEX"])
 
 
+US_ETFS = {"QQQ_QLD", "QQQ_TQQQ"}
+
+
+def market_of_etf(etf: str) -> str:
+    return "US" if etf in US_ETFS else "KR"
+
+
+def base_costs_for(etf: str) -> dict:
+    """마켓별 기본 파라미터 — 미국은 센트 호가·미국 비용 모델·배율 (docs/us-backtest-20260831.md)."""
+    if etf not in US_ETFS:
+        return {}
+    return {
+        "tick": 1, "commission": 0.001, "slippage_market": 0.001, "lev_tax": 0.0,
+        "fee_200": 0.002, "fee_lev": 0.0084 if etf == "QQQ_TQQQ" else 0.0095,
+        "lev_multiple": 3.0 if etf == "QQQ_TQQQ" else 2.0,
+    }
+
+
+def params_from_job(p: dict):
+    """잡 파라미터 dict → Params — 마켓 기본 + 사용자 알고리즘 스냅샷 + 비용 오버라이드 병합."""
+    from app.strategy.params import AblationFlags, Params
+
+    merged = {**base_costs_for(p.get("etf", "KODEX")), **p.get("algo", {}), **p.get("costs", {})}
+    return Params(**merged, flags=AblationFlags(**p.get("flags", {})))
+
+
+def user_algo_overrides(session: Session, user_id: int) -> dict:
+    """사용자 알고리즘 오버라이드 — 검증된 키만 (app.settings.PARAM_REGISTRY)."""
+    from app.models import UserSettings
+
+    row = session.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
+    return dict(row.algo_params) if row else {}
+
+
 WARMUP_CAL_DAYS = 460  # min_history 270 거래일 ≈ 397 캘린더일 + 휴장 여유
 
 
@@ -129,7 +165,11 @@ def create_backtest(body: BacktestIn, user_id: int = Depends(current_user_id),
                     session: Session = Depends(get_session)) -> dict:
     if body.date_from >= body.date_to:
         raise HTTPException(status_code=422, detail="date_from must be before date_to")
-    bt = Backtest(user_id=user_id, params=json.loads(body.model_dump_json()), status="QUEUED")
+    job_params = json.loads(body.model_dump_json())
+    algo = user_algo_overrides(session, user_id)
+    if algo:
+        job_params["algo"] = algo  # 실행 시점 설정 스냅샷 — 이후 설정 변경과 무관하게 재현 (2026-08-31)
+    bt = Backtest(user_id=user_id, params=job_params, status="QUEUED")
     session.add(bt)
     from app.dashboard import record_event
     record_event(session, "backtest_run", user_id)
@@ -208,7 +248,7 @@ def get_backtest_journal(bt_id: int, user_id: int = Depends(current_user_id),
         session, date.fromisoformat(p["date_from"]), date.fromisoformat(p["date_to"]),
         codes=pair_from_params(p),
     )
-    params = Params(**p.get("costs", {}), flags=AblationFlags(**p.get("flags", {})))
+    params = params_from_job(p)
     r = run_backtest(bars_200, bars_lev, float(p["capital"]), params,
                      start_index=start_idx, collect_plans=True)
 
