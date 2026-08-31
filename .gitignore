@@ -26,3 +26,4 @@ Thumbs.db
 .idea/
 .vscode/
 apps/api/celerybeat-schedule
+apps/web/tsconfig.tsbuildinfo
