@@ -29,12 +29,15 @@ Celery + Redis 7 · PostgreSQL 16 + TimescaleDB · Nginx · docker compose · Gi
 ## 설치·실행
 
 ```bash
-cp .env.example .env   # 환경변수 입력
+cp .env.example .env   # 환경변수 입력 — KIS_APP_KEY/KIS_APP_SECRET 필수
 docker compose up -d   # 전체 기동 (7서비스, healthcheck 순서 기동)
 
-# 초기 시세 시딩 (10년 일봉)
+# 초기 시세 시딩 (10년 일봉) — KIS 키가 있어야 실행됩니다 (KRX가 pykrx 요청을 차단 중)
 docker compose run --rm api python -m scripts.seed --years 10
 ```
+
+KIS 앱키는 [KIS Developers 포털](https://apiportal.koreainvestment.com)에서 발급합니다.
+구현은 [공식 예제 저장소](https://github.com/koreainvestment/open-trading-api)의 인증·시세 패턴을 따릅니다.
 
 ## 환경변수
 

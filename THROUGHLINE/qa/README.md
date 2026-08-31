@@ -6,6 +6,12 @@
 - **"테스트 통과"의 정의: 테스트가 실제로 실행되고 결과(실행 명령 + 통과/실패 요약)가 [HISTORY.md](../HISTORY.md)에 기록되었을 때만 통과로 인정한다.** 실행 없는 통과 주장은 무효.
 - Multi-Agent 검토([discussion/](../discussion/))에서 제기된 검증 가능한 실패 조건은 feature §12 또는 이 폴더의 체크리스트로 반드시 추적된다.
 
+## 테스트 DB 격리 (필수)
+
+- 통합 테스트는 실코드(069500 등)에 합성 데이터를 적재하므로 **개발 DB(stocklab)가 아니라 격리 DB(stocklab_ci)에서 실행**한다:
+  `docker compose run --rm --no-deps -e DATABASE_URL=postgresql+psycopg://stocklab:stocklab-dev-password@db:5432/stocklab_ci api sh -c "alembic upgrade head && pytest -q tests/"`
+- 개발 DB에서 실행하면 실 시세와 합성 데이터가 섞인다 (HISTORY 2026-08-28 오염 사고 참조).
+
 ## 자동 테스트와 수동 QA의 구분
 
 - **자동**: 전략 모듈 골든·경계 테스트, 백테스트 정합성(look-ahead·체결·비용·KPI), API 계약, FIFO 회계, 파이프라인 검증 규칙, CI e2e(compose).

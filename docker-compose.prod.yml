@@ -1,0 +1,28 @@
+# 운영 배포: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+services:
+  api:
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+
+  worker:
+    restart: unless-stopped
+
+  scheduler:
+    restart: unless-stopped
+
+  web:
+    restart: unless-stopped
+    command: npm run start
+
+  nginx:
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+
+  db:
+    restart: unless-stopped
+
+  redis:
+    restart: unless-stopped

@@ -1,0 +1,107 @@
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build: ./apps/web
+    environment:
+      - API_INTERNAL_URL=http://api:8000
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    build: ./apps/api
+    image: stocklab-api    # api/worker/scheduler 가 동일 이미지 공유 (개별 stale 이미지 방지, NOTES.md)
+    env_file: .env
+    environment:
+      - SERVICE_ROLE=api
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: stocklab-api
+    env_file: .env
+    environment:
+      - SERVICE_ROLE=worker
+    command: celery -A app.worker.celery_app worker -Q backtest,ingest --concurrency=4 --loglevel=INFO
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.worker.celery_app", "inspect", "ping", "--timeout", "5"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  scheduler:
+    image: stocklab-api
+    env_file: .env
+    environment:
+      - SERVICE_ROLE=scheduler
+    command: celery -A app.worker.celery_app beat --loglevel=INFO
+    healthcheck:
+      test: ["CMD", "python", "-c", "import app.worker"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  db:
+    image: timescale/timescaledb-ha:pg16
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-stocklab}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-stocklab-dev-password}
+      - POSTGRES_DB=${POSTGRES_DB:-stocklab}
+    volumes:
+      - pgdata:/home/postgres/pgdata/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stocklab} -d ${POSTGRES_DB:-stocklab}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
