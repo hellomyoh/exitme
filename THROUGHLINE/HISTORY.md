@@ -214,3 +214,9 @@
 - **새 기본값 기준 성과** (σ청산 35% 포함 3종 반영): 한국 10년 **+230.8% / MDD −20.6% / 샤프 0.98** (변경 전 +140.2%/−26.0%/0.84), YTD +39.9%, 미국 19년 +720.3%/−24.8%/0.84. 오늘 신호 E 42.8→50.5%.
 - 테스트 결과: api **123 passed**. 시그널 재생성 OK.
 - Git commit: change: adopt ma200 exit hysteresis and raise target downside vol
+
+## [2026-08-31] feat | 시장별 전략 분리 — 미국 TF(추세 필터 보유) 전략 (사용자 승인)
+
+- 작업 내용: features/feature-us-trendfilter.md 참조 — TF 엔진 신설(trendfilter.py, BacktestResult 재사용), run_engine 디스패치(잡·저널·전환·워커), 미국 신호/포트 주문표 TF 교체(전량 매수/현금, 기준선 지시문), 시뮬레이터 미국 기본 옵션 QQQ_TF(RAVG 페어는 비교용 레거시), 주문 라벨 추세 진입/이탈. 부수 수정: 워커 결과 저장 직전 잠금 재획득 — RUNNING 커밋으로 풀린 잠금 탓에 동시 실행이 equity 중복 삽입하던 결함.
+- 테스트: TF 단위 4종 신규, api **127 passed**. E2E: QQQ_TF 잡 +609.2%(2010~)·저널·포트 주문표 확인.
+- Git commit: feat: US market switches to trend-filter strategy

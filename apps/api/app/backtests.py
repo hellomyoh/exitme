@@ -28,8 +28,9 @@ CANCEL_KEY = "backtests:cancel:{id}"
 ETF_PAIRS = {
     "KODEX": ("069500", "122630"),
     "TIGER": ("102110", "122630"),
-    "QQQ_QLD": ("QQQ", "QLD"),      # 미국 — 센트 단위 (2026-08-31)
+    "QQQ_QLD": ("QQQ", "QLD"),      # 미국 — 센트 단위 (2026-08-31, 레거시 비교용)
     "QQQ_TQQQ": ("QQQ", "TQQQ"),
+    "QQQ_TF": ("QQQ", "QQQ"),       # 미국 기본 — TF(추세 필터 보유) 전략 (2026-08-31 승인)
 }
 CODE_200, CODE_LEV = ETF_PAIRS["KODEX"]  # 기본값 (전략 정본 기준)
 
@@ -54,7 +55,7 @@ class BacktestIn(BaseModel):
     capital: int = Field(gt=1_000_000, le=100_000_000_000)
     date_from: date
     date_to: date
-    etf: str = Field(default="KODEX", pattern="^(KODEX|TIGER|QQQ_QLD|QQQ_TQQQ)$")
+    etf: str = Field(default="KODEX", pattern="^(KODEX|TIGER|QQQ_QLD|QQQ_TQQQ|QQQ_TF)$")
     costs: Costs = Costs()
     flags: Flags = Flags()
 
@@ -98,7 +99,7 @@ def pair_from_params(params: dict) -> tuple[str, str]:
     return ETF_PAIRS.get(params.get("etf", "KODEX"), ETF_PAIRS["KODEX"])
 
 
-US_ETFS = {"QQQ_QLD", "QQQ_TQQQ"}
+US_ETFS = {"QQQ_QLD", "QQQ_TQQQ", "QQQ_TF"}
 
 
 def market_of_etf(etf: str) -> str:
@@ -114,6 +115,19 @@ def base_costs_for(etf: str) -> dict:
         "fee_200": 0.002, "fee_lev": 0.0084 if etf == "QQQ_TQQQ" else 0.0095,
         "lev_multiple": 3.0 if etf == "QQQ_TQQQ" else 2.0,
     }
+
+
+def run_engine(p: dict, bars_200, bars_lev, capital: float, params,
+               start_index=None, collect_plans=False, progress_cb=None, plan_final=False):
+    """전략 디스패처 — 미국 QQQ_TF 는 TF(추세 필터) 엔진, 그 외는 RAVG (2026-08-31 시장별 분리)."""
+    from app.strategy.backtest import run_backtest
+
+    if p.get("etf") == "QQQ_TF":
+        from app.strategy.trendfilter import run_tf_backtest
+
+        return run_tf_backtest(bars_200, capital, start_index=start_index, progress_cb=progress_cb)
+    return run_backtest(bars_200, bars_lev, capital, params, start_index=start_index,
+                        collect_plans=collect_plans, progress_cb=progress_cb, plan_final=plan_final)
 
 
 def params_from_job(p: dict):
@@ -275,8 +289,8 @@ def get_backtest_journal(bt_id: int, user_id: int = Depends(current_user_id),
         codes=pair_from_params(p),
     )
     params = params_from_job(p)
-    r = run_backtest(bars_200, bars_lev, float(p["capital"]), params,
-                     start_index=start_idx, collect_plans=True)
+    r = run_engine(p, bars_200, bars_lev, float(p["capital"]), params,
+                   start_index=start_idx, collect_plans=True)
 
     fills_by_date: dict[str, list] = {}
     for f in r.fills:

@@ -38,6 +38,7 @@ const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립
 const ORDER_KIND_KO: Record<string, string> = {
   grid1: "그리드 1차", grid2: "그리드 2차", grid3: "그리드 3차", tp: "익절", reduce: "축소",
   lev_strat: "레버 전략", lev_tact1: "레버 전술1", lev_tact2: "레버 전술2", lev_tact_exit: "전술 이탈", lev_liq: "레버 청산",
+  tf_entry: "추세 진입", tf_exit: "추세 이탈",
 };
 
 const toneCls = { up: "text-up", down: "text-down", default: "text-ink" };

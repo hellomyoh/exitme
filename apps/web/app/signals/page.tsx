@@ -12,7 +12,7 @@ import { Badge, Callout, Card, CardTitle, EmptyState, fmtNum, fmtPct, GaugeBar, 
 
 type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
 type Signal = {
-  status: string; reason?: string; trade_date?: string; version?: number; regime?: string;
+  status: string; strategy?: string; reason?: string; trade_date?: string; version?: number; regime?: string;
   e_target?: number; w_200?: number; w_lev?: number; gap_cancel_below?: number;
   indicators?: Record<string, number>; orders?: OrderRow[];
   basis?: "model" | "portfolio";
@@ -63,6 +63,8 @@ function orderDesc(o: OrderRow, sig: Signal): string {
     lev_tact2: "레버리지 눌림목 2차 (EMA20 −1.5×ATR 이탈)",
     lev_tact_exit: "레버리지 전술 물량 이탈 (EMA20 회복)",
     lev_liq: "레버리지 전량 청산 (레짐 이탈/변동성 초과)",
+    tf_entry: "종가가 MA200 위 — 다음날 시가 전량 매수",
+    tf_exit: "종가가 MA200 −2% 관통 — 다음날 시가 전량 매도",
   };
   return map[o.kind] ?? "";
 }
@@ -79,6 +81,8 @@ function indRows(base: string, price: (v: number) => string): { key: string; lab
     { key: "sigma20", label: "σ20 (연율 총변동성)", fmt: (v) => fmtPct(v, 1) },
     { key: "sigma_down", label: "σ_down (하방 변동성)", fmt: (v) => fmtPct(v, 1) },
     { key: "sigma_ref", label: "σ_ref (250일 중위)", fmt: (v) => fmtPct(v, 1) },
+    { key: "gap_to_ma200", label: "MA200 대비 이격", fmt: (v) => fmtPct(v, 2) },
+    { key: "exit_level", label: "청산 기준선 (MA200 −2%)", fmt: price },
   ];
 }
 
@@ -185,10 +189,22 @@ function SignalsPage() {
                 <span className="text-2xl font-extrabold" style={{ color: r.color }}>{r.ko}</span>
                 <Badge tone={r.tone}>v{sig.version}</Badge>
               </div>
-              <p className="mt-2 text-[14.5px] leading-relaxed text-muted">{r.desc}</p>
+              <p className="mt-2 text-[14.5px] leading-relaxed text-muted">
+                {sig.strategy === "TF"
+                  ? (sig.regime === "BULL" ? "추세 위 — QQQ 전량 보유 유지" : "추세 아래 — 전량 현금 대기")
+                  : r.desc}
+              </p>
               <details className="mt-3">
-                <summary className="cursor-pointer text-[13.5px] font-semibold text-accent">상승/중립/하락 기준 보기</summary>
-                <div className="mt-2 text-[13.5px] leading-relaxed"><RegimeTip /></div>
+                <summary className="cursor-pointer text-[13.5px] font-semibold text-accent">{sig.strategy === "TF" ? "판정 기준 보기" : "상승/중립/하락 기준 보기"}</summary>
+                <div className="mt-2 text-[13.5px] leading-relaxed">
+                  {sig.strategy === "TF" ? (
+                    <span>
+                      <b className="text-up">보유(상승)</b>: 종가 &gt; MA200 → 다음날 시가 전량 매수, 이후 계속 보유<br />
+                      <b className="text-accent">현금(중립)</b>: 종가 &lt; MA200×0.98 (2% 관통) → 다음날 시가 전량 매도<br />
+                      <span className="text-faint">그리드·레버리지 없음 — 연 3회 수준의 전환만 발생하는 미국 전용 단순 전략입니다.</span>
+                    </span>
+                  ) : <RegimeTip />}
+                </div>
               </details>
             </Card>
             <Card>
@@ -295,7 +311,16 @@ function SignalsPage() {
           {/* 조건부 지시문 — 선택된 기준의 보유·주문에 해당하는 것만 (2026-08-28 검토 반영) */}
           <Card>
             <CardTitle>조건부 지시문 <span className="normal-case text-faint">· 장중 아래 상황이 오면 직접 실행하세요</span></CardTitle>
-            {(() => {
+            {sig.strategy === "TF" ? (
+              <div className="grid gap-2.5">
+                <Callout icon="📏">
+                  {sig.regime === "BULL"
+                    ? <>보유 유지 중 — 종가가 <b className="text-ink">{fpx((sig.indicators as Record<string, number>)?.exit_level ?? 0)}</b> (MA200 −2%) 아래로 <b className="text-ink">마감</b>하면 다음날 시가에 전량 매도합니다. 장중 이탈은 무시.</>
+                    : <>현금 대기 중 — 종가가 <b className="text-ink">{fpx((sig.indicators as Record<string, number>)?.ma200 ?? 0)}</b> (MA200) 위로 <b className="text-ink">마감</b>하면 다음날 시가에 전량 매수합니다.</>}
+                </Callout>
+                <Callout icon="🕐">전환 주문은 <b className="text-ink">개장 동시호가 시장가</b>로 — 연 3회 수준이라 그 외의 날은 할 일이 없습니다.</Callout>
+              </div>
+            ) : (() => {
               const orders = sig.orders ?? [];
               const hasGridBuy = orders.some((o) => o.kind.startsWith("grid"));
               const levLiqOrdered = orders.some((o) => o.kind === "lev_liq");

@@ -26,12 +26,13 @@ const FLAG_LABELS: [string, string, string][] = [
   ["f4_leverage", "④ 레버리지 모듈", "Emax 1.30 · E>1 초과분만"],
   ["f5_gap_filter", "⑤ 갭 필터 + 잔여예산", "갭 하락 방어 · 예산 초과 미발주"],
 ];
-type EtfKey = "KODEX" | "TIGER" | "QQQ_QLD" | "QQQ_TQQQ";
-const ETF_INFO: Record<EtfKey, { label: string; fee: number; market: "KR" | "US" }> = {
+type EtfKey = "KODEX" | "TIGER" | "QQQ_QLD" | "QQQ_TQQQ" | "QQQ_TF";
+const ETF_INFO: Record<EtfKey, { label: string; fee: number; market: "KR" | "US"; legacy?: boolean }> = {
   KODEX: { label: "KODEX 200", fee: 0.0015, market: "KR" },
   TIGER: { label: "TIGER 200", fee: 0.0005, market: "KR" },
-  QQQ_QLD: { label: "QQQ + QLD (2x)", fee: 0.002, market: "US" },
-  QQQ_TQQQ: { label: "QQQ + TQQQ (3x)", fee: 0.002, market: "US" },
+  QQQ_TF: { label: "QQQ 추세 필터 (미국 기본)", fee: 0.002, market: "US" },
+  QQQ_QLD: { label: "QQQ + QLD — RAVG (비교용)", fee: 0.002, market: "US", legacy: true },
+  QQQ_TQQQ: { label: "QQQ + TQQQ — RAVG (비교용)", fee: 0.002, market: "US", legacy: true },
 };
 
 export default function SimulatorPageWrapper() {
@@ -51,8 +52,8 @@ function SimulatorPage() {
   const market = marketOf(sp);
   const fm = (v: number) => fmtMoneyM(market, v);
   const fpx = (v: number) => fmtPriceM(market, v);
-  const ETF_KEYS = (Object.keys(ETF_INFO) as EtfKey[]).filter((k) => ETF_INFO[k].market === market);
-  const [etf, setEtf] = useState<EtfKey>(market === "US" ? "QQQ_QLD" : "KODEX");
+  const ETF_KEYS = (Object.keys(ETF_INFO) as EtfKey[]).filter((k) => ETF_INFO[k].market === market && !ETF_INFO[k].legacy);
+  const [etf, setEtf] = useState<EtfKey>(market === "US" ? "QQQ_TF" : "KODEX");
   // 자본 입력은 표기 통화 (미국: 달러) — 전송 시 API 단위(센트)로 변환
   const [capital, setCapital] = useState(market === "US" ? String(DEFAULT_CAPITAL.US / 100) : "100000000");
   const [dateFrom, setDateFrom] = useState(new Date(Date.now() - 365 * 86400e3).toISOString().slice(0, 10)); // 기본 1년 전 (2026-08-28 지시)
@@ -241,7 +242,7 @@ function SimulatorPage() {
                 <button key={k} onClick={() => setEtf(k)}
                   className={`rounded-xl border p-4 text-left transition-colors ${etf === k ? "border-accent bg-accent-dim" : "border-line bg-inset hover:border-line-strong"}`}>
                   <div className="font-bold">{ETF_INFO[k].label}</div>
-                  <div className="mt-0.5 text-xs text-faint">총보수 연 {(ETF_INFO[k].fee * 100).toFixed(2)}%{ETF_INFO[k].market === "KR" ? " · 레버리지는 KODEX 공통" : " · 신호는 QQQ 기준"}</div>
+                  <div className="mt-0.5 text-xs text-faint">총보수 연 {(ETF_INFO[k].fee * 100).toFixed(2)}%{ETF_INFO[k].market === "KR" ? " · 레버리지는 KODEX 공통" : " · MA200 위 전량 보유 / 2% 관통 시 전량 현금"}</div>
                 </button>
               ))}
             </div>

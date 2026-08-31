@@ -160,7 +160,7 @@ def run_backtest_job(bt_id: int) -> dict:
 
     import redis as sync_redis
 
-    from app.backtests import CANCEL_KEY, PROGRESS_CH, PROGRESS_KEY, load_bars_with_warmup, pair_from_params, params_from_job, params_signature
+    from app.backtests import CANCEL_KEY, PROGRESS_CH, PROGRESS_KEY, load_bars_with_warmup, pair_from_params, params_from_job, params_signature, run_engine
     from app.db import SessionLocal
     from app.models import Backtest, BacktestEquity
     from app.strategy.backtest import Cancelled, run_backtest
@@ -203,10 +203,17 @@ def run_backtest_job(bt_id: int) -> dict:
                 publish({"id": bt_id, "status": "RUNNING", "progress": pct})
                 return True
 
-            result = run_backtest(bars_200, bars_lev, float(p["capital"]), params,
-                                  start_index=start_idx, progress_cb=progress_cb)
+            result = run_engine(p, bars_200, bars_lev, float(p["capital"]), params,
+                                start_index=start_idx, progress_cb=progress_cb)
 
-            # 단일 트랜잭션 저장 — 재시도 멱등: 이전 시도의 잔여 행을 먼저 제거
+            # 단일 트랜잭션 저장 — 시작 시점 잠금은 RUNNING 커밋에서 풀리므로, 저장 직전
+            # 잠금을 재획득해 동시 실행의 패자가 승자의 결과를 덮지 못하게 한다 (2026-08-31)
+            bt = session.execute(
+                select(Backtest).where(Backtest.id == bt_id).with_for_update()
+            ).scalar_one()
+            if bt.status == "DONE":
+                session.rollback()
+                return {"status": "already-done"}
             session.query(BacktestEquity).filter(BacktestEquity.backtest_id == bt_id).delete()
             bt.kpi = result.kpi
             bt.trades = [asdict(t) for t in result.trades]

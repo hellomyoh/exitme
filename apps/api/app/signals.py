@@ -220,14 +220,16 @@ def get_signal_journal(days: int = 20, market: str = "KR", _user: int = Depends(
 
     try:
         if market == "US":
-            bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1),
-                                                      codes=("QQQ", "QLD"))
+            from app.strategy.trendfilter import run_tf_backtest
+
+            bars_200, _, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1),
+                                               codes=("QQQ", "QQQ"))
+            r = run_tf_backtest(bars_200, MODEL_CAPITAL)
         else:
             bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1))
+            r = run_backtest(bars_200, bars_lev, MODEL_CAPITAL, Params(), collect_plans=True)
     except Exception:
         return {"items": []}
-    params = Params(**base_costs_for("QQQ_QLD")) if market == "US" else Params()
-    r = run_backtest(bars_200, bars_lev, MODEL_CAPITAL, params, collect_plans=True)
     fills_by_date: dict[str, list] = {}
     for f in r.fills:
         fills_by_date.setdefault(f.date, []).append(
@@ -255,31 +257,32 @@ def get_signal_journal(days: int = 20, market: str = "KR", _user: int = Depends(
 
 
 def _live_us_model(session: Session, user_id: int) -> dict:
-    """미국 모델 신호 — 라이브 계산 (KR 처럼 배치 체인을 두지 않음, 2026-08-31).
+    """미국 모델 신호 — TF(추세 필터 보유) 전략, 라이브 계산 (2026-08-31 시장별 분리).
 
-    모델 자본 $1,000,000(센트). 사용자 알고리즘 오버라이드 적용.
+    모델 자본 $1,000,000(센트). 보유=BULL / 현금 대기=NEUTRAL 로 표기.
     """
-    from app.backtests import base_costs_for, load_aligned_bars as _load, user_algo_overrides
+    from app.backtests import load_aligned_bars as _load
+    from app.strategy.trendfilter import run_tf_backtest
 
     try:
-        bars_200, bars_lev, _ = _load(session, date(1990, 1, 1), date(2100, 1, 1), codes=("QQQ", "QLD"))
+        bars, _, _ = _load(session, date(1990, 1, 1), date(2100, 1, 1), codes=("QQQ", "QQQ"))
     except Exception as exc:
         return {"status": "MISSING", "reason": str(exc)[:300], "market": "US"}
-    params = Params(**{**base_costs_for("QQQ_QLD"), **user_algo_overrides(session, user_id)})
-    result = run_backtest(bars_200, bars_lev, MODEL_CAPITAL, params, collect_plans=True, plan_final=True)
+    result = run_tf_backtest(bars, MODEL_CAPITAL)
     lp = result.plans[-1]
     return {
-        "status": lp.status, "trade_date": bars_200[-1]["date"], "version": 0, "market": "US",
+        "status": lp.status, "trade_date": bars[-1]["date"], "version": 0, "market": "US",
+        "strategy": "TF",
         "regime": lp.regime.value if lp.status == "OK" else None,
-        "e_target": lp.e_target, "w_200": lp.w_200, "w_lev": lp.w_lev,
-        "gap_cancel_below": lp.gap_cancel_below,
+        "e_target": lp.e_target, "w_200": lp.w_200, "w_lev": 0.0,
+        "gap_cancel_below": None,
         "indicators": {k: v for k, v in lp.indicators.items() if v is not None},
         "detail": {
             "model_capital": MODEL_CAPITAL,
             "model_equity": round(result.equity[-1]) if result.equity else MODEL_CAPITAL,
             "model_cash": round(result.cash_curve[-1]) if result.cash_curve else MODEL_CAPITAL,
             "model_qty_200": result.qty_200[-1] if result.qty_200 else 0,
-            "model_qty_lev": result.qty_lev[-1] if result.qty_lev else 0,
+            "model_qty_lev": 0,
         },
         "orders": [
             {"instrument": o.instrument, "side": o.side, "otype": o.otype,
@@ -287,6 +290,83 @@ def _live_us_model(session: Session, user_id: int) -> dict:
         ],
         "basis": "model",
     }
+
+
+def _tf_portfolio_orders(session: Session, pf_row, pid: int) -> dict:
+    """미국 포트 기준 TF 주문표 — 목표는 '전량 보유' 또는 '전량 현금' (2026-08-31).
+
+    QLD/TQQQ 등 전략 외 보유는 항상 청산 대상으로 표기한다.
+    """
+    from app.backtests import load_aligned_bars as _load
+    from app.models import Instrument, PositionLot, TradeTransaction
+    from app.strategy.trendfilter import TF_EXIT_BUFFER, TF_MA, run_tf_backtest
+
+    bars, _, _ = _load(session, date(1990, 1, 1), date(2100, 1, 1), codes=("QQQ", "QQQ"))
+    result = run_tf_backtest(bars, MODEL_CAPITAL)
+    lp = result.plans[-1]
+    want_hold = lp.status == "OK" and lp.regime is Regime.BULL
+
+    txs = session.scalars(select(TradeTransaction).where(TradeTransaction.portfolio_id == pid)).all()
+    cash = 0
+    for t in txs:
+        if t.kind == "deposit":
+            cash += t.amount
+        elif t.kind == "withdraw":
+            cash -= t.amount
+        elif t.kind == "buy":
+            cash -= t.qty * t.price
+        elif t.kind == "sell":
+            cash += t.qty * t.price
+    lots = session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pid)
+                           .order_by(PositionLot.opened_at, PositionLot.id)).all()
+    qty_qqq = qty_lev = 0
+    for l in lots:
+        code = session.get(Instrument, l.instrument_id).code
+        if code == "QQQ":
+            qty_qqq += l.qty_open
+        else:
+            qty_lev += l.qty_open
+
+    close = float(bars[-1]["close"])
+    orders = []
+    if qty_lev > 0:  # 전략 외 자산은 상태 무관 청산
+        orders.append({"instrument": "LEV", "side": "sell", "otype": "market",
+                       "qty": qty_lev, "price": None, "kind": "tf_exit"})
+    if want_hold:
+        est = int((cash + (qty_lev * close if qty_lev else 0)) / close) if close else 0
+        if est > 0:
+            orders.append({"instrument": "K200", "side": "buy", "otype": "market",
+                           "qty": est, "price": None, "kind": "tf_entry"})
+    elif qty_qqq > 0:
+        orders.append({"instrument": "K200", "side": "sell", "otype": "market",
+                       "qty": qty_qqq, "price": None, "kind": "tf_exit"})
+
+    equity = round(cash + (qty_qqq + qty_lev) * close)
+    out = {
+        "basis": "portfolio", "strategy": "TF",
+        "portfolio": {"id": pf_row.id, "name": pf_row.name},
+        "account": {"cash": cash, "qty_200": qty_qqq, "qty_lev": qty_lev, "equity": equity},
+        "orders": orders, "gap_cancel_below": None,
+    }
+    # 계획 스냅샷 (일자별 일지)
+    from datetime import timedelta as _td
+
+    from app.models import PortfolioPlan
+    base_day = date.fromisoformat(bars[-1]["date"])
+    exec_day = base_day + _td(days=1)
+    while exec_day.weekday() >= 5:
+        exec_day += _td(days=1)
+    row = session.scalar(select(PortfolioPlan).where(
+        PortfolioPlan.portfolio_id == pid, PortfolioPlan.trade_date == exec_day))
+    payload = {"regime": lp.regime.value, "signal_date": base_day.isoformat(),
+               "orders": out["orders"], "gap_cancel_below": None,
+               "account": out["account"], "e_target": lp.e_target, "strategy": "TF"}
+    if row is None:
+        session.add(PortfolioPlan(portfolio_id=pid, trade_date=exec_day, payload=payload))
+    else:
+        row.payload = payload
+    session.commit()
+    return out
 
 
 @router.get("/signals/daily")
@@ -312,13 +392,14 @@ def get_daily_signal(date_: date | None = Query(default=None, alias="date"),
     if portfolio_id is not None:
         pf_row = session.get(TradePortfolio, portfolio_id)
         if pf_row is not None and pf_row.market == "US":
-            # 미국 포트 — KR 스냅샷과 무관하게 라이브 모델 + 포트 주문 결합
+            # 미국 포트 — TF 전략 기준 (2026-08-31 시장별 분리)
+            if pf_row.user_id != _user:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404, detail="portfolio not found")
             base = _live_us_model(session, _user)
             if base["status"] != "OK":
                 return base
-            extra = _portfolio_orders(session, portfolio_id, _user)
-            base.update(extra)
-            base["gap_cancel_below"] = extra.get("gap_cancel_below") or base.get("gap_cancel_below")
+            base.update(_tf_portfolio_orders(session, pf_row, portfolio_id))
             return base
     if portfolio_id is not None and snap.status == "OK":
         # 내 실전 포트 기준 주문표 (2026-08-28 검토 반영) — 주문·계좌 현황을 내 포트 기준으로 교체

@@ -284,7 +284,7 @@ def create_from_backtest(bt_id: int, user_id: int = Depends(current_user_id),
     """
     from datetime import time as _time, timedelta as _td, timezone as _tz
 
-    from app.backtests import load_bars_with_warmup, market_of_etf, pair_from_params, params_from_job
+    from app.backtests import load_bars_with_warmup, market_of_etf, pair_from_params, params_from_job, run_engine
     from app.strategy.backtest import run_backtest
 
     bt = session.get(Backtest, bt_id)
@@ -299,7 +299,7 @@ def create_from_backtest(bt_id: int, user_id: int = Depends(current_user_id),
         session, date.fromisoformat(p["date_from"]), date.fromisoformat(p["date_to"]),
         codes=(code_200, code_lev))
     params = params_from_job(p)
-    result = run_backtest(bars_200, bars_lev, float(p["capital"]), params, start_index=start_idx)
+    result = run_engine(p, bars_200, bars_lev, float(p["capital"]), params, start_index=start_idx)
 
     pf = TradePortfolio(user_id=user_id, name=f"실전 (백테스트 #{bt_id})",
                         kind="from_backtest", backtest_id=bt_id, params=bt.params,
