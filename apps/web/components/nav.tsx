@@ -63,8 +63,18 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
           <div className="grid gap-0.5">
             {g.items.map((it) => {
               const active = isActive(it);
+              // 시뮬레이터·주문표·실전매매는 메뉴 클릭 시 항상 초기 화면으로 — 진행 중 상태 리셋 (2026-09-01 지시)
+              const resettable = it.market !== undefined;
               return (
-                <Link key={it.href} href={it.href} onClick={onNavigate}
+                <Link key={it.href} href={it.href}
+                  onClick={(e) => {
+                    if (resettable) {
+                      e.preventDefault();
+                      const sep = it.href.includes("?") ? "&" : "?";
+                      router.push(`${it.href}${sep}r=${Date.now()}`);
+                    }
+                    onNavigate?.();
+                  }}
                   className={`rounded-lg px-3 py-2 text-[14.5px] font-medium transition-colors ${
                     active ? "bg-raised font-semibold text-ink" : "text-muted hover:bg-raised/60 hover:text-ink"
                   }`}>

@@ -50,7 +50,8 @@ export default function PortfolioPageWrapper() {
 function MarketKeyed() {
   // 마켓 전환 시 페이지 상태 전체 리셋 — 이전 마켓의 결과·선택이 남는 것 방지 (2026-08-31 검토)
   const sp = useSearchParams();
-  return <PortfolioPage key={marketOf(sp)} />;
+  const resetKey = sp?.get("r") ?? "";
+  return <PortfolioPage key={`${marketOf(sp)}-${resetKey}`} />;
 }
 
 function PortfolioPage() {

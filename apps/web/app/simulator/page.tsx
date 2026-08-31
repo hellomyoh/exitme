@@ -42,7 +42,8 @@ export default function SimulatorPageWrapper() {
 function MarketKeyed() {
   // 마켓 전환 시 페이지 상태 전체 리셋 — 이전 마켓의 결과·선택이 남는 것 방지 (2026-08-31 검토)
   const sp = useSearchParams();
-  return <SimulatorPage key={marketOf(sp)} />;
+  const resetKey = sp?.get("r") ?? "";
+  return <SimulatorPage key={`${marketOf(sp)}-${resetKey}`} />;
 }
 
 function SimulatorPage() {
