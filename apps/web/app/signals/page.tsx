@@ -67,18 +67,20 @@ function orderDesc(o: OrderRow, sig: Signal): string {
   return map[o.kind] ?? "";
 }
 
-const IND_ROWS: { key: string; label: string; fmt: (v: number) => string }[] = [
-  { key: "close", label: "KODEX 200 종가", fmt: (v) => `${fmtNum(v)}원` },
-  { key: "ma20", label: "MA20 (20일 평균)", fmt: (v) => `${fmtNum(v)}원` },
-  { key: "ma60", label: "MA60 (60일 평균)", fmt: (v) => `${fmtNum(v)}원` },
-  { key: "ma200", label: "MA200 (200일 평균)", fmt: (v) => `${fmtNum(v)}원` },
-  { key: "ema20", label: "EMA20", fmt: (v) => `${fmtNum(v)}원` },
-  { key: "atr20", label: "ATR20 (변동폭)", fmt: (v) => `${fmtNum(v)}원` },
-  { key: "grid", label: "그리드 간격", fmt: (v) => fmtPct(v, 2) },
-  { key: "sigma20", label: "σ20 (연율 총변동성)", fmt: (v) => fmtPct(v, 1) },
-  { key: "sigma_down", label: "σ_down (하방 변동성)", fmt: (v) => fmtPct(v, 1) },
-  { key: "sigma_ref", label: "σ_ref (250일 중위)", fmt: (v) => fmtPct(v, 1) },
-];
+function indRows(base: string, price: (v: number) => string): { key: string; label: string; fmt: (v: number) => string }[] {
+  return [
+    { key: "close", label: `${base} 종가`, fmt: price },
+    { key: "ma20", label: "MA20 (20일 평균)", fmt: price },
+    { key: "ma60", label: "MA60 (60일 평균)", fmt: price },
+    { key: "ma200", label: "MA200 (200일 평균)", fmt: price },
+    { key: "ema20", label: "EMA20", fmt: price },
+    { key: "atr20", label: "ATR20 (변동폭)", fmt: price },
+    { key: "grid", label: "그리드 간격", fmt: (v) => fmtPct(v, 2) },
+    { key: "sigma20", label: "σ20 (연율 총변동성)", fmt: (v) => fmtPct(v, 1) },
+    { key: "sigma_down", label: "σ_down (하방 변동성)", fmt: (v) => fmtPct(v, 1) },
+    { key: "sigma_ref", label: "σ_ref (250일 중위)", fmt: (v) => fmtPct(v, 1) },
+  ];
+}
 
 export default function SignalsPageWrapper() {
   return <Suspense fallback={null}><SignalsPage /></Suspense>;
@@ -90,6 +92,7 @@ function SignalsPage() {
   const market = marketOf(sp);
   const fm = (v: number) => fmtMoneyM(market, v);
   const NAME_X = market === "US" ? NAME_US : NAME_KR;
+  const IND_ROWS = indRows(NAME_X.K200, fpx);
   const fpx = (v: number) => fmtPriceM(market, v);
   const [sig, setSig] = useState<Signal | null>(null);
   const [myCapital, setMyCapital] = useState("");
@@ -187,7 +190,7 @@ function SignalsPage() {
               {(() => {
                 const emax = sig.regime === "BULL" ? 1.3 : sig.regime === "BEAR" ? 0.2 : 0.65;
                 const seg = [
-                  { name: "KODEX 200", v: sig.w_200 ?? 0, bg: "var(--color-accent)", fg: "#fff" },
+                  { name: NAME_X.K200, v: sig.w_200 ?? 0, bg: "var(--color-accent)", fg: "#fff" },
                   { name: "레버리지", v: sig.w_lev ?? 0, bg: "var(--color-up)", fg: "#fff" },
                   { name: "현금", v: cashRatio, bg: "var(--color-raised)", fg: "var(--color-muted)" },
                 ];
@@ -225,7 +228,7 @@ function SignalsPage() {
               <div className="grid gap-1.5 text-[14.5px]">
                 <div className="flex justify-between"><span className="text-faint">평가액</span><b>{fm(sig.basis === "portfolio" ? (sig.account?.equity ?? 0) : modelEquity)}</b></div>
                 <div className="flex justify-between"><span className="text-faint">현금</span><b>{fm(sig.basis === "portfolio" ? (sig.account?.cash ?? 0) : (d.model_cash ?? 0))}</b></div>
-                <div className="flex justify-between"><span className="text-faint">보유 200 ETF</span><b>{fmtNum(sig.basis === "portfolio" ? (sig.account?.qty_200 ?? 0) : (d.model_qty_200 ?? 0))}주</b></div>
+                <div className="flex justify-between"><span className="text-faint">보유 {NAME_X.K200}</span><b>{fmtNum(sig.basis === "portfolio" ? (sig.account?.qty_200 ?? 0) : (d.model_qty_200 ?? 0))}주</b></div>
                 <div className="flex justify-between"><span className="text-faint">보유 레버리지</span><b>{fmtNum(sig.basis === "portfolio" ? (sig.account?.qty_lev ?? 0) : (d.model_qty_lev ?? 0))}주</b></div>
               </div>
               {sig.basis !== "portfolio" && (
