@@ -69,3 +69,9 @@ export async function register(email: string, password: string): Promise<boolean
   accessToken = ((await res.json()) as { access_token: string }).access_token;
   return true;
 }
+
+/** 로그아웃 — 서버 refresh 쿠키 삭제 + 메모리 토큰 폐기. */
+export async function logout(): Promise<void> {
+  try { await fetch("/api/auth/logout", { method: "POST", credentials: "include" }); } catch { /* ignore */ }
+  accessToken = null;
+}

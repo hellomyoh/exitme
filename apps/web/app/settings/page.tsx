@@ -3,7 +3,7 @@
 /** 일반 설정 — 비밀번호 변경·세션·로그아웃 (2026-08-31 지시). */
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiFetch, setAccessToken } from "../../lib/api";
+import { apiFetch, logout as apiLogout } from "../../lib/api";
 import { Callout, Card, CardTitle, PageTitle } from "../../components/ui";
 
 export default function SettingsPage() {
@@ -25,8 +25,7 @@ export default function SettingsPage() {
   }
 
   function logout() {
-    setAccessToken(null);
-    router.push("/login");
+    void apiLogout().then(() => router.push("/login"));
   }
 
   return (
