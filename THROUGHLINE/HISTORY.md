@@ -184,3 +184,9 @@
 - 작업 내용: (1) 수동 등록 거래의 오입력 정정 — `DELETE /positions/{tx_id}` 신설. 등록이 로트를 즉시 변형하는 구조라 역산 대신 **남은 거래 전체를 시간순 재생**해 로트·실현손익·현금을 재구성(`_rebuild_ledger`). 재생 불가(매도가 보유 초과·출금이 현금 초과)면 409 + 어떤 거래를 먼저 지워야 하는지 안내. 일지의 체결 행에 ✕ 삭제 버튼(확인창) 추가 — 수정은 삭제 후 재입력 흐름. (2) 포트 삭제가 `portfolio_plans` FK 위반으로 실패 — 스냅샷 동반 삭제.
 - 테스트 결과: api **118 passed** (신규: 삭제→재구성, 근거 매수 삭제 409 후 일관성, 스냅샷 있는 포트 삭제).
 - Git commit: feat: transaction delete with ledger replay
+
+## [2026-08-31] docs | 미국 이식 백테스트 (QQQ+QLD / QQQ+TQQQ) — KIS 해외 TR 수집
+
+- 작업 내용: KIS 해외주식 기간별시세(HHDFS76240000)로 QQQ·QLD·TQQQ 전 이력(2007-08~) 수집(Yahoo 대신 한투 API — 사용자 지시). 센트 정수 스케일·미국 비용 모델로 현행 파라미터 그대로 스모크 백테스트. `Params.lev_multiple` 신설(3배 ETF 가치 ×2/3 보정, 기본 2.0 불변). 결과: 두 케이스 성립 — MDD −22% vs QQQ 매수보유 −53%(2008 포함), CAGR 10% vs 17%(방어 대가), 3배 배율 보정 등가성 실증(B2≈A), 무보정 시 노출 초과 확인. 상세: docs/us-backtest-20260831.md.
+- 테스트 결과: 전략 44/44 통과 (기본값 불변).
+- Git commit: feat: lev_multiple param and US market backtest study

@@ -41,6 +41,7 @@ class Params:
     band: float = 0.05         # 리밸런싱 밴드 ±5%p — 그리드 신규매수에는 미적용
     gap_atr_mult: float = 1.5
     # 레버리지 (정본 §7)
+    lev_multiple: float = 2.0       # 레버리지 ETF 배율 — 국내 2배 기본, 해외 3배(TQQQ) 검토용 (2026-08-31)
     lev_strategic_ratio: float = 0.7
     lev_tact1_mult: float = 0.75
     lev_tact2_mult: float = 1.5

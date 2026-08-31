@@ -240,7 +240,9 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
 
     # ── 레버리지 (상승장 & E>1, §7 — 2트랙)
     if f.f4_leverage and regime is Regime.BULL and not force_liq and w_lev > 0:
-        strat_target = w_lev * params.lev_strategic_ratio * equity
+        # 배율 보정: w_lev 는 2배 기준 가치 비중 — 배율 m 이면 동일 실효노출에 가치 ×(2/m) (2026-08-31)
+        lev_scale = 2.0 / params.lev_multiple
+        strat_target = w_lev * params.lev_strategic_ratio * equity * lev_scale
         strat_value = sum(l.qty * lev_close for l in lev_lots if l.kind == "lev_strat")
         diff = strat_target - strat_value
         # 전략 트랙 신규 진입은 밴드 예외 — "E>1 충족 시 상시 보유" (정본 §7, 검증 ①④)
@@ -256,7 +258,7 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
         # 전술 트랙 진입 — 레버리지 자체 시계열 EMA20/ATR20 (§5.1 예외)
         lev_ema, lev_atr = mlev.ema20[i], mlev.atr20[i]
         if lev_ema is not None and lev_atr is not None:
-            tact_budget_each = w_lev * (1 - params.lev_strategic_ratio) * equity / 2
+            tact_budget_each = w_lev * (1 - params.lev_strategic_ratio) * equity * lev_scale / 2
             has1 = any(l.kind == "lev_tact1" for l in lev_lots)
             has2 = any(l.kind == "lev_tact2" for l in lev_lots)
             if lev_close < lev_ema - params.lev_tact1_mult * lev_atr and not has1:
