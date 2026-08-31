@@ -2,7 +2,12 @@ name: ci
 
 on:
   push:
+    branches: [main]   # 머지 결과만 검증 — 작업 브랜치 push 마다 돌지 않음 (2026-09-01)
   pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true   # 같은 PR 에 연속 푸시하면 이전 실행 취소
 
 jobs:
   api-tests:
