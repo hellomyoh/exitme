@@ -25,3 +25,4 @@ pgdata/
 Thumbs.db
 .idea/
 .vscode/
+apps/api/celerybeat-schedule
