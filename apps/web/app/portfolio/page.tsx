@@ -552,9 +552,11 @@ function PortfolioPage() {
                     <div className="mb-2 flex items-center justify-between text-[13.5px] font-semibold text-muted">
                       <span>✅ 체결 내역 ({j.fills.length}건)</span>
                       {j.realized_pnl !== 0 && (
-                        <span className={`font-bold ${j.realized_pnl > 0 ? "text-up" : "text-down"}`}>
-                          당일 실현손익 {j.realized_pnl >= 0 ? "+" : ""}{fm(j.realized_pnl)}
-                        </span>
+                        <Tip tip={<span>이날 등록된 매도들의 실현손익 합 — (매도가 − FIFO 매수가) × 수량.<br />아직 팔지 않은 보유분의 평가손익은 포함되지 않습니다 (그건 상단 일간 수익률에 반영).</span>}>
+                          <span className={`font-bold ${j.realized_pnl > 0 ? "text-up" : "text-down"}`}>
+                            당일 실현손익 {j.realized_pnl >= 0 ? "+" : ""}{fm(j.realized_pnl)} <span className="font-normal text-faint">ⓘ</span>
+                          </span>
+                        </Tip>
                       )}
                     </div>
                     {j.fills.length === 0 ? (

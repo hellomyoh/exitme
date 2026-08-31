@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { AreaSeries, createChart, IChartApi, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { DEFAULT_CAPITAL, fmtMoneyM, fmtPriceM, MARKET_LABEL, marketOf } from "../../lib/market";
-import { Badge, Callout, Card, CardTitle, fmtPct, GaugeBar, PageTitle, Stat } from "../../components/ui";
+import { Badge, Callout, Card, CardTitle, fmtPct, GaugeBar, PageTitle, Stat, Tip } from "../../components/ui";
 
 type Flags = Record<string, boolean>;
 type Kpi = { total_return: number; cagr: number | null; mdd: number; sharpe: number | null; trades: number; win_rate: number | null; profit_factor: number | null };
@@ -459,9 +459,11 @@ function SimulatorPage() {
                         <div className="border-t border-dashed border-line-strong pt-4 lg:border-l lg:border-t-0 lg:border-dashed-0 lg:pl-8 lg:pt-0" style={{ borderLeftStyle: "solid" }}>
                           <JournalOrders title="✅ 체결 내역" orders={d.fills} fill={true} fpx={fpx} fm={fm}
                             extra={d.fills.length > 0 ? (
-                              <span className={`font-bold ${d.day_pnl > 0 ? "text-up" : d.day_pnl < 0 ? "text-down" : "text-muted"}`}>
-                                당일 손익 {d.day_pnl >= 0 ? "+" : ""}{fm(d.day_pnl)}
-                              </span>
+                              <Tip tip={<span>당일 손익 = 그날 종가 평가액 − 전일 종가 평가액.<br />보유분의 평가손익 변화 + 그날 체결의 실현손익 − 수수료가 모두 합산된 값입니다 — 체결 건들만의 합계가 아닙니다.</span>}>
+                                <span className={`font-bold ${d.day_pnl > 0 ? "text-up" : d.day_pnl < 0 ? "text-down" : "text-muted"}`}>
+                                  당일 손익 {d.day_pnl >= 0 ? "+" : ""}{fm(d.day_pnl)} <span className="font-normal text-faint">ⓘ</span>
+                                </span>
+                              </Tip>
                             ) : undefined} />
                         </div>
                         <div className="col-span-full flex flex-wrap gap-x-6 gap-y-1 border-t border-line pt-3 text-[13.5px] text-muted">
