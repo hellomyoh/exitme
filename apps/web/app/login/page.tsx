@@ -30,7 +30,7 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-[70vh] items-center justify-center">
+    <main className="flex w-full items-center justify-center">
       <Card className="w-full max-w-sm !p-8">
         <div className="mb-6 flex items-center gap-2">
           <span className="inline-block h-3 w-3 rounded-sm bg-accent" />
