@@ -44,3 +44,4 @@
 - [2026-08-28] 통합 테스트가 실코드(069500)에 합성 데이터를 넣으면 실 시딩과 충돌한다 — 개발 DB 오염 확인 후 source='pykrx' 삭제로 복구. **테스트는 stocklab_ci DB 로 격리 실행** (DATABASE_URL 오버라이드). (근거: 2024년 inserted=0 재현·복구)
 
 - 2026-08-29 | σ 임계 매수 정지 게이트 검토 — 이벤트 스터디·엔진 절제 모두 역효과로 미채택. 방어는 E 연속 축소 + BEAR 정지가 담당. [docs/entry-gate-study-20260829.md](docs/entry-gate-study-20260829.md)
+- [2026-08-31] **KIS 해외주식 기간별시세(HHDFS76240000)는 미 장마감 전 호출 시 당일의 미완성 봉을 반환한다** — 21:12 KST(프리마켓 08:12 ET) 수집에서 2026-08-31 QQQ/QLD 봉이 거래량 20만(평소 3,400만)으로 적재됨. 적재가 ON CONFLICT DO NOTHING(ADR-002 원본 불변)이고 `ingest_us_daily` 증분이 마지막 저장일에서 멈추므로 **미완성 봉은 자동 교체되지 않고 영구 잔존한다**. 미국 수집은 미 장마감 확정 후에만 당일 봉을 저장해야 한다. (근거: DB `ohlcv_daily` 실데이터, [docs/us-transfer-study-20260831.md](docs/us-transfer-study-20260831.md) §4)

@@ -9,4 +9,5 @@
 | [formula-verification-20260828.md](formula-verification-20260828.md) | 운영자 | 알고리즘 계산 공식 전수 검증 — 치명 2·중 10건 수정 내역 |
 | [entry-gate-study-20260829.md](entry-gate-study-20260829.md) | 운영자 | 위험 극단 시 매수 정지 게이트 검토 — 미채택 실증 |
 | [us-backtest-20260831.md](us-backtest-20260831.md) | 운영자 | 미국 시장 이식 백테스트 (QQQ+QLD / QQQ+TQQQ, 배율 보정 검증) |
-| [regime-buffer-study-20260831.md](regime-buffer-study-20260831.md) | 운영자 | 절제 ③ 후속 — v1 복귀·완충 확대 기각, MA200 이탈 완충 후보 제시 |
+| [regime-buffer-study-20260831.md](regime-buffer-study-20260831.md) | 운영자 | 절제 ③ 후속 — v1 복귀·완충 확대 기각, MA200 이탈 완충 ε=2% 권고 (3차 검증 완료) |
+| [us-transfer-study-20260831.md](us-transfer-study-20260831.md) | 운영자 | 한·미 동일 알고리즘 적용 검증 — 파라미터 고원 확인, 세금·환율·운영 선결 조건 |
