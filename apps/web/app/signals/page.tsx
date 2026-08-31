@@ -91,9 +91,9 @@ function SignalsPage() {
   const sp = useSearchParams();
   const market = marketOf(sp);
   const fm = (v: number) => fmtMoneyM(market, v);
+  const fpx = (v: number) => fmtPriceM(market, v);
   const NAME_X = market === "US" ? NAME_US : NAME_KR;
   const IND_ROWS = indRows(NAME_X.K200, fpx);
-  const fpx = (v: number) => fmtPriceM(market, v);
   const [sig, setSig] = useState<Signal | null>(null);
   const [myCapital, setMyCapital] = useState("");
   const [portfolios, setPortfolios] = useState<PortfolioItem[]>([]);
