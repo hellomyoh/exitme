@@ -160,7 +160,7 @@ def run_backtest_job(bt_id: int) -> dict:
 
     import redis as sync_redis
 
-    from app.backtests import CANCEL_KEY, PROGRESS_CH, PROGRESS_KEY, load_bars_with_warmup, pair_from_params, params_from_job
+    from app.backtests import CANCEL_KEY, PROGRESS_CH, PROGRESS_KEY, load_bars_with_warmup, pair_from_params, params_from_job, params_signature
     from app.db import SessionLocal
     from app.models import Backtest, BacktestEquity
     from app.strategy.backtest import Cancelled, run_backtest
@@ -190,7 +190,7 @@ def run_backtest_job(bt_id: int) -> dict:
                 codes=pair_from_params(p),
             )
             bt.status = "RUNNING"
-            bt.data_fingerprint = fp
+            bt.data_fingerprint = f"{fp}|{params_signature(p)}"
             session.commit()
             publish({"id": bt_id, "status": "RUNNING", "progress": 0})
 

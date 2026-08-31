@@ -153,11 +153,24 @@ def load_bars_with_warmup(session: Session, date_from: date, date_to: date,
     return bars_200, bars_lev, fp, start_idx
 
 
+def params_signature(p: dict) -> str:
+    """잡의 실효 전략 파라미터 서명 — 기본값 변경도 결과를 바꾸므로 지문에 포함 (2026-09-01 결함 수정).
+
+    이것이 없으면 파라미터 개정 후에도 '동일 조건 재사용'이 개정 전 결과를 돌려주고,
+    기존 기록이 stale 로 표시되지 않는다.
+    """
+    import hashlib
+    from dataclasses import asdict
+
+    d = asdict(params_from_job(p))
+    return hashlib.md5(repr(sorted(d.items())).encode()).hexdigest()[:12]
+
+
 def current_fingerprint(session: Session, params: dict) -> str:
     _, _, fp, _ = load_bars_with_warmup(session, date.fromisoformat(params["date_from"]),
                                         date.fromisoformat(params["date_to"]),
                                         codes=pair_from_params(params))
-    return fp
+    return f"{fp}|{params_signature(params)}"
 
 
 @router.post("/backtests", status_code=202)
@@ -296,7 +309,7 @@ def get_backtest_journal(bt_id: int, user_id: int = Depends(current_user_id),
             "planned": planned,
             "fills": fills_by_date.get(d, []),
         })
-    stale = fp != bt.data_fingerprint
+    stale = f"{fp}|{params_signature(p)}" != bt.data_fingerprint
     return {"id": bt_id, "stale": stale, "items": items}
 
 
