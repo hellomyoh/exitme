@@ -412,7 +412,9 @@ function PortfolioPage() {
         <CardTitle right={<a href={`/signals${market === "US" ? "?market=US" : ""}`} className="text-[13.5px] font-semibold normal-case text-accent">전체 주문표 →</a>}>
           오늘의 주문표 {signal?.status === "OK" && (
             <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}
-              {signal.basis === "portfolio" ? " · 이 포트 보유·현금 기준" : " · 모델 기준"}</span>
+              {signal.basis === "portfolio" && signal.account
+                ? ` · 계산 기준: 보유 ${signal.account.qty_200.toLocaleString()}주/레버 ${signal.account.qty_lev.toLocaleString()}주 · 현금 ${fm(signal.account.cash)}`
+                : " · 모델 기준"}</span>
           )}
         </CardTitle>
         {signal?.status === "OK" && signal.orders && signal.orders.length > 0 ? (
