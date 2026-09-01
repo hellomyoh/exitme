@@ -148,7 +148,7 @@ function SignalsPage() {
 
   return (
     <main>
-      <PageTitle title={`주문표 · ${MARKET_LABEL[market]}`} sub="RAVG v2 전략이 계산한 다음 거래일 주문 — 그리드 매수·익절은 지정가, 축소·레버리지는 시장가. 발주는 본인 HTS에서 직접 수행합니다. 모의 계산이며 투자 권유가 아닙니다." />
+      <PageTitle title={`주문표 · ${MARKET_LABEL[market]}`} sub="RAVG v2.5 전략이 계산한 다음 거래일 주문 — 그리드 매수·익절은 지정가, 축소·레버리지는 시장가. 발주는 본인 HTS에서 직접 수행합니다. 모의 계산이며 투자 권유가 아닙니다." />
 
       {sig.status !== "OK" ? (
         <EmptyState icon="🛰️" title={sig.status === "INSUFFICIENT_HISTORY" ? "데이터 워밍업 중" : "시그널이 아직 없습니다"}

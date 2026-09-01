@@ -1,4 +1,4 @@
-"""RAVG v2 파라미터 — 정본 trade_algorithm_final.md §10 + feature-strategy-engine.md §5 확정값.
+"""RAVG v2.5 파라미터 — 정본 trade_algorithm_final.md §10 + ADR-007 개정 3건 + feature-strategy-engine.md §5 확정값.
 
 절제(ablation) 플래그 5종은 정본 §11 검증 계획 순서와 일치한다.
 플래그 종속성(feature-backtest §5.4): f4 off → 레버리지 규칙 전체 비활성, f2 off → v1 총변동성 공식.

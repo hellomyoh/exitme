@@ -1,8 +1,8 @@
-# Feature: RAVG v2 전략 엔진 (일일 시그널 · 주문표)
+# Feature: RAVG v2.5 전략 엔진 (일일 시그널 · 주문표)
 
 ## 1. 목적
 
-확정된 매매 전략 RAVG v2([정본](../SOURCES/trade_algorithm_final.md), [ADR-006](../adr/006-ravg-v2-adoption.md))를 매일 장 마감 후 자동 실행해,
+확정된 매매 전략 RAVG v2.5([정본](../SOURCES/trade_algorithm_final.md) + [ADR-007](../adr/007-ravg-v25-adoption.md) 개정 3건, [ADR-006](../adr/006-ravg-v2-adoption.md))를 매일 장 마감 후 자동 실행해,
 다음 거래일의 지정가 주문표와 계산 근거를 사용자에게 제시한다. 본 프로젝트의 차별점.
 
 ## 2. 범위
@@ -158,7 +158,7 @@
 
 ## 14. 참고 ADR
 
-[ADR-005](../adr/005-strategy-single-source.md), [ADR-006](../adr/006-ravg-v2-adoption.md)
+[ADR-005](../adr/005-strategy-single-source.md), [ADR-006](../adr/006-ravg-v2-adoption.md), [ADR-007](../adr/007-ravg-v25-adoption.md)
 
 ## 15. 미결정 사항
 
@@ -176,6 +176,8 @@
 - 실주문 API 연동(v2 이후) 시 조건부 지시문의 자동 실행 재설계
 
 ### 파라미터 변경 이력
+
+- 2026-09-01 | 전략 명칭 **RAVG v2.5** 채택 ([ADR-007](../adr/007-ravg-v25-adoption.md), 사용자 승인). 규칙·파라미터 변경 없음 — 2026-08-31 확정 개정 3건(아래)의 명명·권위 정리.
 
 - 2026-08-31 | `ma200_exit_buffer` **0.02 신설** (사용자 승인). BULL/BEAR 이탈의 MA200 다리 히스테리시스 — regime-buffer-study 3중 검증(KOSPI FULL +140→+163%, US OOS 샤프 0.90→1.00, t_OOS +2.68) 통과.
 - 2026-08-31 | `target_downside_vol` 0.13 → **0.20** (사용자 승인). 근거: KR IS·OOS 동시 개선(OOS +114→+165%, 샤프 1.32→1.47, t_OOS +3.02), 10년 MDD 불변(−26%). 미국은 FULL 개선·OOS 중립. 노출 상향으로 국면별 낙폭은 커질 수 있음을 명시(1년 표본 −13.6→−17.0%).

@@ -8,3 +8,4 @@
 | [ADR-004](004-market-data-source.md) | 시세 소스 KIS 주 + pykrx 보조 | Accepted | 외부 연동 | feature-market-data.md |
 | [ADR-005](005-strategy-single-source.md) | 전략 코드 단일 소스 | Accepted | 아키텍처·테스트 전략 | feature-strategy-engine.md, feature-backtest.md |
 | [ADR-006](006-ravg-v2-adoption.md) | RAVG v2 전략 채택과 정본 규칙 | Accepted | 전략·도메인 | feature-strategy-engine.md, feature-backtest.md |
+| [ADR-007](007-ravg-v25-adoption.md) | RAVG v2.5 명명 — 정본 v2에 대한 확정 개정 3건 고정 | Accepted | 전략·도메인 | feature-strategy-engine.md, feature-backtest.md |

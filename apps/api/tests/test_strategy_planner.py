@@ -1,4 +1,4 @@
-"""RAVG v2 플래너 테스트 — feature-strategy-engine.md §12 골든·경계 케이스.
+"""RAVG v2.5 플래너 테스트 — feature-strategy-engine.md §12 골든·경계 케이스.
 
 Market 를 직접 구성해 지표값을 정밀 제어한다 (지표 계산 자체는 test_indicators.py 가 검증).
 골든 수치 출처: G1·G2 는 SOURCES/basic_trade.md §5 예시(정본 v2 clip 0.8~4.0% 내부값으로 유효).
