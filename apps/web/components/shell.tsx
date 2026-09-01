@@ -1,14 +1,42 @@
 "use client";
 
-/** 앱 셸 — 로그인 화면(/login)에서는 사이드바·안내문 없이 로그인 폼만 표시 (2026-08-31 지시). */
-import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+/** 앱 셸 — 로그인 화면(/login)에서는 사이드바 없이 로그인 폼만 표시 (2026-08-31 지시).
+ *  인증 게이트: 세션 확인이 끝나기 전에는 페이지 콘텐츠를 렌더하지 않는다 —
+ *  비로그인 상태에서 대시보드가 잠깐 노출되던 결함 수정 (2026-09-01 지시). */
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState, type ReactNode } from "react";
+import { ensureSession } from "../lib/api";
 import NavBar from "./nav";
 
 export default function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
+  // null = 확인 중(첫 진입에서만 화면 차단), true = 인증됨
+  const [authed, setAuthed] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (pathname === "/login") return;
+    let alive = true;
+    void ensureSession().then((ok) => {
+      if (!alive) return;
+      if (ok) setAuthed(true);
+      else router.replace("/login");  // 미인증 — 콘텐츠를 그린 적 없이 이동
+    });
+    return () => { alive = false; };
+  }, [pathname, router]);
+
   if (pathname === "/login") {
     return <div className="flex min-h-screen items-center justify-center px-5">{children}</div>;
+  }
+  if (authed !== true) {
+    // 세션 확인 완료 전 — 대시보드 등 콘텐츠 노출 금지 (짧은 빈 화면 + 로고)
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <span className="flex items-center gap-2 text-[15px] font-bold text-faint">
+          <span className="inline-block h-2.5 w-2.5 animate-pulse rounded-sm bg-accent" />ExitMe
+        </span>
+      </div>
+    );
   }
   return (
     <>
