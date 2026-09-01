@@ -232,3 +232,8 @@
 - 작업 내용: (1) 공개 가입 차단 — 로그인 화면 가입 버튼 제거 + `/auth/register` 기본 403 (`ALLOW_OPEN_REGISTRATION`, 테스트만 개방). 로그인 ID 는 이메일 형식 강제 해제(아이디 로그인). (2) 기본 관리자 부트스트랩 — 기동 시 `myoh`(is_admin) 자동 생성(멱등, 0010 마이그레이션: is_admin·must_change_password). (3) **계정 관리 메뉴**(관리자 전용, 사이드바 조건 노출) — 아이디/임시 비밀번호 지정 발급 + 목록(권한·첫 로그인 대기 상태). (4) 발급 계정 첫 로그인 강제 변경 — 로그인 응답 플래그 → 설정 화면 고정(셸 게이트, 다른 메뉴 진입 시 리디렉션), 비밀번호 변경 시 해제·대시보드 진입.
 - 테스트: 관리자 플로우 회귀 1종 신규 — api **128 passed**. 스모크: 가입 403·admin 로그인·발급·첫 로그인 True·변경 후 해제·비관리자 403.
 - Git commit: feat: admin-managed accounts with forced first-login password change
+
+## [2026-09-01] docs | 분봉 체결 검증 완료 — 일봉 가정 오차 0.000%p (사용자 지시)
+
+- 작업 내용: 지정가 체결만 1분봉 순서로 재생하는 대조 실행기로 1년(243일) 검증 — 수익·MDD·체결 80건 완전 일치(평가액 괴리 최대 111원). 부수 발견: 분봉(수정주가) vs 일봉(원주가) 가격 기준 불일치(계단형 분배락) — 무보정 시 +13.9%p 허위 개선. 상세: docs/minute-fill-study-20260901.md. TODO 완료 처리.
+- Git commit: docs: minute-fill validation study
