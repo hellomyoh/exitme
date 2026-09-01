@@ -218,7 +218,7 @@ function SimulatorPage() {
 
   return (
     <main>
-      <PageTitle title={`시뮬레이터 · ${MARKET_LABEL[market]}`} sub="RAVG v2 백테스트 — 조건 설정 → 실행 → 결과. 모의 계산이며 투자 권유가 아닙니다." />
+      <PageTitle title={`시뮬레이터 · ${MARKET_LABEL[market]}`} sub="RAVG v2.5 백테스트 — 조건 설정 → 실행 → 결과. 모의 계산이며 투자 권유가 아닙니다." />
 
       {/* 스텝 인디케이터 */}
       <div className="mb-5 flex items-center gap-2 text-[13px]">
@@ -346,7 +346,7 @@ function SimulatorPage() {
                 <span>자본금 <b className="text-ink">{p.capital != null ? fm(p.capital) : "—"}</b></span>
                 <span>{offFlags.length > 0
                   ? <span className="text-warn">절제 OFF: {offFlags.join(", ")}</span>
-                  : "전 모듈 ON (RAVG v2 기본)"}</span>
+                  : "전 모듈 ON (RAVG v2.5 기본)"}</span>
               </div>
             );
           })()}
@@ -389,7 +389,7 @@ function SimulatorPage() {
             }>자산곡선 <span className="normal-case text-faint">· 초기자본 = 100 정규화</span></CardTitle>
             <div ref={chartRef} className="h-96" />
             <p className="mt-2 text-[12.5px] leading-relaxed text-faint">
-              <b className="text-muted">전략 수익</b> = RAVG v2를 따랐을 때의 자산 곡선 ·
+              <b className="text-muted">전략 수익</b> = RAVG v2.5를 따랐을 때의 자산 곡선 ·
               <b className="text-muted"> 매수보유 수익</b> = 같은 돈으로 종목을 사서 계속 들고 있었을 때(벤치마크, 같은 축 비교용) ·
               <b className="text-muted"> 종목 추세</b> = 종목 가격 흐름(하단 별도 영역이라 수익 곡선을 가리지 않음).
               체크박스로 켜고 끌 수 있습니다.

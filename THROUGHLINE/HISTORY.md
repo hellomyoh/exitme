@@ -220,3 +220,9 @@
 - 작업 내용: features/feature-us-trendfilter.md 참조 — TF 엔진 신설(trendfilter.py, BacktestResult 재사용), run_engine 디스패치(잡·저널·전환·워커), 미국 신호/포트 주문표 TF 교체(전량 매수/현금, 기준선 지시문), 시뮬레이터 미국 기본 옵션 QQQ_TF(RAVG 페어는 비교용 레거시), 주문 라벨 추세 진입/이탈. 부수 수정: 워커 결과 저장 직전 잠금 재획득 — RUNNING 커밋으로 풀린 잠금 탓에 동시 실행이 equity 중복 삽입하던 결함.
 - 테스트: TF 단위 4종 신규, api **127 passed**. E2E: QQQ_TF 잡 +609.2%(2010~)·저널·포트 주문표 확인.
 - Git commit: feat: US market switches to trend-filter strategy
+
+## [2026-09-01] change | 전략 명칭 RAVG v2.5 채택 (ADR-007, 사용자 승인)
+
+- 작업 내용: 2026-08-31 확정 개정 3건(σ청산 35%·목표σ 0.20은 정본 §10 튜닝 범위, `ma200_exit_buffer` ε=2%는 §4 상태머신 구조 변경) 중 ε 신설이 정본 튜닝 표 밖의 규칙 추가이고 성과 프로파일이 크게 달라져(10년 +140.2→+230.8%, MDD −26.0→−20.6%, 샤프 0.84→0.98) 버전 경계가 필요하다고 검토 — 사용자 결정으로 **v2.5** 채택. [ADR-007](adr/007-ravg-v25-adoption.md) 신설(개정 목록 고정·권위 체인 = 정본+ADR-007 > feature), 명칭 스윕(웹 UI 6곳·전략 모듈 독스트링 3곳·README/AGENTS·가이드 3종·feature 2종·인덱스). 정본·과거 일자 리포트·discussion 로그는 소급 개명하지 않음. 엔진 동작·파라미터 기본값 변경 없음.
+- 테스트 결과: api 124 passed / 3 failed — 전부 사전 존재(변경 전 코드로 재현 확인): `test_from_backtest_conversion_seeds_state`(시딩 데이터 의존 equity 괴리), ws·journal 2건은 전체 실행에서만 실패하는 격리 문제(단독·부분 실행 통과). 전략 스위트(planner·backtest·signals) 전부 green. web tsc 무오류.
+- Git commit: change: adopt RAVG v2.5 designation (ADR-007, user approved)

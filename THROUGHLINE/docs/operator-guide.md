@@ -9,7 +9,7 @@
 
 ## 일일 배치
 
-- Celery beat이 장 마감 후 자동 실행: 시세 수집 → 검증 → 적재 → RAVG v2 시그널 배치 → 주문표 발행 (목표: 30분 내).
+- Celery beat이 장 마감 후 자동 실행: 시세 수집 → 검증 → 적재 → RAVG v2.5 시그널 배치 → 주문표 발행 (목표: 30분 내).
 - 상태는 `batch_runs` 테이블과 구조화 로그(`docker compose logs scheduler worker`)로 확인합니다.
 
 ## 장애 대응

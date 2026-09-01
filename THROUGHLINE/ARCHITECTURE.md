@@ -16,7 +16,7 @@ Browser (Next.js SPA)
         → PostgreSQL 16 + TimescaleDB (OHLCV·시그널·계좌·포트)
         → Redis 7 (캐시 · Celery 브로커 · Pub/Sub)
         → Celery worker    : 백테스트 엔진 (pandas/vectorbt)
-        → Celery beat      : 시세 수집 배치 + RAVG v2 일일 시그널 배치
+        → Celery beat      : 시세 수집 배치 + RAVG v2.5 일일 시그널 배치
             → 외부 시세: KIS Open API (주) + pykrx (보조)
 ```
 

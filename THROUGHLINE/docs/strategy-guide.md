@@ -1,6 +1,6 @@
-# RAVG v2 전략 가이드
+# RAVG v2.5 전략 가이드
 
-주문표가 왜 그런 주문을 내는지 이해하기 위한 문서입니다. 규칙의 정본은 [trade_algorithm_final.md](../SOURCES/trade_algorithm_final.md)입니다.
+주문표가 왜 그런 주문을 내는지 이해하기 위한 문서입니다. 규칙의 정본은 [trade_algorithm_final.md](../SOURCES/trade_algorithm_final.md)이고, v2.5 확정 개정 3건은 [ADR-007](../adr/007-ravg-v25-adoption.md)에 있습니다.
 
 > 이 전략은 최대 수익이 아니라 위험 대비 효율을 목표로 합니다. 모든 수치는 투자 권유가 아닙니다.
 

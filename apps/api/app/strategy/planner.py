@@ -1,4 +1,4 @@
-"""RAVG v2 플래너 — 하루치 신호·주문표 생성 (순수 함수, ADR-005).
+"""RAVG v2.5 플래너 — 하루치 신호·주문표 생성 (순수 함수, ADR-005).
 
 백테스트와 일일 시그널 엔진이 이 모듈을 공유한다.
 규칙 정본: SOURCES/trade_algorithm_final.md / 구현 확정: features/feature-strategy-engine.md §5.
