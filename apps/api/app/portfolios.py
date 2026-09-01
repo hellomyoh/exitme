@@ -363,13 +363,15 @@ def list_transactions(portfolio_id: int | None = None, limit: int = 500,
 class PortfolioIn(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     market: str = Field(default="KR", pattern="^(KR|US)$")
+    code_200: str | None = Field(default=None, pattern="^(069500|102110)$")  # KR 주력 ETF (기본 TIGER, 2026-09-01)
 
 
 @router.post("/portfolios", status_code=201)
 def create_portfolio(body: PortfolioIn, user_id: int = Depends(current_user_id),
                      session: Session = Depends(get_session)) -> dict:
     """실전매매 포트 추가 — 여러 실전매매 동시 진행 (2026-08-28 지시)."""
-    pf = TradePortfolio(user_id=user_id, name=body.name, kind="manual", market=body.market)
+    pf = TradePortfolio(user_id=user_id, name=body.name, kind="manual", market=body.market,
+                        params={"code_200": body.code_200} if body.code_200 else None)
     session.add(pf)
     session.commit()
     return {"id": pf.id, "name": pf.name, "market": pf.market}

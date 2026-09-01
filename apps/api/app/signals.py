@@ -118,7 +118,13 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
             session.get(Instrument, l.instrument_id).code
             for l in session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pid)).all()
         }
-        code_200 = "102110" if "102110" in held and "069500" not in held else "069500"
+        pref = (pf_row.params or {}).get("code_200") if pf_row.params else None
+        if "102110" in held and "069500" not in held:
+            code_200 = "102110"
+        elif "069500" in held:
+            code_200 = "069500"
+        else:
+            code_200 = pref or "069500"  # 보유 없으면 생성 시 선택한 조합 (기존 포트는 KODEX 유지)
         etf, codes = ("TIGER" if code_200 == "102110" else "KODEX"), (code_200, "122630")
     algo = user_algo_overrides(session, user_id)
     bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1), codes=codes)
