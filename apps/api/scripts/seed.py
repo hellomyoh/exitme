@@ -30,6 +30,7 @@ logger = logging.getLogger("seed")
 
 DEFAULT_CODES = {
     "069500": ("KODEX 200", "KOSPI"),
+    "102110": ("TIGER 200", "KOSPI"),   # 주력 ETF 선택지 — 누락 시 보유분 등록이 실패 (2026-09-01 원격 결함)
     "122630": ("KODEX 레버리지", "KOSPI"),
 }
 KNOWN_NAMES = {
