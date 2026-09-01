@@ -97,6 +97,7 @@ function PortfolioPage() {
       // 미국은 기본 계좌 개념 없음 — 첫 미국 포트 자동 선택, 없으면 시작 패널만
       if (mine.length === 0) { setSum(null); setSignal(null); setJournal([]); setCurve([]); return; }
       sid = mine[0].id;
+      setPid(sid);  // 표시 포트 = 등록 대상 포트 일치 보장 (2026-09-01 결함 수정: 등록이 KR 기본계좌로 새던 문제)
     }
     const res = await apiFetch(`/portfolio/summary${sid ? `?portfolio_id=${sid}` : ""}`);
     if (res.ok) {
@@ -195,7 +196,14 @@ function PortfolioPage() {
             if (items.length) price = items[items.length - 1].close;
           }
         }
-        if (price > 0) withPrice.push({ code: h.code, qty, price });
+        if (price > 0) {
+          withPrice.push({ code: h.code, qty, price });
+        } else {
+          // 시세 미확보 행을 조용히 버리면 일부 종목만 등록되는 사고 — 중단하고 알림 (2026-09-01 결함 수정)
+          window.alert(`${h.code} 의 최근 종가를 찾을 수 없습니다 — 평단을 직접 입력하거나 시세 적재 후 다시 시도하세요. (아무 것도 등록되지 않았습니다)`);
+          await apiFetch(`/portfolios/${id}`, { method: "DELETE" });  // 빈 포트 롤백
+          return;
+        }
       }
       const rows = withPrice;
       const cost = rows.reduce((a, h) => a + h.qty * h.price, 0);
