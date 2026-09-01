@@ -32,7 +32,7 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; account?: { qty_200: number; qty_lev: number; cash: number } };
+type Signal = { status: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number } };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -125,8 +125,8 @@ function PortfolioPage() {
   useEffect(() => { setPid(null); }, [market]);  // 마켓 전환 시 선택 초기화
 
   function prefillFill(o: { instrument: string; side: string; qty: number; price: number | null; kind: string }, date?: string) {
-    const code200 = market === "US" ? "QQQ"
-      : sum?.positions.find((pp) => pp.code === "102110") ? "102110" : "069500";
+    const code200 = signal?.code_200
+      ?? (market === "US" ? "QQQ" : sum?.positions.find((pp) => pp.code === "102110") ? "102110" : "069500");
     const codeLev = market === "US"
       ? (sum?.positions.find((pp) => pp.code === "TQQQ") ? "TQQQ" : "QLD") : "122630";
     setForm({ kind: o.side, code: o.instrument === "LEV" ? codeLev : code200,
@@ -446,7 +446,7 @@ function PortfolioPage() {
                 {signal.orders.map((o, i) => (
                   <tr key={i} className="border-b border-line/50 last:border-0">
                     <td className="py-2"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge></td>
-                    <td className="py-2">{o.instrument === "K200" ? (market === "US" ? "QQQ" : "KODEX 200") : (market === "US" ? "레버리지(QLD/TQQQ)" : "KODEX 레버리지")}</td>
+                    <td className="py-2">{o.instrument === "K200" ? (signal?.name_200 ?? (market === "US" ? "QQQ" : "KODEX 200")) : (market === "US" ? "레버리지(QLD/TQQQ)" : "KODEX 레버리지")}</td>
                     <td className={`py-2 font-bold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
                     <td className="table-num py-2 font-semibold">
                       {o.price

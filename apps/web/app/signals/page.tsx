@@ -12,7 +12,7 @@ import { Badge, Callout, Card, CardTitle, EmptyState, fmtNum, fmtPct, GaugeBar, 
 
 type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
 type Signal = {
-  status: string; strategy?: string; reason?: string; trade_date?: string; version?: number; regime?: string;
+  status: string; strategy?: string; name_200?: string; code_200?: string; reason?: string; trade_date?: string; version?: number; regime?: string;
   e_target?: number; w_200?: number; w_lev?: number; gap_cancel_below?: number;
   indicators?: Record<string, number>; orders?: OrderRow[];
   basis?: "model" | "portfolio";
@@ -290,7 +290,7 @@ function SignalsPage() {
                     {sig.orders.map((o, i) => (
                       <tr key={i} className="border-b border-line/50 transition-colors last:border-0 hover:bg-inset">
                         <td className="py-3"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{KIND_KO[o.kind] ?? o.kind}</Badge></td>
-                        <td className="py-3 font-medium">{NAME_X[o.instrument]}</td>
+                        <td className="py-3 font-medium">{o.instrument === "K200" && sig.name_200 ? sig.name_200 : NAME_X[o.instrument]}</td>
                         <td className={`py-3 font-bold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
                         <td className="table-num py-3 font-semibold">
                           {o.price

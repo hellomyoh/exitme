@@ -113,12 +113,15 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
         etf = "QQQ_TQQQ" if "TQQQ" in held_codes else "QQQ_QLD"
         codes = ("QQQ", "TQQQ" if "TQQQ" in held_codes else "QLD")
     else:
-        etf, codes = "KODEX", (None, None)
+        # KR: 보유 중인 200 레그 종목을 주력으로 — TIGER 보유자는 TIGER 가격 기준 주문 (2026-09-01 지시)
+        held = {
+            session.get(Instrument, l.instrument_id).code
+            for l in session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pid)).all()
+        }
+        code_200 = "102110" if "102110" in held and "069500" not in held else "069500"
+        etf, codes = ("TIGER" if code_200 == "102110" else "KODEX"), (code_200, "122630")
     algo = user_algo_overrides(session, user_id)
-    if codes[0]:
-        bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1), codes=codes)
-    else:
-        bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1))
+    bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1), codes=codes)
     params = Params(**{**base_costs_for(etf), **algo})
     result = run_backtest(bars_200, bars_lev, MODEL_CAPITAL, params)
     regime = Regime(result.regimes[-1])  # 시장 레짐은 가격만의 함수 — 포트와 무관
@@ -185,6 +188,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
                            "qty": o.qty, "price": o.price, "kind": o.kind}
     out = {
         "basis": "portfolio", "portfolio": {"id": pf_row.id, "name": pf_row.name},
+        "code_200": codes[0], "name_200": {"069500": "KODEX 200", "102110": "TIGER 200", "QQQ": "QQQ"}.get(codes[0], codes[0]),
         "account": {"cash": cash, "qty_200": qty_200, "qty_lev": qty_lev,
                     "equity": round(user_pf.equity(m200.closes[last], mlev.closes[last]))},
         "orders": list(merged.values()),
