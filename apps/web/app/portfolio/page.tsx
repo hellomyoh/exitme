@@ -2,6 +2,7 @@
 
 /** 실전매매 — 현황·보유·수익률 + 오늘의 주문표(체결 등록) + 일자별 매매 일지 (feature-portfolio §9, 2026-08-29 개편). */
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createChart, IChartApi, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
@@ -409,7 +410,7 @@ function PortfolioPage() {
 
       {/* 오늘의 주문표 (2026-08-28 지시 — 실전매매 중간 섹션) */}
       <Card className="mb-4">
-        <CardTitle right={<a href={`/signals${market === "US" ? "?market=US" : ""}`} className="text-[13.5px] font-semibold normal-case text-accent">전체 주문표 →</a>}>
+        <CardTitle right={<Link href={`/signals${market === "US" ? "?market=US" : ""}`} className="text-[13.5px] font-semibold normal-case text-accent">전체 주문표 →</Link>}>
           오늘의 주문표 {signal?.status === "OK" && (
             <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}
               {signal.basis === "portfolio" && signal.account

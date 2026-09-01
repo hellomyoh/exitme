@@ -2,6 +2,7 @@
 
 /** 일반 설정 — 비밀번호 변경·세션·로그아웃 (2026-08-31 지시). */
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiFetch, logout as apiLogout } from "../../lib/api";
 import { Callout, Card, CardTitle, PageTitle } from "../../components/ui";
@@ -68,7 +69,7 @@ export default function SettingsPage() {
       </Card>
       <Callout icon="ℹ️">
         아이디(이메일) 변경은 지원하지 않습니다 — 새 계정을 만들어 사용하세요.
-        알고리즘 상수는 <a href="/settings/algorithm" className="font-semibold text-accent">알고리즘 설정</a>에서 변경합니다.
+        알고리즘 상수는 <Link href="/settings/algorithm" className="font-semibold text-accent">알고리즘 설정</Link>에서 변경합니다.
       </Callout>
     </main>
   );
