@@ -3,7 +3,7 @@
 /** 로그인/가입 — access는 메모리, refresh는 httpOnly 쿠키 (ADR-003). */
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { login, register } from "../../lib/api";
+import { login } from "../../lib/api";
 import { Card } from "../../components/ui";
 
 export default function LoginPage() {
@@ -18,15 +18,14 @@ export default function LoginPage() {
   });
   const [busy, setBusy] = useState(false);
 
-  async function submit(kind: "login" | "register") {
+  async function submit() {
     setBusy(true);
     setMsg("");
-    const ok = kind === "login" ? await login(email, password) : await register(email, password);
+    const r = await login(email, password);
     setBusy(false);
-    if (ok) router.push("/dashboard");
-    else setMsg(kind === "login"
-      ? "로그인 실패 — 이메일/비밀번호를 확인하세요"
-      : "가입 실패 — 이미 등록된 이메일이거나 비밀번호가 8자 미만입니다");
+    if (!r.ok) { setMsg("로그인 실패 — 아이디/비밀번호를 확인하세요"); return; }
+    // 발급 계정 첫 로그인 — 비밀번호 변경 강제 (2026-09-01 지시)
+    router.push(r.mustChangePassword ? "/settings?force_pw=1" : "/dashboard");
   }
 
   return (
@@ -37,15 +36,14 @@ export default function LoginPage() {
           <h1 className="text-lg font-extrabold tracking-tight">ExitMe</h1>
         </div>
         <div className="grid gap-3">
-          <label className="grid gap-1.5 text-xs text-faint">이메일
-            <input className="input" placeholder="you@example.com" value={email}
+          <label className="grid gap-1.5 text-xs text-faint">아이디
+            <input className="input" value={email}
               onChange={(e) => setEmail(e.target.value)} /></label>
-          <label className="grid gap-1.5 text-xs text-faint">비밀번호 (8자 이상)
+          <label className="grid gap-1.5 text-xs text-faint">비밀번호
             <input className="input" type="password" value={password}
-              onKeyDown={(e) => e.key === "Enter" && void submit("login")}
+              onKeyDown={(e) => e.key === "Enter" && void submit()}
               onChange={(e) => setPassword(e.target.value)} /></label>
-          <button className="btn btn-primary mt-1" disabled={busy} onClick={() => void submit("login")}>로그인</button>
-          <button className="btn" disabled={busy} onClick={() => void submit("register")}>새 계정 가입</button>
+          <button className="btn btn-primary mt-1" disabled={busy} onClick={() => void submit()}>로그인</button>
           {msg && <p className="text-[13px] text-up">{msg}</p>}
         </div>
       </Card>

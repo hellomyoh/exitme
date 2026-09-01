@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
 
     jwt_secret: str = "change-me"
+    allow_open_registration: bool = False  # 계정은 관리자 발급 원칙 (2026-09-01) — 테스트에서만 env 로 개방
     encryption_key: str = "change-me-32bytes-base64"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
