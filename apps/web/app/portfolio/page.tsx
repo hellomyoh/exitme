@@ -212,9 +212,15 @@ function PortfolioPage() {
           portfolio_id: id, kind: "deposit", amount: cash + cost, executed_at: now, memo: "시작 입금 (현금+보유 원가)" }) });
       }
       for (const h of rows) {
-        await apiFetch("/positions", { method: "POST", body: JSON.stringify({
+        const res = await apiFetch("/positions", { method: "POST", body: JSON.stringify({
           portfolio_id: id, kind: "buy", code: h.code, qty: h.qty, price: h.price,
           executed_at: now, memo: "보유분 등록" }) });
+        if (!res.ok) {
+          // 등록 실패를 삼키면 일부 종목만 저장됨 (2026-09-01 원격 결함) — 알리고 중단
+          const detail = ((await res.json().catch(() => ({}))) as { detail?: string }).detail;
+          window.alert(`${h.code} 등록 실패: ${detail ?? res.status} — 이 종목부터 등록되지 않았습니다. 시세 시딩 상태를 확인하세요.`);
+          break;
+        }
       }
     }
     setShowStart(false); setNewName(""); setStartCash("");
