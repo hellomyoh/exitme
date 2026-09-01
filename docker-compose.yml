@@ -49,6 +49,7 @@ services:
 
   worker:
     image: stocklab-api
+    pull_policy: never   # 로컬 빌드 태그 전용 — 레지스트리 pull 금지 (2026-09-01 원격 배포 결함)
     env_file: .env
     environment:
       - SERVICE_ROLE=worker
@@ -66,6 +67,7 @@ services:
 
   scheduler:
     image: stocklab-api
+    pull_policy: never   # 로컬 빌드 태그 전용 — 레지스트리 pull 금지 (2026-09-01 원격 배포 결함)
     env_file: .env
     environment:
       - SERVICE_ROLE=scheduler
