@@ -20,6 +20,19 @@ from app.settings import router as settings_router
 from app.signals import router as signals_router
 
 app = FastAPI(title="ExitMe API", version="0.1.0")
+
+
+@app.on_event("startup")
+def _bootstrap_admin() -> None:
+    """기본 관리자(myoh) 보증 — 테이블이 아직 없으면(첫 마이그레이션 전) 건너뜀."""
+    from app.auth import ensure_admin_account
+    from app.db import SessionLocal
+
+    try:
+        with SessionLocal() as s:
+            ensure_admin_account(s)
+    except Exception:
+        pass
 app.include_router(quotes_router)
 app.include_router(auth_router)
 app.include_router(charts_router)

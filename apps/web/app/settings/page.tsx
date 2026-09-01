@@ -20,7 +20,11 @@ export default function SettingsPage() {
     const res = await apiFetch("/auth/change-password", {
       method: "POST", body: JSON.stringify({ current_password: cur, new_password: pw1 }),
     });
-    if (res.ok) { setMsg("✅ 변경되었습니다 — 다음 로그인부터 새 비밀번호를 사용하세요"); setCur(""); setPw1(""); setPw2(""); }
+    if (res.ok) {
+      setMsg("✅ 변경되었습니다");
+      setCur(""); setPw1(""); setPw2("");
+      if (new URLSearchParams(window.location.search).get("force_pw") === "1") router.push("/dashboard");
+    }
     else setMsg(((await res.json()) as { detail?: string }).detail ?? `변경 실패 (${res.status})`);
   }
 
@@ -28,9 +32,17 @@ export default function SettingsPage() {
     void apiLogout().then(() => router.push("/login"));
   }
 
+  const forcePw = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("force_pw") === "1";
   return (
     <main>
       <PageTitle title="일반 설정" sub="계정·세션 관리" />
+      {forcePw && (
+        <Callout icon="🔐">
+          <b className="text-ink">첫 로그인입니다 — 비밀번호를 변경해야 다른 메뉴를 사용할 수 있습니다.</b>{" "}
+          아래에서 현재(임시) 비밀번호와 새 비밀번호를 입력하세요.
+        </Callout>
+      )}
+      <div className="mb-4" />
       <Card className="mb-4 max-w-xl">
         <CardTitle>비밀번호 변경</CardTitle>
         <div className="grid max-w-sm gap-3">

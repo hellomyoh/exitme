@@ -5,9 +5,9 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
-import { ensureSession, logout } from "../lib/api";
+import { ensureSession, fetchMe, logout } from "../lib/api";
 
-type Item = { href: string; label: string; market?: "KR" | "US" };
+type Item = { href: string; label: string; market?: "KR" | "US"; adminOnly?: boolean };
 type Group = { title: string | null; items: Item[] };
 
 const GROUPS: Group[] = [
@@ -28,6 +28,7 @@ const GROUPS: Group[] = [
   { title: "⚙️ 설정", items: [
     { href: "/settings", label: "일반 설정" },
     { href: "/settings/algorithm", label: "알고리즘 설정" },
+    { href: "/settings/accounts", label: "계정 관리", adminOnly: true },
   ]},
 ];
 
@@ -36,8 +37,12 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter();
   const sp = useSearchParams();
   const [loggedIn, setLoggedIn] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   useEffect(() => {
-    void ensureSession().then(setLoggedIn);
+    void ensureSession().then(async (ok) => {
+      setLoggedIn(ok);
+      if (ok) setIsAdmin((await fetchMe())?.is_admin === true);
+    });
   }, [pathname]);
   const curMarket = sp?.get("market") === "US" ? "US" : "KR";
 
@@ -61,7 +66,7 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
             <div className="mb-1 mt-2 px-2 text-[11.5px] font-bold uppercase tracking-wider text-faint">{g.title}</div>
           )}
           <div className="grid gap-0.5">
-            {g.items.map((it) => {
+            {g.items.filter((it) => !it.adminOnly || isAdmin).map((it) => {
               const active = isActive(it);
               // 시뮬레이터·주문표·실전매매는 메뉴 클릭 시 항상 초기 화면으로 — 진행 중 상태 리셋 (2026-09-01 지시)
               const resettable = it.market !== undefined;

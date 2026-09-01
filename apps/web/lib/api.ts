@@ -46,16 +46,25 @@ export async function apiFetch(path: string, init: RequestInit = {}, retry = tru
   return res;
 }
 
-export async function login(email: string, password: string): Promise<boolean> {
+export async function login(email: string, password: string): Promise<{ ok: boolean; mustChangePassword: boolean }> {
   const res = await fetch("/api/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
     credentials: "include",
   });
-  if (!res.ok) return false;
-  accessToken = ((await res.json()) as { access_token: string }).access_token;
-  return true;
+  if (!res.ok) return { ok: false, mustChangePassword: false };
+  const body = (await res.json()) as { access_token: string; must_change_password?: boolean };
+  accessToken = body.access_token;
+  return { ok: true, mustChangePassword: body.must_change_password === true };
+}
+
+export type Me = { id: number; login: string; is_admin: boolean; must_change_password: boolean };
+
+/** 현재 사용자 정보 — 미인증이면 null. */
+export async function fetchMe(): Promise<Me | null> {
+  const res = await apiFetch("/auth/me");
+  return res.ok ? ((await res.json()) as Me) : null;
 }
 
 export async function register(email: string, password: string): Promise<boolean> {

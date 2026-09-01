@@ -226,3 +226,9 @@
 - 작업 내용: 2026-08-31 확정 개정 3건(σ청산 35%·목표σ 0.20은 정본 §10 튜닝 범위, `ma200_exit_buffer` ε=2%는 §4 상태머신 구조 변경) 중 ε 신설이 정본 튜닝 표 밖의 규칙 추가이고 성과 프로파일이 크게 달라져(10년 +140.2→+230.8%, MDD −26.0→−20.6%, 샤프 0.84→0.98) 버전 경계가 필요하다고 검토 — 사용자 결정으로 **v2.5** 채택. [ADR-007](adr/007-ravg-v25-adoption.md) 신설(개정 목록 고정·권위 체인 = 정본+ADR-007 > feature), 명칭 스윕(웹 UI 6곳·전략 모듈 독스트링 3곳·README/AGENTS·가이드 3종·feature 2종·인덱스). 정본·과거 일자 리포트·discussion 로그는 소급 개명하지 않음. 엔진 동작·파라미터 기본값 변경 없음.
 - 테스트 결과: api 124 passed / 3 failed — 전부 사전 존재(변경 전 코드로 재현 확인): `test_from_backtest_conversion_seeds_state`(시딩 데이터 의존 equity 괴리), ws·journal 2건은 전체 실행에서만 실패하는 격리 문제(단독·부분 실행 통과). 전략 스위트(planner·backtest·signals) 전부 green. web tsc 무오류.
 - Git commit: change: adopt RAVG v2.5 designation (ADR-007, user approved)
+
+## [2026-09-01] feat | 관리자 계정 체계 — 공개 가입 차단·계정 발급·첫 로그인 강제 변경 (사용자 지시)
+
+- 작업 내용: (1) 공개 가입 차단 — 로그인 화면 가입 버튼 제거 + `/auth/register` 기본 403 (`ALLOW_OPEN_REGISTRATION`, 테스트만 개방). 로그인 ID 는 이메일 형식 강제 해제(아이디 로그인). (2) 기본 관리자 부트스트랩 — 기동 시 `myoh`(is_admin) 자동 생성(멱등, 0010 마이그레이션: is_admin·must_change_password). (3) **계정 관리 메뉴**(관리자 전용, 사이드바 조건 노출) — 아이디/임시 비밀번호 지정 발급 + 목록(권한·첫 로그인 대기 상태). (4) 발급 계정 첫 로그인 강제 변경 — 로그인 응답 플래그 → 설정 화면 고정(셸 게이트, 다른 메뉴 진입 시 리디렉션), 비밀번호 변경 시 해제·대시보드 진입.
+- 테스트: 관리자 플로우 회귀 1종 신규 — api **128 passed**. 스모크: 가입 403·admin 로그인·발급·첫 로그인 True·변경 후 해제·비관리자 403.
+- Git commit: feat: admin-managed accounts with forced first-login password change

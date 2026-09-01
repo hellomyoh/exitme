@@ -5,7 +5,7 @@
  *  비로그인 상태에서 대시보드가 잠깐 노출되던 결함 수정 (2026-09-01 지시). */
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { ensureSession } from "../lib/api";
+import { ensureSession, fetchMe } from "../lib/api";
 import NavBar from "./nav";
 
 export default function Shell({ children }: { children: ReactNode }) {
@@ -17,10 +17,17 @@ export default function Shell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (pathname === "/login") return;
     let alive = true;
-    void ensureSession().then((ok) => {
+    void ensureSession().then(async (ok) => {
       if (!alive) return;
-      if (ok) setAuthed(true);
-      else router.replace("/login");  // 미인증 — 콘텐츠를 그린 적 없이 이동
+      if (!ok) { router.replace("/login"); return; }  // 미인증 — 콘텐츠를 그린 적 없이 이동
+      // 발급 계정 첫 로그인: 비밀번호 변경 전에는 설정 화면만 허용 (2026-09-01 지시)
+      const me = await fetchMe();
+      if (!alive) return;
+      if (me?.must_change_password && pathname !== "/settings") {
+        router.replace("/settings?force_pw=1");
+        return;
+      }
+      setAuthed(true);
     });
     return () => { alive = false; };
   }, [pathname, router]);

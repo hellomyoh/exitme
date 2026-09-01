@@ -80,3 +80,31 @@ def test_drawings_roundtrip():
     assert r.status_code == 200
     back = client.get("/chart/drawings", params={"code": "TEST01"}, headers=auth(t)).json()
     assert back["items"] == items  # JSON 직렬화 왕복 무손실
+
+
+# ── 2026-09-01 관리자 계정 체계
+def test_admin_account_flow():
+    """admin 부트스트랩·계정 발급·첫 로그인 강제 변경·비관리자 403."""
+    import uuid
+    from app.auth import ensure_admin_account
+    from app.db import SessionLocal
+    with SessionLocal() as s:
+        ensure_admin_account(s)
+    client = TestClient(app, base_url="https://testserver")
+    r = client.post("/auth/login", json={"email": "myoh", "password": "ansdud!"})
+    assert r.status_code == 200 and r.json()["must_change_password"] is False
+    h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    assert client.get("/auth/me", headers=h).json()["is_admin"] is True
+    uid = f"issued{uuid.uuid4().hex[:6]}"
+    assert client.post("/auth/admin/users", json={"login": uid, "password": "temp123"},
+                       headers=h).status_code == 201
+    r2 = client.post("/auth/login", json={"email": uid, "password": "temp123"})
+    assert r2.json()["must_change_password"] is True
+    h2 = {"Authorization": f"Bearer {r2.json()['access_token']}"}
+    # 비관리자는 발급 불가
+    assert client.post("/auth/admin/users", json={"login": "x2", "password": "xxx123"},
+                       headers=h2).status_code == 403
+    # 변경하면 강제 해제
+    assert client.post("/auth/change-password", json={"current_password": "temp123",
+                                                      "new_password": "newpass123"}, headers=h2).status_code == 200
+    assert client.get("/auth/me", headers=h2).json()["must_change_password"] is False
