@@ -53,7 +53,7 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
     <nav className="flex h-full flex-col gap-1 overflow-y-auto px-3 py-4">
       <Link href="/dashboard" className="mb-3 flex items-center gap-2 px-2 text-[17px] font-extrabold tracking-tight text-ink" onClick={onNavigate}>
         <span className="inline-block h-2.5 w-2.5 rounded-sm bg-accent" />
-        StockLab
+        ExitMe
       </Link>
       {GROUPS.map((g, gi) => (
         <div key={gi} className="mb-1.5">
@@ -113,7 +113,7 @@ export default function NavBar() {
       <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-line bg-[rgba(255,255,255,0.92)] px-4 backdrop-blur lg:hidden">
         <button aria-label="메뉴" className="btn !px-2.5 !py-1.5" onClick={() => setOpen(true)}>☰</button>
         <Link href="/dashboard" className="flex items-center gap-2 text-[16px] font-extrabold text-ink">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-accent" />StockLab
+          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-accent" />ExitMe
         </Link>
       </header>
       {open && (

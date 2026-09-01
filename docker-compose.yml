@@ -2,7 +2,7 @@ services:
   nginx:
     image: nginx:alpine
     ports:
-      - "80:80"
+      - "12010:12010"
     volumes:
       - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
@@ -11,7 +11,7 @@ services:
       web:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:12010/healthz"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -49,6 +49,7 @@ services:
 
   worker:
     image: stocklab-api
+    pull_policy: never   # 로컬 빌드 태그 전용 — 레지스트리 pull 금지 (2026-09-01 원격 배포 결함)
     env_file: .env
     environment:
       - SERVICE_ROLE=worker
@@ -66,6 +67,7 @@ services:
 
   scheduler:
     image: stocklab-api
+    pull_policy: never   # 로컬 빌드 태그 전용 — 레지스트리 pull 금지 (2026-09-01 원격 배포 결함)
     env_file: .env
     environment:
       - SERVICE_ROLE=scheduler

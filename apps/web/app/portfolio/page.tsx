@@ -65,7 +65,8 @@ function PortfolioPage() {
   const [pid, setPid] = useState<number | null>(null);
   const [sum, setSum] = useState<Summary | null>(null);
   const [includeCosts, setIncludeCosts] = useState(true);
-  const [form, setForm] = useState({ kind: "buy", code: market === "US" ? "QQQ" : "069500", qty: "", price: "", amount: "", memo: "" });
+  const [form, setForm] = useState({ kind: "buy", code: market === "US" ? "QQQ" : "069500", qty: "", price: "", amount: "", memo: "",
+    date: new Date().toISOString().slice(0, 10) });
   const [msg, setMsg] = useState("");
   const [txDays, setTxDays] = useState(15);  // 거래 내역 기본 표시 일수 — 무한 나열 방지 (2026-08-29 검토)
   const [newName, setNewName] = useState("");
@@ -121,6 +122,19 @@ function PortfolioPage() {
 
   useEffect(() => { setPid(null); }, [market]);  // 마켓 전환 시 선택 초기화
 
+  function prefillFill(o: { instrument: string; side: string; qty: number; price: number | null; kind: string }, date?: string) {
+    const code200 = market === "US" ? "QQQ"
+      : sum?.positions.find((pp) => pp.code === "102110") ? "102110" : "069500";
+    const codeLev = market === "US"
+      ? (sum?.positions.find((pp) => pp.code === "TQQQ") ? "TQQQ" : "QLD") : "122630";
+    setForm({ kind: o.side, code: o.instrument === "LEV" ? codeLev : code200,
+      qty: String(o.qty), price: o.price ? String(market === "US" ? o.price / 100 : o.price) : "", amount: "",
+      memo: ORDER_KIND_KO[o.kind] ?? o.kind,
+      date: date ?? new Date().toISOString().slice(0, 10) });
+    setEntryOpen(true);
+    setTimeout(() => document.getElementById("fill-entry")?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+  }
+
   async function deleteTx(id: number) {
     if (!window.confirm("이 거래를 삭제할까요? 남은 거래로 보유·실현손익이 다시 계산됩니다.")) return;
     const res = await apiFetch(`/positions/${id}`, { method: "DELETE" });
@@ -130,9 +144,11 @@ function PortfolioPage() {
 
   async function submit() {
     setMsg("");
+    const today = new Date().toISOString().slice(0, 10);
     const body: Record<string, unknown> = {
       portfolio_id: pid ?? undefined, kind: form.kind, memo: form.memo || undefined,
-      executed_at: new Date().toISOString(),
+      // 선택한 날짜의 장 마감 시각으로 기록 — 오늘이면 현재 시각 (2026-09-01 편의성 개선)
+      executed_at: form.date && form.date !== today ? `${form.date}T15:30:00+09:00` : new Date().toISOString(),
     };
     if (form.kind === "buy" || form.kind === "sell") {
       body.code = form.code; body.qty = Number(form.qty); body.price = priceToApi(market, form.price);
@@ -396,7 +412,9 @@ function PortfolioPage() {
         <CardTitle right={<a href={`/signals${market === "US" ? "?market=US" : ""}`} className="text-[13.5px] font-semibold normal-case text-accent">전체 주문표 →</a>}>
           오늘의 주문표 {signal?.status === "OK" && (
             <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}
-              {signal.basis === "portfolio" ? " · 이 포트 보유·현금 기준" : " · 모델 기준"}</span>
+              {signal.basis === "portfolio" && signal.account
+                ? ` · 계산 기준: 보유 ${signal.account.qty_200.toLocaleString()}주/레버 ${signal.account.qty_lev.toLocaleString()}주 · 현금 ${fm(signal.account.cash)}`
+                : " · 모델 기준"}</span>
           )}
         </CardTitle>
         {signal?.status === "OK" && signal.orders && signal.orders.length > 0 ? (
@@ -422,16 +440,7 @@ function PortfolioPage() {
                     </td>
                     <td className="table-num py-2">{o.qty.toLocaleString()}주</td>
                     <td className="py-2 pl-4">
-                      <button className="btn !px-2.5 !py-1 text-[12.5px]" onClick={() => {
-                        const code200 = market === "US" ? "QQQ"
-                          : sum?.positions.find((pp) => pp.code === "102110") ? "102110" : "069500";
-                        const codeLev = market === "US"
-                          ? (sum?.positions.find((pp) => pp.code === "TQQQ") ? "TQQQ" : "QLD") : "122630";
-                        setForm({ kind: o.side, code: o.instrument === "LEV" ? codeLev : code200,
-                          qty: String(o.qty), price: o.price ? String(o.price) : "", amount: "",
-                          memo: ORDER_KIND_KO[o.kind] ?? o.kind });
-                        setEntryOpen(true);
-                      }}>체결 등록</button>
+                      <button className="btn !px-2.5 !py-1 text-[12.5px]" onClick={() => prefillFill(o)}>체결 등록</button>
                     </td>
                   </tr>
                 ))}
@@ -447,13 +456,16 @@ function PortfolioPage() {
           </p>
         )}
         {/* 체결 입력 — 장 마감 후 실제 체결만 등록. 주문 행의 '체결 등록'이 값을 채워줌 (2026-08-29 일지 개편) */}
-        <details className="mt-3 rounded-xl border border-line bg-inset px-4 py-3" open={entryOpen}
+        <details id="fill-entry" className="mt-3 rounded-xl border border-line bg-inset px-4 py-3" open={entryOpen}
           onToggle={(e) => setEntryOpen((e.target as HTMLDetailsElement).open)}>
           <summary className="cursor-pointer text-[13.5px] font-semibold text-accent">
             체결·입출금 등록 <span className="font-normal text-faint">— 장 마감 후 실제 체결된 것만 입력하면 다음 주문표에 반영됩니다</span>
           </summary>
           <div className="mt-3">
             <div className="flex flex-wrap items-end gap-3">
+          <label className="grid gap-1 text-xs text-faint">체결일
+            <input type="date" className="input" value={form.date}
+              onChange={(e) => setForm({ ...form, date: e.target.value })} /></label>
           <label className="grid gap-1 text-xs text-faint">구분
             <select className="input" value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
               <option value="buy">매수</option><option value="sell">매도</option>
@@ -526,6 +538,7 @@ function PortfolioPage() {
                           <th className="pb-1 text-right font-medium">방식 · 가격</th>
                           <th className="pb-1 text-right font-medium">수량</th>
                           <th className="pb-1 text-right font-medium">금액</th>
+                          <th className="pb-1" />
                         </tr></thead>
                         <tbody>
                           {j.planned.map((o, i) => (
@@ -540,6 +553,11 @@ function PortfolioPage() {
                             </td>
                               <td className="table-num py-1.5">{o.qty.toLocaleString()}</td>
                               <td className="table-num py-1.5 text-muted">{o.price ? fm(o.price * o.qty) : "—"}</td>
+                              <td className="py-1.5 pl-2 text-right">
+                                <button className="btn !px-2 !py-0.5 text-[11.5px]"
+                                  title="이 주문의 체결을 이 날짜로 등록 (수량·가격 수정 가능)"
+                                  onClick={() => prefillFill(o, j.date)}>체결 등록</button>
+                              </td>
                             </tr>
                           ))}
                         </tbody>
