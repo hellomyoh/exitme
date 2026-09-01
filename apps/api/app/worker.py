@@ -75,6 +75,14 @@ def daily_ingest(target: str | None = None) -> dict:
         instruments = session.scalars(select(Instrument)).all()
         for inst in instruments:
             try:
+                if inst.market == "NASDAQ":
+                    # 미국 종목은 해외 기간별시세로 증분 수집 — 국내 TR 로 호출하면 매일 실패 (2026-09-01 결함)
+                    if kis is not None:
+                        from app.services.ingest import ingest_us_daily
+
+                        res = ingest_us_daily(session, kis, inst.code)
+                        totals["inserted"] += res.inserted
+                    continue
                 bars: list[dict] = []
                 if kis is not None:
                     try:
