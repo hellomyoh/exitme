@@ -107,7 +107,7 @@ export default function DashboardPage() {
 
         {/* 레짐 게이지 */}
         <Card className="md:col-span-2">
-          <CardTitle>RAVG v2 레짐</CardTitle>
+          <CardTitle>RAVG v2.5 레짐</CardTitle>
           {signal?.status === "OK" ? (
             <>
               <div className="mb-3 flex items-center gap-2">

@@ -2,7 +2,7 @@
 
 ## 프로젝트 개요
 
-**StockLab** — RAVG v2 매매 전략([THROUGHLINE/SOURCES/trade_algorithm_final.md](THROUGHLINE/SOURCES/trade_algorithm_final.md) 정본)을 내장한
+**StockLab** — RAVG v2.5 매매 전략([THROUGHLINE/SOURCES/trade_algorithm_final.md](THROUGHLINE/SOURCES/trade_algorithm_final.md) 정본 + [ADR-007](THROUGHLINE/adr/007-ravg-v25-adoption.md) 개정)을 내장한
 백테스트 + 실전매매 기록 + 자산 대시보드 통합 웹. Next.js 15 / FastAPI / Celery / TimescaleDB / Redis, docker compose. 실주문 체결은 v1 범위 외.
 
 ## 문서 우선순위와 배치
