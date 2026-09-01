@@ -50,7 +50,7 @@ def _set_refresh_cookie(response: Response, user_id: int) -> None:
         "refresh_token",
         _make_token(user_id, "refresh", REFRESH_TTL),
         httponly=True,
-        secure=True,
+        secure=get_settings().cookie_secure,
         samesite="strict",
         max_age=int(REFRESH_TTL.total_seconds()),
         path="/",
@@ -134,7 +134,7 @@ def change_password(body: PasswordChange, user_id: int = Depends(current_user_id
 @router.post("/logout")
 def logout(response: Response) -> dict:
     """로그아웃 — refresh 쿠키 삭제 (2026-08-31 지시). access 는 클라이언트 메모리에서 폐기."""
-    response.delete_cookie("refresh_token", path="/", secure=True, httponly=True, samesite="strict")
+    response.delete_cookie("refresh_token", path="/", secure=get_settings().cookie_secure, httponly=True, samesite="strict")
     return {"logged_out": True}
 
 
