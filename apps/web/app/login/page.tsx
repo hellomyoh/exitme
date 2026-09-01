@@ -34,7 +34,7 @@ export default function LoginPage() {
       <Card className="w-full max-w-sm !p-8">
         <div className="mb-6 flex items-center gap-2">
           <span className="inline-block h-3 w-3 rounded-sm bg-accent" />
-          <h1 className="text-lg font-extrabold tracking-tight">StockLab</h1>
+          <h1 className="text-lg font-extrabold tracking-tight">ExitMe</h1>
         </div>
         <div className="grid gap-3">
           <label className="grid gap-1.5 text-xs text-faint">이메일

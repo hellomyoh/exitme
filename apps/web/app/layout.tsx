@@ -4,7 +4,7 @@ import Shell from "../components/shell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "StockLab",
+  title: "ExitMe",
   description: "백테스트 · 실전매매 기록 · 자산 대시보드",
 };
 

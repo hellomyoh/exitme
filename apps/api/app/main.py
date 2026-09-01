@@ -1,4 +1,4 @@
-"""StockLab API — 계약은 THROUGHLINE/ARCHITECTURE.md §5 (problem+json, as_of/delayed 포함)."""
+"""ExitMe API — 계약은 THROUGHLINE/ARCHITECTURE.md §5 (problem+json, as_of/delayed 포함)."""
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
@@ -19,7 +19,7 @@ from app.quotes import router as quotes_router
 from app.settings import router as settings_router
 from app.signals import router as signals_router
 
-app = FastAPI(title="StockLab API", version="0.1.0")
+app = FastAPI(title="ExitMe API", version="0.1.0")
 app.include_router(quotes_router)
 app.include_router(auth_router)
 app.include_router(charts_router)
