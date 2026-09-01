@@ -3,8 +3,9 @@
 /** 좌측 사이드바 내비 — 한국/미국 마켓 그룹 + 설정 (2026-08-31 개편, 토스증권·TradingView 참조).
  *  lg 이상: 고정 사이드바 / 미만: 상단 바 + 슬라이드 오버. */
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
+import { ensureSession, logout } from "../lib/api";
 
 type Item = { href: string; label: string; market?: "KR" | "US" };
 type Group = { title: string | null; items: Item[] };
@@ -32,7 +33,12 @@ const GROUPS: Group[] = [
 
 function NavInner({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  const router = useRouter();
   const sp = useSearchParams();
+  const [loggedIn, setLoggedIn] = useState(false);
+  useEffect(() => {
+    void ensureSession().then(setLoggedIn);
+  }, [pathname]);
   const curMarket = sp?.get("market") === "US" ? "US" : "KR";
 
   function isActive(it: Item): boolean {
@@ -57,8 +63,18 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
           <div className="grid gap-0.5">
             {g.items.map((it) => {
               const active = isActive(it);
+              // 시뮬레이터·주문표·실전매매는 메뉴 클릭 시 항상 초기 화면으로 — 진행 중 상태 리셋 (2026-09-01 지시)
+              const resettable = it.market !== undefined;
               return (
-                <Link key={it.href} href={it.href} onClick={onNavigate}
+                <Link key={it.href} href={it.href}
+                  onClick={(e) => {
+                    if (resettable) {
+                      e.preventDefault();
+                      const sep = it.href.includes("?") ? "&" : "?";
+                      router.push(`${it.href}${sep}r=${Date.now()}`);
+                    }
+                    onNavigate?.();
+                  }}
                   className={`rounded-lg px-3 py-2 text-[14.5px] font-medium transition-colors ${
                     active ? "bg-raised font-semibold text-ink" : "text-muted hover:bg-raised/60 hover:text-ink"
                   }`}>
@@ -71,7 +87,13 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
       ))}
       <div className="mt-auto grid gap-2 px-2 pt-4">
         <span className="text-[11.5px] leading-relaxed text-faint">모의·지연 시세<br />투자 권유 아님</span>
-        <Link href="/login" className="btn btn-ghost !justify-center !py-2 text-[13.5px]" onClick={onNavigate}>로그인</Link>
+        {loggedIn ? (
+          <button className="btn btn-ghost !justify-center !py-2 text-[13.5px]" onClick={() => {
+            void logout().then(() => { onNavigate?.(); router.push("/login"); });
+          }}>로그아웃</button>
+        ) : (
+          <Link href="/login" className="btn btn-ghost !justify-center !py-2 text-[13.5px]" onClick={onNavigate}>로그인</Link>
+        )}
       </div>
     </nav>
   );
