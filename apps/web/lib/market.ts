@@ -29,8 +29,8 @@ export function legNameM(m: Market, instrument: string): string {
 /** 거래 등록용 종목 옵션 */
 export const MARKET_CODES: Record<Market, { code: string; name: string }[]> = {
   KR: [
-    { code: "069500", name: "KODEX 200" },
     { code: "102110", name: "TIGER 200" },
+    { code: "069500", name: "KODEX 200" },
     { code: "122630", name: "KODEX 레버리지" },
   ],
   US: [

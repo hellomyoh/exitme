@@ -28,8 +28,8 @@ const FLAG_LABELS: [string, string, string][] = [
 ];
 type EtfKey = "KODEX" | "TIGER" | "QQQ_QLD" | "QQQ_TQQQ" | "QQQ_TF";
 const ETF_INFO: Record<EtfKey, { label: string; fee: number; market: "KR" | "US"; legacy?: boolean }> = {
+  TIGER: { label: "TIGER 200 (기본)", fee: 0.0005, market: "KR" },
   KODEX: { label: "KODEX 200", fee: 0.0015, market: "KR" },
-  TIGER: { label: "TIGER 200", fee: 0.0005, market: "KR" },
   QQQ_TF: { label: "QQQ 추세 필터 (미국 기본)", fee: 0.002, market: "US" },
   QQQ_QLD: { label: "QQQ + QLD — RAVG 전략 (비교용)", fee: 0.002, market: "US", legacy: true },
   QQQ_TQQQ: { label: "QQQ + TQQQ — RAVG 전략 (비교용)", fee: 0.002, market: "US", legacy: true },
@@ -54,7 +54,7 @@ function SimulatorPage() {
   const fm = (v: number) => fmtMoneyM(market, v);
   const fpx = (v: number) => fmtPriceM(market, v);
   const ETF_KEYS = (Object.keys(ETF_INFO) as EtfKey[]).filter((k) => ETF_INFO[k].market === market);  // RAVG 페어도 비교용으로 선택 가능 (2026-09-01 지시)
-  const [etf, setEtf] = useState<EtfKey>(market === "US" ? "QQQ_TF" : "KODEX");
+  const [etf, setEtf] = useState<EtfKey>(market === "US" ? "QQQ_TF" : "TIGER");  // KR 기본 TIGER (2026-09-01)
   // 자본 입력은 표기 통화 (미국: 달러) — 전송 시 API 단위(센트)로 변환
   const [capital, setCapital] = useState(market === "US" ? String(DEFAULT_CAPITAL.US / 100) : "100000000");
   const [dateFrom, setDateFrom] = useState(new Date(Date.now() - 365 * 86400e3).toISOString().slice(0, 10)); // 기본 1년 전 (2026-08-28 지시)

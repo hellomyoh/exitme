@@ -73,9 +73,10 @@ function PortfolioPage() {
   const [newName, setNewName] = useState("");
   const [showStart, setShowStart] = useState(false);
   const [startMode, setStartMode] = useState<"fresh" | "holdings">("fresh");
+  const [startCode200, setStartCode200] = useState("102110");  // KR 주력 조합 — 기본 TIGER (보수 연 0.05%, 2026-09-01 지시)
   const [startCash, setStartCash] = useState("");
   const [holdings, setHoldings] = useState<{ code: string; qty: string; price: string }[]>([
-    { code: market === "US" ? "QQQ" : "069500", qty: "", price: "" },
+    { code: market === "US" ? "QQQ" : "102110", qty: "", price: "" },
   ]);
   const [journal, setJournal] = useState<JournalItem[]>([]);
   const [entryOpen, setEntryOpen] = useState(false);  // 체결 입력 폼 펼침 (2026-08-29 일지 개편)
@@ -169,7 +170,8 @@ function PortfolioPage() {
 
   async function startPortfolio() {
     const name = newName.trim() || `실전매매 ${new Date().toISOString().slice(0, 10)}`;
-    const res = await apiFetch("/portfolios", { method: "POST", body: JSON.stringify({ name, market }) });
+    const res = await apiFetch("/portfolios", { method: "POST", body: JSON.stringify({
+      name, market, code_200: market === "KR" ? startCode200 : undefined }) });
     if (!res.ok) return;
     const { id } = (await res.json()) as { id: number };
     const now = new Date().toISOString();
@@ -224,7 +226,7 @@ function PortfolioPage() {
       }
     }
     setShowStart(false); setNewName(""); setStartCash("");
-    setHoldings([{ code: market === "US" ? "QQQ" : "069500", qty: "", price: "" }]);
+    setHoldings([{ code: market === "US" ? "QQQ" : startCode200, qty: "", price: "" }]);
     setPid(id);
   }
 
@@ -302,6 +304,18 @@ function PortfolioPage() {
                 <input className="input w-44" placeholder="예: 50000000" value={startCash}
                   onChange={(e) => setStartCash(e.target.value)} /></label>
             </div>
+            {market === "KR" && (
+              <div className="mb-1 flex flex-wrap items-center gap-2 text-[13.5px]">
+                <span className="font-semibold text-muted">주력 ETF 조합</span>
+                {[["102110", "TIGER 200 (보수 0.05% — 권장)"], ["069500", "KODEX 200 (보수 0.15%)"]].map(([c, label]) => (
+                  <button key={c} onClick={() => setStartCode200(c)}
+                    className={`rounded-lg border px-3 py-1.5 transition-colors ${startCode200 === c ? "border-accent bg-accent-dim font-semibold" : "border-line bg-inset hover:border-line-strong"}`}>
+                    {label}
+                  </button>
+                ))}
+                <span className="text-[12px] text-faint">레버리지는 KODEX 공통 · 주문표가 이 종목 기준으로 계산됩니다</span>
+              </div>
+            )}
             {startMode === "holdings" && (
               <div className="grid gap-2">
                 <div className="text-[13px] font-semibold text-muted">보유 종목 (수량 · 평균단가)</div>
@@ -324,7 +338,7 @@ function PortfolioPage() {
                     )}
                   </div>
                 ))}
-                <button className="btn-ghost btn w-fit !py-1.5 text-[13.5px]" onClick={() => setHoldings([...holdings, { code: market === "US" ? "QQQ" : "069500", qty: "", price: "" }])}>
+                <button className="btn-ghost btn w-fit !py-1.5 text-[13.5px]" onClick={() => setHoldings([...holdings, { code: market === "US" ? "QQQ" : startCode200, qty: "", price: "" }])}>
                   ＋ 종목 추가
                 </button>
               </div>
