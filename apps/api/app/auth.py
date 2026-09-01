@@ -195,6 +195,6 @@ def ensure_admin_account(session: Session) -> None:
     """기본 관리자 부트스트랩 — myoh 가 없으면 생성 (2026-09-01 지시, 멱등)."""
     if session.scalar(select(User).where(User.email == "myoh")) is None:
         session.add(User(email="myoh",
-                         password_hash=bcrypt.hashpw(b"ansdud!", bcrypt.gensalt()).decode(),
+                         password_hash=bcrypt.hashpw(b"anrndghk!", bcrypt.gensalt()).decode(),
                          is_admin=True))
         session.commit()

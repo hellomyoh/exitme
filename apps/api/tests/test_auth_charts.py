@@ -91,7 +91,7 @@ def test_admin_account_flow():
     with SessionLocal() as s:
         ensure_admin_account(s)
     client = TestClient(app, base_url="https://testserver")
-    r = client.post("/auth/login", json={"email": "myoh", "password": "ansdud!"})
+    r = client.post("/auth/login", json={"email": "myoh", "password": "anrndghk!"})
     assert r.status_code == 200 and r.json()["must_change_password"] is False
     h = {"Authorization": f"Bearer {r.json()['access_token']}"}
     assert client.get("/auth/me", headers=h).json()["is_admin"] is True
