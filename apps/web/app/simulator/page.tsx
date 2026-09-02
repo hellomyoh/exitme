@@ -439,12 +439,25 @@ function SimulatorPage() {
           {(() => {
             const p = job.params as { etf?: string; capital?: number; date_from?: string; date_to?: string; flags?: Flags };
             const offFlags = p.flags ? FLAG_LABELS.filter(([k]) => p.flags![k] === false).map(([, l]) => l) : [];
+            // 현재(최종) 평가액 — 자산곡선 마지막 값. 보유 시작 포함 실제 평가 기준 (2026-09-02 지시)
+            const finalEq = job.equity?.length ? job.equity[job.equity.length - 1].equity : null;
+            const tr = job.kpi?.total_return;
+            const profit = finalEq != null && tr != null ? finalEq - finalEq / (1 + tr) : null;
             return (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[14px] text-muted">
                 <Badge tone="default">#{job.id}</Badge>
                 <span>주력 ETF <b className="text-ink">{ETF_INFO[(p.etf ?? "KODEX") as EtfKey]?.label ?? p.etf}</b></span>
                 <span>기간 <b className="text-ink">{p.date_from} ~ {p.date_to}</b></span>
                 <span>자본금 <b className="text-ink">{p.capital != null ? fm(p.capital) : "—"}</b></span>
+                {finalEq != null && (
+                  <span>현재 평가액 <b className="text-ink">{fm(Math.round(finalEq))}</b>
+                    {profit != null && tr != null && (
+                      <b className={profit >= 0 ? "text-up" : "text-down"}>
+                        {" "}({profit >= 0 ? "+" : ""}{fm(Math.round(profit))} · {profit >= 0 ? "+" : ""}{(tr * 100).toFixed(1)}%)
+                      </b>
+                    )}
+                  </span>
+                )}
                 <span>{offFlags.length > 0
                   ? <span className="text-warn">절제 OFF: {offFlags.join(", ")}</span>
                   : "전 모듈 ON (RAVG v2.5 기본)"}</span>
