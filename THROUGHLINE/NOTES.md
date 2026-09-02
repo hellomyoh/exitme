@@ -8,6 +8,12 @@
 - [2026-08-28] pykrx는 `pkg_resources`를 임포트한다 — setuptools 81부터 제거되어 `setuptools>=75,<81` 핀 필요. python:3.12-slim에는 setuptools 자체가 없음. (근거: 컨테이너 임포트 오류 재현 후 핀으로 해결)
 - [2026-08-28] pykrx는 KRX 응답 오류를 삼키고 **빈 DataFrame을 반환**한다(예외 없음). 빈 응답을 실패로 처리하는 가드가 없으면 0건 시딩이 조용히 "성공"한다. (근거: 시딩 스모크에서 캘린더 전체가 휴장으로 오염되는 것 확인 → seed.py에 가드 추가)
 
+## 테스트 DB 격리
+
+- [2026-09-01] 개발 DB 오염 **재발** — qa/README의 수동 `DATABASE_URL=...stocklab_ci` 규칙만으로는 격리가 지켜지지 않는다. 컨테이너 안 `pytest` 직접 실행(compose 환경변수 = 개발 DB)으로 통합 테스트의 `seed_synthetic`이 069500/122630에 합성 봉 28개(휴장일 날짜만 — 실데이터와 겹치는 날짜는 `ON CONFLICT DO NOTHING`이 차단), 102110에 400개(실데이터 없어 전량 유입)를 `source='pykrx'`로 적재했다. (근거: `ingested_at` 타임스탬프와 pytest 실행 시각 일치 재현) → **conftest.py가 `_ci` 미접미 DATABASE_URL을 stocklab_ci로 강제 재지정 + DB 자동 생성·마이그레이션**으로 코드 강제화.
+- [2026-09-01] 오염 탐지 쿼리 3종 (db 컨테이너에서 실행): ① 소스별 집계 — `SELECT i.code, d.source, count(*) FROM ohlcv_daily d JOIN instruments i ON i.id=d.instrument_id GROUP BY 1,2;` (`pykrx` 행은 전부 합성 — KRX 차단으로 pykrx 실수집 불가). ② 휴장일 봉 — `... LEFT JOIN trading_calendar tc ON tc.cal_date=d.trade_date AND tc.is_open WHERE i.market='KOSPI' AND tc.cal_date IS NULL`. ③ 일간 ±12% 초과 점프 나열(lag 윈도) — 실제 급변일(2026-03-04, 2026-07-31)도 나오므로 후보 목록으로 취급. 복구 = `DELETE FROM ohlcv_daily WHERE source='pykrx'` 후 해당 종목 재시딩.
+- [2026-09-01] `tests/test_ws_quotes.py`는 **라이브 Redis를 앱(worker·scheduler)과 공유**해 간헐 실패한다(같은 캐시 키·채널 경합, 단독 재실행 통과 확인). DB와 달리 Redis는 격리 미적용 — 별도 개선 대상.
+
 ## TimescaleDB
 
 - [2026-08-28] 하이퍼테이블에 `INSERT ... ON CONFLICT`를 실행하면 SQLAlchemy `rowcount`가 -1로 반환된다 — 삽입 건수는 `RETURNING`으로 세어야 한다. (근거: 통합 테스트 실패 재현 후 RETURNING으로 해결)
