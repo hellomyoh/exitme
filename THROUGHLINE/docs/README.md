@@ -11,3 +11,4 @@
 | [us-backtest-20260831.md](us-backtest-20260831.md) | 운영자 | 미국 시장 이식 백테스트 (QQQ+QLD / QQQ+TQQQ, 배율 보정 검증) |
 | [regime-buffer-study-20260831.md](regime-buffer-study-20260831.md) | 운영자 | 절제 ③ 후속 — v1 복귀·완충 확대 기각, MA200 이탈 완충 ε=2% 권고 (3차 검증 완료) |
 | [us-transfer-study-20260831.md](us-transfer-study-20260831.md) | 운영자 | 한·미 동일 알고리즘 적용 검증 — 파라미터 고원 확인, 세금·환율·운영 선결 조건 |
+| [order-formula-study-20260903.md](order-formula-study-20260903.md) | 운영자 | 주문표 공식 수리 검토 — E 탄력성·그리드 반사원리 검증, 예산 가중 50/30/20 후보 (미채택) |
