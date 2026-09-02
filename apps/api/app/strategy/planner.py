@@ -228,11 +228,17 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
             gap_cancel_below = int(gap_cancel_exact)               # 표시용 원 단위 내림
         else:
             remaining = target_200                          # v1: 예산 규칙 없음
-        per_step = remaining / params.grid_steps
+        # 예산 가중 분배 (feature §5.5, 2026-09-03): 길이 불일치·합 0 이면 균등으로 폴백
+        ws = list(params.grid_weights[:params.grid_steps])
+        ws += [0.0] * (params.grid_steps - len(ws))
+        total_w = sum(ws)
+        if total_w <= 0:
+            ws = [1.0 / params.grid_steps] * params.grid_steps
+            total_w = 1.0
         cash_left = pf.cash + planned_sell_value - cash_reserve   # 현금버퍼 = 예약 (feature §5.5)
         for k in range(1, params.grid_steps + 1):
             price = round_tick(close * (1 - grid * k), params.tick, up=False)
-            qty = int(per_step // price)
+            qty = int(remaining * (ws[k - 1] / total_w) // price)
             if qty <= 0 or qty * price > cash_left:
                 continue
             cash_left -= qty * price

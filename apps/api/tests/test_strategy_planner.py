@@ -46,9 +46,21 @@ def test_golden_grid_orders_from_planner():
     assert p.status == "OK" and p.regime is Regime.BULL
     grid_orders = [o for o in p.orders if o.kind.startswith("grid")]
     assert [o.price for o in grid_orders] == [68950, 67900, 66850]
-    # 잔여예산 균등 1/3 — 각 단계 금액이 대체로 동일
+    # 잔여예산 가중 50/30/20 (2026-09-03 채택) — 각 단계 금액이 가중비에 수렴 (오차 < 1주 가격)
     amounts = [o.price * o.qty for o in grid_orders]
-    assert max(amounts) - min(amounts) < 70000 * 2
+    total = sum(amounts)
+    for amt, w in zip(amounts, P.grid_weights):
+        assert abs(amt - total * w) < 70000 * 2
+
+
+def test_grid_weights_fallback_to_equal():
+    """가중 길이 부족·합 0 이면 균등 폴백 (params 주석 계약)."""
+    from dataclasses import replace as dc_replace
+    m = mk_market()
+    zero = dc_replace(P, grid_weights=(0.0, 0.0, 0.0))
+    p = plan(I, m, mk_lev(), Regime.BULL, pf_with(100_000_000), zero)
+    amounts = [o.price * o.qty for o in p.orders if o.kind.startswith("grid")]
+    assert len(amounts) == 3 and max(amounts) - min(amounts) < 70000 * 2  # 균등 복원
 
 
 # ── G2: 익절가 호가 올림 — 68,950 × 1.015 = 69,984.25 → 69,985
