@@ -176,11 +176,26 @@ function PortfolioPage() {
       name, market, code_200: market === "KR" ? startCode200 : undefined }) });
     if (!res.ok) return;
     const { id } = (await res.json()) as { id: number };
-    // 시작 항목(입금·보유분)은 직전 영업일 15:30 KST 로 기록 — 등록 이전부터 보유하던 이력이며,
-    // 주문표가 "신호 기준일 종가 시점 상태"만 반영하므로(B안) 오늘 시각이면 당일 주문표에서 제외됨 (2026-09-02)
-    const prev = new Date();
-    do { prev.setDate(prev.getDate() - 1); } while (prev.getDay() === 0 || prev.getDay() === 6);
-    const now = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}-${String(prev.getDate()).padStart(2, "0")}T15:30:00+09:00`;
+    // 시작 항목(입금·보유분)은 '최근 종가일' 15:30 KST 로 기록 — 신호 기준일 종가 시점 상태에
+    // 포함되어야 다음 주문표부터 보유가 반영된다 (B안). 장 마감 후(당일 종가 적재 후) 시작하면
+    // 당일로, 장중·개장 전이면 직전 종가일로 자연히 기록된다 (2026-09-02: 밤 시작이 전일로 찍히던 문제)
+    let baseDay = "";
+    try {
+      const code0 = market === "US" ? "QQQ" : startCode200;
+      const to = new Date().toISOString().slice(0, 10);
+      const from = new Date(Date.now() - 15 * 86400e3).toISOString().slice(0, 10);
+      const r = await fetch(`/api/ohlcv?code=${code0}&from=${from}&to=${to}`);
+      if (r.ok) {
+        const items = ((await r.json()) as { items: { date: string }[] }).items;
+        if (items.length) baseDay = items[items.length - 1].date;
+      }
+    } catch { /* 폴백 사용 */ }
+    if (!baseDay) {
+      const prev = new Date();
+      do { prev.setDate(prev.getDate() - 1); } while (prev.getDay() === 0 || prev.getDay() === 6);
+      baseDay = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}-${String(prev.getDate()).padStart(2, "0")}`;
+    }
+    const now = `${baseDay}T15:30:00+09:00`;
     const cash = startCash.trim() ? priceToApi(market, startCash) : 0;
     if (startMode === "fresh") {
       // 오늘부터 새로 시작 — 이전 기록 없음, (선택) 초기 입금만

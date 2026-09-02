@@ -655,9 +655,16 @@ def portfolio_journal(portfolio_id: int | None = None, days: int = 60,
         eq_by_date[d.isoformat()] = v
         prev_v = v
 
+    # 일지의 날짜 묶음은 KST 달력일 — 시점 재생(_state_before)과 동일 규약 (2026-09-02)
+    from datetime import timedelta as _td, timezone as _tz
+    _kst = _tz(_td(hours=9))
+
+    def _kst_dt(dt):
+        return dt.astimezone(_kst) if dt.tzinfo else dt
+
     tx_by_date: dict[str, list[TradeTransaction]] = {}
     for t in txs:
-        tx_by_date.setdefault(t.executed_at.date().isoformat(), []).append(t)
+        tx_by_date.setdefault(_kst_dt(t.executed_at).date().isoformat(), []).append(t)
     plan_by_date = {r.trade_date.isoformat(): r.payload for r in plans}
 
     code_cache: dict[int, Instrument] = {}
@@ -685,7 +692,7 @@ def portfolio_journal(portfolio_id: int | None = None, days: int = 60,
                  "code": inst_of(t.instrument_id).code if t.instrument_id else None,
                  "name": inst_of(t.instrument_id).name if t.instrument_id else None,
                  "qty": t.qty, "price": t.price, "amount": t.amount,
-                 "realized_pnl": t.realized_pnl, "time": t.executed_at.isoformat()[11:16],
+                 "realized_pnl": t.realized_pnl, "time": _kst_dt(t.executed_at).isoformat()[11:16],
                  "memo": t.memo}
                 for t in fills
             ],
