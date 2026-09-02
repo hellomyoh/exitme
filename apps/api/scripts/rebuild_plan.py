@@ -110,15 +110,24 @@ def main() -> None:
         payload = rebuild(session, a.portfolio, a.date)
         row = session.scalar(select(PortfolioPlan).where(
             PortfolioPlan.portfolio_id == a.portfolio, PortfolioPlan.trade_date == a.date))
-        print("── 재계산 계획:")
+        def brief(pl):
+            return ", ".join(f"{o['kind']} {o['side']} {o['qty']}주"
+                             + (f"@{o['price']:,}" if o.get("price") else "")
+                             for o in pl.get("orders", []))
+
+        print("━━ [A] 재계산된 원래 계획 (--apply 시 이 값으로 복구):")
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(f"    요약: {brief(payload)}")
         if row is None:
-            print("── 저장된 행 없음 (신규 저장 대상)")
+            print("━━ [B] 저장된 행 없음 (신규 저장 대상)")
         else:
             same = row.payload == payload
-            print(f"── 저장본과 {'일치 — 조치 불필요' if same else '불일치 (덮인 행)'}")
-            if not same:
-                print(json.dumps(row.payload, ensure_ascii=False, indent=2))
+            if same:
+                print("━━ [B] 현재 저장본 = [A] 와 일치 — 조치 불필요")
+            else:
+                print("━━ [B] 현재 저장본 (잘못 덮인 값 — 참고용):")
+                print(f"    요약: {brief(row.payload)}")
+                print("━━ [A] ≠ [B] — --apply 를 붙여 [A] 로 복구하세요")
         if a.apply:
             if row is None:
                 session.add(PortfolioPlan(portfolio_id=a.portfolio, trade_date=a.date, payload=payload))
