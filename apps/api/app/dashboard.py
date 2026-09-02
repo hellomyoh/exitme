@@ -176,8 +176,26 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
         return {"value": value, "cost": cost, "pnl": pnl,
                 "pnl_pct": (pnl / cost) if cost > 0 else None}
 
+    # 포트별 분리 표기 (2026-09-02 지시) — 진행 중 실전매매 각각의 평가액·평가손익
+    port_rows = []
+    all_pfs = session.scalars(select(TradePortfolio).where(TradePortfolio.user_id == user_id)
+                              .order_by(TradePortfolio.id)).all()
+    all_inst = set(session.scalars(select(PositionLot.instrument_id).where(
+        PositionLot.portfolio_id.in_([p.id for p in all_pfs]))).all()) if all_pfs else set()
+    all_prices = latest_closes(session, all_inst)
+    for pfr in all_pfs:
+        stock_v, cash_v, cost_v = _portfolio_state(session, pfr.id, all_prices)
+        if stock_v == 0 and cash_v == 0 and cost_v == 0:
+            continue  # 활동 없는 빈 포트(기본 계좌 등)는 표기 생략
+        pnl = stock_v - cost_v
+        port_rows.append({
+            "id": pfr.id, "name": pfr.name, "market": pfr.market,
+            "equity": round(stock_v) + cash_v, "stock_value": round(stock_v), "cash": cash_v,
+            "pnl": round(pnl), "pnl_pct": (pnl / cost_v) if cost_v > 0 else None,
+        })
     return {
         "total": snap.total, "stock": snap.stock, "cash": snap.cash, "other": snap.other,
+        "portfolios": port_rows,
         "change_amount": change,
         "change_pct": change_pct,
         "since_inception_pct": since_pct,
