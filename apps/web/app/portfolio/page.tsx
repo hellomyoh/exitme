@@ -493,29 +493,38 @@ function PortfolioPage() {
         </CardTitle>
         {signal?.status === "OK" && signal.orders && signal.orders.length > 0 ? (
           <div className="overflow-x-auto">
-            {/* 모바일: 셀 줄바꿈 대신 가로 스크롤 (2026-09-02 지시) */}
-            <table className="w-full min-w-[560px] whitespace-nowrap text-[14.5px]">
+            {/* 모바일: 줄바꿈 금지 + 축약(종목 짧게·작은 글씨)으로 한 화면에 — 넘치면 가로 스크롤 (2026-09-02 지시) */}
+            <table className="w-full whitespace-nowrap text-[13px] sm:text-[14.5px]">
               <thead><tr className="border-b border-line text-left text-[13px] text-faint">
                 <th className="pb-2 font-medium">구분</th><th className="pb-2 font-medium">종목</th>
                 <th className="pb-2 font-medium">방향</th>
                 <th className="pb-2 text-right font-medium">방식 · 가격</th>
-                <th className="pb-2 text-right font-medium">수량{signal?.basis === "portfolio" ? " (내 계좌 기준)" : " (모델 1억)"}</th>
+                <th className="pb-2 text-right font-medium">수량<span className="hidden sm:inline">{signal?.basis === "portfolio" ? " (내 계좌 기준)" : " (모델 1억)"}</span></th>
                 <th className="pb-2 pl-4 font-medium">체결</th>
               </tr></thead>
               <tbody>
                 {signal.orders.map((o, i) => (
                   <tr key={i} className="border-b border-line/50 last:border-0">
                     <td className="py-2"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge></td>
-                    <td className="py-2">{o.instrument === "K200" ? (signal?.name_200 ?? (market === "US" ? "QQQ" : "KODEX 200")) : (market === "US" ? "레버리지(QLD/TQQQ)" : "KODEX 레버리지")}</td>
+                    <td className="py-2">
+                      {(() => {
+                        const full = o.instrument === "K200" ? (signal?.name_200 ?? (market === "US" ? "QQQ" : "KODEX 200")) : (market === "US" ? "레버리지(QLD/TQQQ)" : "KODEX 레버리지");
+                        const short = o.instrument === "K200" ? full.split(" ")[0] : "레버";
+                        return <><span className="hidden sm:inline">{full}</span><span className="sm:hidden">{short}</span></>;
+                      })()}
+                    </td>
                     <td className={`py-2 font-bold ${o.side === "buy" ? "text-up" : "text-down"}`}>{o.side === "buy" ? "매수" : "매도"}</td>
                     <td className="table-num py-2 font-semibold">
                       {o.price
-                        ? <><span className="mr-1 rounded bg-raised px-1.5 py-0.5 text-[11px] font-bold text-muted">지정가</span>{fpx(o.price)}</>
+                        // 모바일은 지정가 배지 생략(지정가가 기본) — 시장가만 배지 유지 (2026-09-02 폭 축약)
+                        ? <><span className="mr-1 hidden rounded bg-raised px-1.5 py-0.5 text-[11px] font-bold text-muted sm:inline">지정가</span>{fpx(o.price)}</>
                         : <><span className="mr-1 rounded bg-accent/15 px-1.5 py-0.5 text-[11px] font-bold text-accent">시장가</span><span className="text-[12px] text-faint">시가</span></>}
                     </td>
                     <td className="table-num py-2">{o.qty.toLocaleString()}주</td>
-                    <td className="py-2 pl-4">
-                      <button className="btn !px-2.5 !py-1 text-[12.5px]" onClick={() => prefillFill(o)}>체결 등록</button>
+                    <td className="py-2 pl-2 sm:pl-4">
+                      <button className="btn !px-2.5 !py-1 text-[12.5px]" onClick={() => prefillFill(o)}>
+                        <span className="sm:hidden">등록</span><span className="hidden sm:inline">체결 등록</span>
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -607,13 +616,14 @@ function PortfolioPage() {
                       <p className="text-[13px] text-faint">신규 주문 없음.</p>
                     ) : (
                       <div className="overflow-x-auto">
-                      <table className="w-full min-w-[480px] whitespace-nowrap text-[14px]">
+                      {/* 모바일: 금액 열 숨김(가격×수량으로 유도 가능) — 한 화면 폭에 맞춤 (2026-09-02 지시) */}
+                      <table className="w-full whitespace-nowrap text-[13px] sm:text-[14px]">
                         <thead><tr className="text-left text-xs text-faint">
                           <th className="pb-1 font-medium">구분</th><th className="pb-1 font-medium">종목</th>
                           <th className="pb-1 font-medium">방향</th>
                           <th className="pb-1 text-right font-medium">방식 · 가격</th>
                           <th className="pb-1 text-right font-medium">수량</th>
-                          <th className="pb-1 text-right font-medium">금액</th>
+                          <th className="hidden pb-1 text-right font-medium sm:table-cell">금액</th>
                           <th className="pb-1" />
                         </tr></thead>
                         <tbody>
@@ -628,7 +638,7 @@ function PortfolioPage() {
                                 : <><span className="mr-1 rounded bg-accent/15 px-1 py-0.5 text-[10.5px] font-bold text-accent">시장가</span></>}
                             </td>
                               <td className="table-num py-1.5">{o.qty.toLocaleString()}</td>
-                              <td className="table-num py-1.5 text-muted">{o.price ? fm(o.price * o.qty) : "—"}</td>
+                              <td className="table-num hidden py-1.5 text-muted sm:table-cell">{o.price ? fm(o.price * o.qty) : "—"}</td>
                               <td className="py-1.5 pl-2 text-right">
                                 <button className="btn !px-2 !py-0.5 text-[11.5px]"
                                   title="이 주문의 체결을 이 날짜로 등록 (수량·가격 수정 가능)"
@@ -663,13 +673,13 @@ function PortfolioPage() {
                       </p>
                     ) : (
                       <div className="overflow-x-auto">
-                      <table className="w-full min-w-[480px] whitespace-nowrap text-[14px]">
+                      <table className="w-full whitespace-nowrap text-[13px] sm:text-[14px]">
                         <thead><tr className="text-left text-xs text-faint">
                           <th className="pb-1 font-medium">구분</th><th className="pb-1 font-medium">종목</th>
                           <th className="pb-1 font-medium">방향</th>
                           <th className="pb-1 text-right font-medium">체결가/금액</th>
                           <th className="pb-1 text-right font-medium">수량</th>
-                          <th className="pb-1 text-right font-medium">금액</th>
+                          <th className="hidden pb-1 text-right font-medium sm:table-cell">금액</th>
                           <th className="pb-1" />
                         </tr></thead>
                         <tbody>
@@ -681,7 +691,7 @@ function PortfolioPage() {
                               <td className={`py-1.5 font-semibold ${t.kind === "buy" ? "text-up" : t.kind === "sell" ? "text-down" : "text-muted"}`}>{TX_KO[t.kind]}</td>
                               <td className="table-num py-1.5">{fpx(t.price ?? t.amount ?? 0)}</td>
                               <td className="table-num py-1.5">{t.qty ? t.qty.toLocaleString() : "—"}</td>
-                              <td className="table-num py-1.5 text-muted">{fm(t.price && t.qty ? t.price * t.qty : (t.amount ?? 0))}</td>
+                              <td className="table-num hidden py-1.5 text-muted sm:table-cell">{fm(t.price && t.qty ? t.price * t.qty : (t.amount ?? 0))}</td>
                               <td className="py-1.5 pl-2 text-right">
                                 <button className="text-[12px] text-faint transition-colors hover:text-down" title="오입력 삭제 — 남은 거래로 재계산"
                                   onClick={() => void deleteTx(t.id)}>✕</button>
