@@ -391,6 +391,8 @@ function PortfolioPage() {
         </Card>
       )}
 
+      {/* 새 실전매매 작성 중에는 기존 포트 내용을 숨김 — 새 계좌 만드는 화면에 이전 내역이 섞여 보이는 혼동 방지 (2026-09-02 지시) */}
+      {!showStart && <>
       {sum && (
         <div className="mb-4 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
           <Stat label="총자산" value={fm(sum.total_equity)} tip="현금 + 보유 주식 평가액(최근 종가 기준)의 합" />
@@ -710,6 +712,7 @@ function PortfolioPage() {
           )}
         </Card>
       )}
+      </>}
     </main>
   );
 }
