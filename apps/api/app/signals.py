@@ -23,6 +23,67 @@ router = APIRouter()
 MODEL_CAPITAL = 100_000_000  # 모델 포트 기본 자본 (표시용 — 수량 산출 기준)
 
 
+def _next_exec_day(base_day: date) -> date:
+    """신호 기준일(base_day 종가)의 실행일 — 다음 평일 (주말 스킵)."""
+    from datetime import timedelta as _td
+
+    exec_day = base_day + _td(days=1)
+    while exec_day.weekday() >= 5:
+        exec_day += _td(days=1)
+    return exec_day
+
+
+def _state_before(session: Session, pid: int, cutoff: date) -> tuple[list[dict], int]:
+    """cutoff(KST 일자) 이전에 체결된 거래만으로 로트·현금을 재구성 — B안 (2026-09-02).
+
+    주문표 = 신호 기준일 종가 시점 상태의 함수(정본 §8 "종가 신호 → 익일 발주").
+    실행일 당일의 체결 등록이 당일 계획을 바꾸지 않도록 원장을 시점 재생한다.
+    FIFO 의미론은 등록 경로(portfolios — opened_at ≤ 매도 시각 필터 포함)와 동일하며,
+    동등성은 테스트(cutoff=미래 ↔ 현재 로트 테이블 일치)로 고정한다.
+    반환: ([{instrument_id, qty, price}] 체결 시각순, 현금).
+    """
+    from datetime import timedelta as _td, timezone as _tz
+
+    from app.models import TradeTransaction
+
+    kst = _tz(_td(hours=9))
+    txs = session.scalars(
+        select(TradeTransaction).where(TradeTransaction.portfolio_id == pid)
+        .order_by(TradeTransaction.executed_at, TradeTransaction.id)
+    ).all()
+
+    def kdate(t):
+        dt = t.executed_at
+        return (dt.astimezone(kst) if dt.tzinfo else dt).date()
+
+    cash = 0
+    lots: list[dict] = []
+    for t in txs:
+        if kdate(t) >= cutoff:
+            continue
+        if t.kind == "deposit":
+            cash += t.amount
+        elif t.kind == "withdraw":
+            cash -= t.amount
+        elif t.kind == "buy":
+            cash -= t.qty * t.price
+            lots.append({"instrument_id": t.instrument_id, "qty": t.qty,
+                         "price": t.price, "opened_at": t.executed_at})
+        elif t.kind == "sell":
+            cash += t.qty * t.price
+            remaining = t.qty
+            for l in lots:
+                if remaining <= 0:
+                    break
+                if l["instrument_id"] != t.instrument_id or l["opened_at"] > t.executed_at:
+                    continue
+                take = min(l["qty"], remaining)
+                l["qty"] -= take
+                remaining -= take
+            lots = [l for l in lots if l["qty"] > 0]
+    return lots, cash
+
+
 def run_signal_batch(session: Session, target: date | None = None) -> SignalSnapshot:
     """시그널 배치 — append-only 버전 기록. 실패도 스냅샷으로 남긴다 (조용한 실패 금지)."""
     from app.backtests import load_aligned_bars
@@ -139,47 +200,35 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
     m200, mlev = to_market(bars_200), to_market(bars_lev)
     last = len(bars_200) - 1
     grid_today = grid_ratio(m200.atr20[last], m200.closes[last], params)
+    base_day = date.fromisoformat(bars_200[last]["date"])
+    exec_day = _next_exec_day(base_day)
 
-    # 현금 원장
-    txs = session.scalars(select(TradeTransaction).where(TradeTransaction.portfolio_id == pid)).all()
-    cash = 0
-    for t in txs:
-        if t.kind == "deposit":
-            cash += t.amount
-        elif t.kind == "withdraw":
-            cash -= t.amount
-        elif t.kind == "buy":
-            cash -= t.qty * t.price
-        elif t.kind == "sell":
-            cash += t.qty * t.price
-
-    lots_rows = session.scalars(
-        select(PositionLot).where(PositionLot.portfolio_id == pid)
-        .order_by(PositionLot.opened_at, PositionLot.id)  # FIFO 결정론 (검증 ①⑧)
-    ).all()
+    # 계좌 상태 = 신호 기준일 종가 시점(실행일 이전 체결만) — B안 (feature-portfolio §5, 2026-09-02).
+    # 실행일 당일의 체결 등록은 당일 주문표를 바꾸지 않는다 (HTS 주문장과 화면 불일치 방지).
+    lot_rows, cash = _state_before(session, pid, exec_day)
     lots: list[Lot] = []
     qty_200 = qty_lev = 0
     SUPPORTED = ({"QQQ", "QLD", "TQQQ"} if pf_row.market == "US"
                  else {"069500", "102110", "122630"})
     LEV_CODES = {"122630", "QLD", "TQQQ"}
-    for l in lots_rows:
-        code = session.get(Instrument, l.instrument_id).code
+    for l in lot_rows:
+        code = session.get(Instrument, l["instrument_id"]).code
         if code not in SUPPORTED:
             from fastapi import HTTPException
             raise HTTPException(status_code=409,
                                 detail=f"전략 대상 외 종목({code}) 보유 — 이 포트 기준 주문표를 계산할 수 없습니다")
         if code in LEV_CODES:
-            lots.append(Lot(LEV, l.qty_open, l.price, "lev_strat", None, 0))
-            qty_lev += l.qty_open
+            lots.append(Lot(LEV, l["qty"], l["price"], "lev_strat", None, 0))
+            qty_lev += l["qty"]
         else:  # 1배 주력(069500/102110/QQQ) → 200 레그
             if regime is Regime.BULL and params.flags.f1_no_tp_in_bull:
-                lots.append(Lot(K200, l.qty_open, l.price, "core", None, 0))
+                lots.append(Lot(K200, l["qty"], l["price"], "core", None, 0))
             else:
                 # 익절 기준가 = 최근 종가 × (1+오늘 Grid) — 정본 §5.6 코어 편입 규칙 준용.
                 # 평단 기준으로 하면 과거 매수분이 "이미 목표 도달"로 시작 즉시 전량 매도됨 (2026-08-28 검토)
                 tp = round_tick(m200.closes[last] * (1 + grid_today), params.tick, up=True)
-                lots.append(Lot(K200, l.qty_open, l.price, "grid", tp, 0))
-            qty_200 += l.qty_open
+                lots.append(Lot(K200, l["qty"], l["price"], "grid", tp, 0))
+            qty_200 += l["qty"]
 
     user_pf = Portfolio(cash=float(cash), lots=lots)
     p = plan(last, m200, mlev, regime, user_pf, params)
@@ -202,13 +251,8 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
     }
     # '그날의 주문표' 보존 — 일자별 매매 일지의 계획 vs 체결 대조 (2026-08-29 지시).
     # 주문표는 기준일(bars[last]) 종가 계획 = 다음 거래일 실행분이라 다음 거래일 키로 저장.
-    from datetime import timedelta as _td
-
+    # B안 이후 계획은 실행일 당일 체결과 무관하게 결정론적이라 upsert 갱신이 보존을 해치지 않는다.
     from app.models import PortfolioPlan
-    base_day = date.fromisoformat(bars_200[last]["date"])
-    exec_day = base_day + _td(days=1)
-    while exec_day.weekday() >= 5:
-        exec_day += _td(days=1)
     row = session.scalar(select(PortfolioPlan).where(
         PortfolioPlan.portfolio_id == pid, PortfolioPlan.trade_date == exec_day))
     payload = {"regime": regime.value, "signal_date": base_day.isoformat(),
@@ -308,34 +352,25 @@ def _tf_portfolio_orders(session: Session, pf_row, pid: int) -> dict:
     QLD/TQQQ 등 전략 외 보유는 항상 청산 대상으로 표기한다.
     """
     from app.backtests import load_aligned_bars as _load
-    from app.models import Instrument, PositionLot, TradeTransaction
+    from app.models import Instrument
     from app.strategy.trendfilter import TF_EXIT_BUFFER, TF_MA, run_tf_backtest
 
     bars, _, _ = _load(session, date(1990, 1, 1), date(2100, 1, 1), codes=("QQQ", "QQQ"))
     result = run_tf_backtest(bars, MODEL_CAPITAL)
     lp = result.plans[-1]
     want_hold = lp.status == "OK" and lp.regime is Regime.BULL
+    base_day = date.fromisoformat(bars[-1]["date"])
+    exec_day = _next_exec_day(base_day)
 
-    txs = session.scalars(select(TradeTransaction).where(TradeTransaction.portfolio_id == pid)).all()
-    cash = 0
-    for t in txs:
-        if t.kind == "deposit":
-            cash += t.amount
-        elif t.kind == "withdraw":
-            cash -= t.amount
-        elif t.kind == "buy":
-            cash -= t.qty * t.price
-        elif t.kind == "sell":
-            cash += t.qty * t.price
-    lots = session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pid)
-                           .order_by(PositionLot.opened_at, PositionLot.id)).all()
+    # 계좌 상태 = 신호 기준일 종가 시점 — B안 (RAVG 쪽과 동일 계약, 2026-09-02)
+    lot_rows, cash = _state_before(session, pid, exec_day)
     qty_qqq = qty_lev = 0
-    for l in lots:
-        code = session.get(Instrument, l.instrument_id).code
+    for l in lot_rows:
+        code = session.get(Instrument, l["instrument_id"]).code
         if code == "QQQ":
-            qty_qqq += l.qty_open
+            qty_qqq += l["qty"]
         else:
-            qty_lev += l.qty_open
+            qty_lev += l["qty"]
 
     close = float(bars[-1]["close"])
     orders = []
@@ -358,14 +393,8 @@ def _tf_portfolio_orders(session: Session, pf_row, pid: int) -> dict:
         "account": {"cash": cash, "qty_200": qty_qqq, "qty_lev": qty_lev, "equity": equity},
         "orders": orders, "gap_cancel_below": None,
     }
-    # 계획 스냅샷 (일자별 일지)
-    from datetime import timedelta as _td
-
+    # 계획 스냅샷 (일자별 일지) — B안 이후 결정론적 upsert
     from app.models import PortfolioPlan
-    base_day = date.fromisoformat(bars[-1]["date"])
-    exec_day = base_day + _td(days=1)
-    while exec_day.weekday() >= 5:
-        exec_day += _td(days=1)
     row = session.scalar(select(PortfolioPlan).where(
         PortfolioPlan.portfolio_id == pid, PortfolioPlan.trade_date == exec_day))
     payload = {"regime": lp.regime.value, "signal_date": base_day.isoformat(),

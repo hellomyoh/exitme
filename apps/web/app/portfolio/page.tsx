@@ -176,7 +176,11 @@ function PortfolioPage() {
       name, market, code_200: market === "KR" ? startCode200 : undefined }) });
     if (!res.ok) return;
     const { id } = (await res.json()) as { id: number };
-    const now = new Date().toISOString();
+    // 시작 항목(입금·보유분)은 직전 영업일 15:30 KST 로 기록 — 등록 이전부터 보유하던 이력이며,
+    // 주문표가 "신호 기준일 종가 시점 상태"만 반영하므로(B안) 오늘 시각이면 당일 주문표에서 제외됨 (2026-09-02)
+    const prev = new Date();
+    do { prev.setDate(prev.getDate() - 1); } while (prev.getDay() === 0 || prev.getDay() === 6);
+    const now = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}-${String(prev.getDate()).padStart(2, "0")}T15:30:00+09:00`;
     const cash = startCash.trim() ? priceToApi(market, startCash) : 0;
     if (startMode === "fresh") {
       // 오늘부터 새로 시작 — 이전 기록 없음, (선택) 초기 입금만
@@ -448,7 +452,7 @@ function PortfolioPage() {
           오늘의 주문표 {signal?.status === "OK" && (
             <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}
               {signal.basis === "portfolio" && signal.account
-                ? ` · 계산 기준: 보유 ${signal.account.qty_200.toLocaleString()}주/레버 ${signal.account.qty_lev.toLocaleString()}주 · 현금 ${fm(signal.account.cash)}`
+                ? ` · 계산 기준(${signal.trade_date} 종가 시점): 보유 ${signal.account.qty_200.toLocaleString()}주/레버 ${signal.account.qty_lev.toLocaleString()}주 · 현금 ${fm(signal.account.cash)} — 오늘 체결 등록은 내일 주문표부터 반영`
                 : " · 모델 기준"}</span>
           )}
         </CardTitle>
