@@ -48,31 +48,74 @@ def record_event(session: Session, kind: str, user_id: int | None) -> None:
     session.add(AnalyticsEvent(user_id=user_id, kind=kind))
 
 
-def compute_user_snapshot(session: Session, user_id: int, snap_date: date) -> AssetSnapshot:
-    """사용자 자산 스냅샷 계산·저장 (같은 날짜는 갱신) — 배치와 API 가 공유."""
-    from app.portfolios import latest_close
+def latest_closes(session: Session, inst_ids: set[int]) -> dict[int, float]:
+    """종목 집합의 최신 종가 일괄 조회 — 로트당 개별 조회(N+1) 금지 (검토 B3)."""
+    from app.models import OhlcvDaily
+
+    if not inst_ids:
+        return {}
+    sub = (select(OhlcvDaily.instrument_id, OhlcvDaily.close_raw, OhlcvDaily.adj_factor)
+           .where(OhlcvDaily.instrument_id.in_(inst_ids))
+           .order_by(OhlcvDaily.instrument_id, OhlcvDaily.trade_date.desc())
+           .distinct(OhlcvDaily.instrument_id))
+    return {iid: close * float(adj) for iid, close, adj in session.execute(sub).all()}
+
+
+def _portfolio_state(session: Session, pf_id: int, prices: dict[int, float]) -> tuple[int, int, int]:
+    """포트의 (stock_value, cash, cost) — 정수 확정 (ADR-008). 시세 없으면 취득가 평가."""
     from app.models import PositionLot, TradeTransaction
 
-    # KRW 스냅샷 — 미국 포트(센트 단위)는 환율 모델 도입 전까지 제외 (통화 혼합 방지, 2026-08-31)
-    pfs = session.scalars(select(TradePortfolio).where(
-        TradePortfolio.user_id == user_id, TradePortfolio.market == "KR")).all()
-    stock = 0.0
+    lots = session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pf_id)).all()
+    stock = round(sum(l.qty_open * prices.get(l.instrument_id, l.price) for l in lots))
+    cost = sum(l.qty_open * l.price for l in lots)
     cash = 0
+    for t in session.scalars(select(TradeTransaction).where(
+            TradeTransaction.portfolio_id == pf_id)).all():
+        if t.kind == "deposit":
+            cash += t.amount
+        elif t.kind == "withdraw":
+            cash -= t.amount
+        elif t.kind == "buy":
+            cash -= t.qty * t.price
+        elif t.kind == "sell":
+            cash += t.qty * t.price
+    return stock, cash, cost
+
+
+def compute_user_snapshot(session: Session, user_id: int, snap_date: date) -> AssetSnapshot:
+    """포트 스냅샷(정수 원천)을 확정하고 사용자 스냅샷을 합산 유도 — 같은 트랜잭션 (ADR-008).
+
+    적재는 ON CONFLICT 단일문(배치·열람 동시 실행 경합 제거, 검토 D2).
+    US 포트는 센트 그대로 currency='USD' 로 적재하고 KRW 합산에서 제외한다.
+    """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from app.models import PortfolioSnapshot, PositionLot
+
+    pfs = session.scalars(select(TradePortfolio).where(
+        TradePortfolio.user_id == user_id)).all()
+    pf_ids = [p.id for p in pfs]
+    inst_ids = set(session.scalars(select(PositionLot.instrument_id).where(
+        PositionLot.portfolio_id.in_(pf_ids))).all()) if pf_ids else set()
+    prices = latest_closes(session, inst_ids)
+
+    kr_stock = kr_cash = 0
     for pf in pfs:
-        lots = session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pf.id)).all()
-        for l in lots:
-            px = latest_close(session, l.instrument_id)
-            stock += l.qty_open * (px[0] if px else l.price)
-        txs = session.scalars(select(TradeTransaction).where(TradeTransaction.portfolio_id == pf.id)).all()
-        for t in txs:
-            if t.kind == "deposit":
-                cash += t.amount
-            elif t.kind == "withdraw":
-                cash -= t.amount
-            elif t.kind == "buy":
-                cash -= t.qty * t.price
-            elif t.kind == "sell":
-                cash += t.qty * t.price
+        stock, cash, _cost = _portfolio_state(session, pf.id, prices)
+        currency = "KRW" if pf.market == "KR" else "USD"
+        stmt = pg_insert(PortfolioSnapshot.__table__).values(
+            portfolio_id=pf.id, snap_date=snap_date,
+            equity=stock + cash, stock_value=stock, cash=cash, currency=currency,
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_portfolio_snapshots_pid_date",
+            set_={"equity": stmt.excluded.equity, "stock_value": stmt.excluded.stock_value,
+                  "cash": stmt.excluded.cash, "currency": stmt.excluded.currency},
+        )
+        session.execute(stmt)
+        if currency == "KRW":
+            kr_stock += stock
+            kr_cash += cash
+
     other = sum(m.value for m in session.scalars(
         select(ManualAsset).where(ManualAsset.user_id == user_id)).all())
     snap = session.scalar(select(AssetSnapshot).where(
@@ -80,8 +123,8 @@ def compute_user_snapshot(session: Session, user_id: int, snap_date: date) -> As
     if snap is None:
         snap = AssetSnapshot(user_id=user_id, snap_date=snap_date, total=0, stock=0, cash=0, other=0)
         session.add(snap)
-    snap.stock, snap.cash, snap.other = round(stock), cash, other
-    snap.total = round(stock) + cash + other
+    snap.stock, snap.cash, snap.other = kr_stock, kr_cash, other
+    snap.total = kr_stock + kr_cash + other  # 불변식: Σ(KRW 포트 equity) + other == total
     session.flush()
     return snap
 
@@ -114,11 +157,32 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
         f_all = user_flows_between(session, user_id, first.snap_date, today)
         denom = first.total + f_all
         since_pct = (snap.total - first.total - f_all) / denom if denom > 0 else None
+    # 자산 내용 카드 — KR/US 구분 (feature-dashboard §5, 2026-09-02). US 는 센트, $ 표기는 웹 담당.
+    from app.models import PositionLot
+
+    def _market_breakdown(market: str) -> dict:
+        pfs = session.scalars(select(TradePortfolio).where(
+            TradePortfolio.user_id == user_id, TradePortfolio.market == market)).all()
+        pf_ids = [p.id for p in pfs]
+        inst_ids = set(session.scalars(select(PositionLot.instrument_id).where(
+            PositionLot.portfolio_id.in_(pf_ids))).all()) if pf_ids else set()
+        prices = latest_closes(session, inst_ids)
+        value = cost = 0
+        for p in pfs:
+            s, _c, co = _portfolio_state(session, p.id, prices)
+            value += s
+            cost += co
+        pnl = value - cost
+        return {"value": value, "cost": cost, "pnl": pnl,
+                "pnl_pct": (pnl / cost) if cost > 0 else None}
+
     return {
         "total": snap.total, "stock": snap.stock, "cash": snap.cash, "other": snap.other,
         "change_amount": change,
         "change_pct": change_pct,
         "since_inception_pct": since_pct,
+        "kr_stock": _market_breakdown("KR"),
+        "us_stock": _market_breakdown("US"),  # 값 단위: 센트 (환율 미도입 — KRW 합산 제외)
         "manual_assets": [
             {"id": m.id, "name": m.name, "category": m.category, "value": m.value} for m in manuals
         ],
@@ -136,10 +200,37 @@ def trend(range_: str = "3M", user_id: int = Depends(current_user_id),
         select(AssetSnapshot).where(AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date >= since)
         .order_by(AssetSnapshot.snap_date)
     ).all()
+
+    # 포트별 다선 (ADR-008) — 기존 items 비파괴, series 추가. 웹은 currency='KRW' 만 그린다.
+    from app.models import PortfolioSnapshot
+
+    series = []
+    pfs = session.scalars(select(TradePortfolio).where(
+        TradePortfolio.user_id == user_id).order_by(TradePortfolio.id)).all()
+    for pf in pfs:
+        ps = session.scalars(
+            select(PortfolioSnapshot).where(PortfolioSnapshot.portfolio_id == pf.id,
+                                            PortfolioSnapshot.snap_date >= since)
+            .order_by(PortfolioSnapshot.snap_date)
+        ).all()
+        if key == "ALL" and len(ps) > 366:
+            # ALL 은 주 단위 샘플(각 ISO 주의 마지막 스냅샷) — 페이로드·복호 비용 통제 (검토 B4·D3)
+            by_week: dict[tuple[int, int], PortfolioSnapshot] = {}
+            for r in ps:
+                by_week[r.snap_date.isocalendar()[:2]] = r
+            ps = sorted(by_week.values(), key=lambda r: r.snap_date)
+        if not ps:
+            continue
+        series.append({
+            "portfolio_id": pf.id, "name": pf.name, "market": pf.market,
+            "currency": "KRW" if pf.market == "KR" else "USD",
+            "points": [{"date": r.snap_date.isoformat(), "equity": r.equity} for r in ps],
+        })
+
     return {"items": [
         {"date": r.snap_date.isoformat(), "total": r.total, "stock": r.stock,
          "cash": r.cash, "other": r.other} for r in rows
-    ]}
+    ], "series": series}
 
 
 @router.get("/portfolio/calendar")

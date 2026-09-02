@@ -18,6 +18,8 @@ type Summary = {
   portfolio: { id: number; name: string; kind: string; backtest_id: number | null };
   as_of: string | null; cash: number; stock_value: number; total_equity: number;
   realized_pnl: number; unrealized_pnl: number; estimated_costs: number;
+  principal: number; invested_cost: number;
+  net_pnl: number; net_pnl_pct: number | null; unrealized_pnl_pct: number | null;
   twr: number | null; xirr: number | null; positions: Position[];
 };
 type PortfolioItem = { id: number; name: string; kind: string; market?: string };
@@ -260,6 +262,10 @@ function PortfolioPage() {
   }, [curve]);
 
   const net = sum ? sum.unrealized_pnl + sum.realized_pnl - (includeCosts ? sum.estimated_costs : 0) : 0;
+  // 손익 비율 이중 기준 (feature-portfolio §5): 순손익 ÷ 납입원금, 평가손익 ÷ 보유원가 — 분모 ≤ 0 이면 % 미표시
+  const netPct = sum && sum.principal > 0 ? net / sum.principal : null;
+  const evalPct = sum && sum.invested_cost > 0 ? sum.unrealized_pnl / sum.invested_cost : null;
+  const withPct = (amount: string, pct: number | null) => pct == null ? amount : `${amount} (${fmtPct(pct, 2)})`;
 
   return (
     <main>
@@ -361,8 +367,8 @@ function PortfolioPage() {
           <Stat label="현금" value={fm(sum.cash)} tip="입금 − 출금 − 매수금액 + 매도금액의 원장 잔액" />
           <Stat label="주식" value={fm(sum.stock_value)} tip="보유 수량 × 최근 종가 (지연 시세)" />
           <Stat label="실현손익" value={fm(sum.realized_pnl)} tone={pnlTone(sum.realized_pnl)} tip="매도로 확정된 손익의 누적 — 매도가와 매수가(FIFO 선입선출 매칭)의 차이" />
-          <Stat label="평가손익" value={fm(sum.unrealized_pnl)} tone={pnlTone(sum.unrealized_pnl)} tip="아직 팔지 않은 보유분의 손익 — (현재가 − 평균단가) × 보유 수량" />
-          <Stat label={`순손익${includeCosts ? " (비용차감)" : ""}`} value={fm(net)} tone={pnlTone(net)} tip="실현손익 + 평가손익 − 추정 수수료(체크 시). 이 계좌의 전체 성과 금액" />
+          <Stat label="평가손익" value={withPct(fm(sum.unrealized_pnl), evalPct)} tone={pnlTone(sum.unrealized_pnl)} tip="아직 팔지 않은 보유분의 손익 — (현재가 − 평균단가) × 보유 수량. %는 보유원가 대비" />
+          <Stat label={`순손익${includeCosts ? " (비용차감)" : ""}`} value={withPct(fm(net), netPct)} tone={pnlTone(net)} tip="실현손익 + 평가손익 − 추정 수수료(체크 시). %는 납입 원금(입금−출금) 대비 — 원금 이상 출금 시 %는 표시하지 않습니다" />
           <Stat label="TWR" value={fmtPct(sum.twr, 2)} tip="시간가중수익률 — 입출금 시점의 영향을 제거한 운용 성과. 펀드 수익률과 같은 방식이며, 입금이 많아도 왜곡되지 않습니다" />
           <Stat label="XIRR" value={fmtPct(sum.xirr, 2)} tip="내부수익률(연환산) — 입출금 현금흐름과 현재 평가액으로 계산한 '내 돈 기준' 연 수익률" />
         </div>

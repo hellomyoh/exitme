@@ -279,15 +279,15 @@ def daily_signal(target: str | None = None) -> dict:
 @celery_app.task(name="app.worker.daily_asset_snapshot")
 def daily_asset_snapshot() -> dict:
     """전 사용자 자산 스냅샷 적재 (feature-dashboard §5 — 추이·캘린더 원천)."""
-    from datetime import date as _date
-
-    from app.dashboard import compute_user_snapshot
+    from app.dashboard import compute_user_snapshot, kst_today
     from app.db import SessionLocal
     from app.models import User
 
     with SessionLocal() as session:
         users = session.scalars(select(User)).all()
+        # 날짜는 KST 통일 — UTC date.today() 는 KST 00~09시에 하루 밀려 API 열람 적재와
+        # 다른 snap_date 를 만든다 (검토 D2, 기존 결함 수정)
         for u in users:
-            compute_user_snapshot(session, u.id, _date.today())
+            compute_user_snapshot(session, u.id, kst_today())
         session.commit()
         return {"users": len(users)}

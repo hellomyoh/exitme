@@ -338,6 +338,27 @@ class AssetSnapshot(Base):
     other: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)   # 🔒
 
 
+class PortfolioSnapshot(Base):
+    """포트 단위 일별 스냅샷 — 사용자 스냅샷의 정수 원천 (ADR-008).
+
+    currency 는 적재 시점 비정규화(KRW=원 | USD=센트) — 값 단위를 행 안에 보존해
+    환율 도입 시 백필 없이 환산 가능. FK CASCADE 로 포트 삭제 시 함께 제거.
+    """
+
+    __tablename__ = "portfolio_snapshots"
+    __table_args__ = (UniqueConstraint("portfolio_id", "snap_date",
+                                       name="uq_portfolio_snapshots_pid_date"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False)
+    snap_date: Mapped[date] = mapped_column(Date, nullable=False)
+    equity: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)       # 🔒
+    stock_value: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)  # 🔒
+    cash: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)         # 🔒
+    currency: Mapped[str] = mapped_column(Text, nullable=False)                # KRW | USD
+
+
 class ManualAsset(TimestampMixin, Base):
     """기타 자산 수동 등록 — 채권/펀드/금/코인/부동산 등 (feature-dashboard §5)."""
 

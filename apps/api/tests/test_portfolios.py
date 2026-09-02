@@ -470,3 +470,43 @@ def test_change_password_flow():
     assert client.post("/auth/change-password", json={"current_password": "password123",
                                                       "new_password": "newpass1234"}, headers=h).status_code == 200
     assert client.post("/auth/login", json={"email": email, "password": "newpass1234"}).status_code == 200
+
+
+# ── 2026-09-02 손익 비율 이중 기준 — 분모 경계 (feature-portfolio §12)
+
+def test_pnl_pct_denominator_edges():
+    """① 원금 초과 출금 → net% null ② 전량 매도 → 평가% null·평가 0 ③ 입금 없는 매수 → net% null·평가% 정상."""
+    from tests.test_backtest_api import seed_synthetic
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _u
+    token = client.post("/auth/register", json={"email": f"pc{_u.uuid4().hex[:8]}@stocklab.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    ts = datetime(2026, 8, 20, tzinfo=timezone.utc).isoformat()
+    # ①+②: 입금 → 매수 → 전량 익절 매도 → 원금 초과 출금
+    client.post("/positions", json={"kind": "deposit", "amount": 1_000_000, "executed_at": ts}, headers=h)
+    client.post("/positions", json={"kind": "buy", "code": "069500", "qty": 10, "price": 70000,
+                                    "executed_at": ts}, headers=h)
+    client.post("/positions", json={"kind": "sell", "code": "069500", "qty": 10, "price": 120000,
+                                    "executed_at": datetime(2026, 8, 21, tzinfo=timezone.utc).isoformat()}, headers=h)
+    client.post("/positions", json={"kind": "withdraw", "amount": 1_200_000,
+                                    "executed_at": datetime(2026, 8, 22, tzinfo=timezone.utc).isoformat()}, headers=h)
+    s1 = client.get("/portfolio/summary", headers=h).json()
+    assert s1["principal"] == -200_000
+    assert s1["net_pnl_pct"] is None                # 분모 ≤ 0 → % 만 null
+    assert s1["net_pnl"] != 0                        # 금액은 항상 표시
+    assert s1["unrealized_pnl_pct"] is None          # 전량 매도 — 보유원가 0
+    assert s1["unrealized_pnl"] == 0
+    assert s1["realized_pnl"] == 500_000
+
+    # ③ 입금 없이 매수만 등록된 포트
+    pid = client.post("/portfolios", json={"name": "nofund", "market": "KR"}, headers=h).json()["id"]
+    client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 5,
+                                    "price": 70000, "executed_at": ts}, headers=h)
+    s2 = client.get(f"/portfolio/summary?portfolio_id={pid}", headers=h).json()
+    assert s2["principal"] == 0 and s2["net_pnl_pct"] is None
+    assert s2["invested_cost"] == 350_000
+    assert s2["unrealized_pnl_pct"] is not None      # 보유원가 분모는 정상
