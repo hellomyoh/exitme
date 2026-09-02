@@ -294,10 +294,11 @@ function PortfolioPage() {
 
       {/* 포트 선택: 드롭다운 → 탭(알약) — 한 번의 클릭으로 전환 (2026-09-02 지시) */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        {[{ id: null as number | null, name: "내 계좌 (기본)" }, ...portfolios].map((p) => (
-          <button key={p.id ?? "default"} onClick={() => setPid(p.id)}
+        {/* '내 계좌 (기본)' 별칭 탭 제거 — 서버 기본값은 가장 오래된 포트와 동일해 중복 (2026-09-02 질문) */}
+        {portfolios.map((p) => (
+          <button key={p.id} onClick={() => setPid(p.id)}
             className={`rounded-lg border px-3.5 py-2 text-[14px] transition-colors ${
-              pid === p.id ? "border-accent bg-accent-dim font-semibold text-accent"
+              (pid ?? sum?.portfolio.id) === p.id ? "border-accent bg-accent-dim font-semibold text-accent"
                            : "border-line bg-inset text-muted hover:border-line-strong hover:text-ink"}`}>
             {p.name}
           </button>
