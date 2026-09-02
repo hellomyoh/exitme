@@ -664,7 +664,8 @@ function PortfolioPage() {
                         <tbody>
                           {j.fills.map((t) => (
                             <tr key={t.id} className="border-t border-line/40">
-                              <td className="py-1.5 text-muted">{t.memo && t.memo.length <= 10 ? t.memo : TX_KO[t.kind]}</td>
+                              {/* 메모 표기 한도 10→18자 — '시작 입금 (현금+보유 원가)' 가 '입금'으로만 보여 금액 오해 (2026-09-02) */}
+                              <td className="py-1.5 text-muted">{t.memo && t.memo.length <= 18 ? t.memo : TX_KO[t.kind]}</td>
                               <td className="py-1.5">{t.name ?? "—"}</td>
                               <td className={`py-1.5 font-semibold ${t.kind === "buy" ? "text-up" : t.kind === "sell" ? "text-down" : "text-muted"}`}>{TX_KO[t.kind]}</td>
                               <td className="table-num py-1.5">{fpx(t.price ?? t.amount ?? 0)}</td>
