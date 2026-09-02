@@ -52,13 +52,16 @@ def run_tf_backtest(bars: list[dict], capital: float,
             qty += int(h["qty"])
             buy_px = float(h["price"])
             buy_i = first
+    # 수익률 기준 원금 = 현금 + 보유 원가 (RAVG 엔진과 동일 규약, 2026-09-02)
+    base_capital = float(capital) + sum(
+        int(h["qty"]) * float(h["price"]) for h in (initial_lots or []) if h.get("leg", "K200") == "K200")
     trades: list[ClosedTrade] = []
     fills: list[Fill] = []
     plans: list[Plan] = []
     out_dates: list[str] = []
     equity, bench, regimes, exposures = [], [], [], []
     cash_curve, qty_curve = [], []
-    bench_qty, bench_cash = 0.0, float(capital)
+    bench_qty, bench_cash = 0.0, base_capital
     pending: str | None = None
     active_start: int | None = None
     total = max(n - 1 - first, 1)
@@ -128,13 +131,13 @@ def run_tf_backtest(bars: list[dict], capital: float,
         bench_v = bench_cash + bench_qty * c * (1 - 0)  # 보수는 전략과 동일하게 미차감(단순 비교)
         out_dates.append(dates[nxt])
         equity.append(v)
-        bench.append(bench_v if bench_qty else float(capital))
+        bench.append(bench_v if bench_qty else base_capital)
         regimes.append(regime)
         exposures.append(1.0 if qty > 0 else 0.0)
         cash_curve.append(cash)
         qty_curve.append(qty)
 
-    kpi = compute_kpi(equity[active_start or 0:], capital, trades)
+    kpi = compute_kpi(equity[active_start or 0:], base_capital, trades)
     kpi["open_lots"] = 1 if qty > 0 else 0
     final_lots = ([{"instrument": K200, "qty": qty, "price": int(round(buy_px)), "date": dates[buy_i]}]
                   if qty > 0 else [])

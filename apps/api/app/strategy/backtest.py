@@ -157,6 +157,9 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
         leg = K200 if h.get("leg", "K200") == "K200" else LEV
         kind = "core" if leg == K200 else "lev_strat"
         pf.lots.append(Lot(leg, int(h["qty"]), int(round(float(h["price"]))), kind, None, first0))
+    # 수익률 기준 원금 = 현금 + 보유 원가 — 실전 '시작 입금(현금+보유 원가)' 규약과 동일.
+    # 현금만 분모로 쓰면 보유 평가액이 통째로 수익으로 잡힘 (2026-09-02 결함: +153% 사례)
+    base_capital = capital + sum(int(h["qty"]) * float(h["price"]) for h in (initial_lots or []))
     ledger = _Ledger(params)
     regime = Regime.NEUTRAL
     first = start_index if start_index is not None else 0
@@ -172,9 +175,9 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
     qty_200_curve: list[int] = []
     qty_lev_curve: list[int] = []
 
-    # 벤치마크: KODEX 200 매수보유 (보수 반영, feature-backtest §5.3)
+    # 벤치마크: KODEX 200 매수보유 (보수 반영, feature-backtest §5.3) — 전략과 같은 총원금으로 시작
     bench_qty = 0.0
-    bench_cash = capital
+    bench_cash = base_capital
 
     prev_grid = 0.0
     active_start: int | None = None  # 첫 OK 계획 시점 — KPI 는 활동 구간 기준 (검증 B4)
@@ -287,7 +290,7 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
             fee_b = _fee(bench_qty * m200.closes[nxt], params.fee_200, days)
             bench_cash -= fee_b
             bench_val -= fee_b
-        bench_curve.append(bench_val if bench_qty else capital)
+        bench_curve.append(bench_val if bench_qty else base_capital)
         regimes.append(regime.value)
         exposures.append(p.e_target if p.status == "OK" else 0.0)
         out_dates.append(dates[nxt])
@@ -302,7 +305,7 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
         p_final = plan(last, m200, mlev, regime, pf, params)
         plans.append(p_final)
 
-    kpi = compute_kpi(equity_curve[active_start or 0:], capital, ledger.closed)
+    kpi = compute_kpi(equity_curve[active_start or 0:], base_capital, ledger.closed)
     kpi["open_lots"] = len(pf.lots)  # 미청산 별도 표기 (§5.3, 검증 B6)
     final_lots = [
         {"instrument": l.instrument, "qty": l.qty, "price": l.price,

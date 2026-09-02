@@ -317,7 +317,9 @@ def get_backtest_journal(bt_id: int, user_id: int = Depends(current_user_id),
         fills_by_date.setdefault(f.date, []).append(
             {"instrument": f.instrument, "side": f.side, "kind": f.kind, "price": f.price, "qty": f.qty})
 
-    capital = float(p["capital"])
+    # 일지 기준 원금 = 현금 + 시작 보유 원가 — 엔진 KPI 와 동일 규약 (2026-09-02)
+    capital = float(p["capital"]) + sum(
+        int(h["qty"]) * float(h["price"]) for h in (p.get("holdings") or []))
     items = []
     for i, d in enumerate(r.dates):
         plan_i = r.plans[i] if i < len(r.plans) else None  # dates[i] 체결일의 계획 = plans[i-?]... 아래 주석 참조

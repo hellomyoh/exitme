@@ -180,3 +180,20 @@ def test_cagr_none_on_total_loss():
     assert kpi["cagr"] is None
     import json
     json.dumps(kpi)  # 직렬화 가능해야 함
+
+
+# ── 보유 상태로 시작 (2026-09-02): 원금 = 현금 + 보유 원가 — 보유 평가액이 수익으로 잡히면 안 됨
+def test_initial_lots_not_counted_as_profit(bars):
+    b200, blev = bars
+    seed_qty, seed_px = 400, int(b200[0]["close"])
+    plain = run_backtest(b200, blev, 100_000_000, P)
+    seeded = run_backtest(b200, blev, 100_000_000, P,
+                          initial_lots=[{"leg": "K200", "qty": seed_qty, "price": seed_px}])
+    # 시작 평가액에 보유가 포함
+    assert seeded.equity[0] > plain.equity[0]
+    # 총수익률이 보유 가치(+~28%)만큼 부풀지 않아야 — 현금만 분모였던 결함(+153% 사례) 회귀 방지
+    inflated = (seeded.equity[-1]) / 100_000_000 - 1.0
+    assert seeded.kpi["total_return"] < inflated - 0.1
+    # 원금(현금+원가) 기준으로 정의와 일치
+    base = 100_000_000 + seed_qty * seed_px
+    assert seeded.kpi["total_return"] == pytest.approx(seeded.equity[-1] / base - 1.0, rel=1e-9)
