@@ -3,15 +3,19 @@
 /** 자산 대시보드 — 벤토: 히어로 총자산·구성·레짐 게이지·추이·손익 캘린더 (feature-dashboard §9). */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createChart, IChartApi, AreaSeries } from "lightweight-charts";
+import { createChart, IChartApi, AreaSeries, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { Badge, Card, CardTitle, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone } from "../../components/ui";
 
+type Breakdown = { value: number; cost: number; pnl: number; pnl_pct: number | null };
 type Dash = {
   total: number; stock: number; cash: number; other: number;
   change_amount: number; change_pct: number | null; since_inception_pct: number | null;
+  kr_stock: Breakdown; us_stock: Breakdown;  // us_stock 값 단위: 센트
   manual_assets: { id: number; name: string; category: string; value: number }[];
 };
+type TrendSeries = { portfolio_id: number; name: string; market: string; currency: string;
+  points: { date: string; equity: number }[] };
 type Signal = { status: string; regime?: string; e_target?: number; w_200?: number; w_lev?: number };
 type CalItem = { date: string; pnl: number };
 
@@ -26,6 +30,7 @@ export default function DashboardPage() {
   const [calendar, setCalendar] = useState<CalItem[]>([]);
   const [range, setRange] = useState("3M");
   const [form, setForm] = useState({ name: "", category: "예금", value: "" });
+  const [trendLegend, setTrendLegend] = useState<{ name: string; color: string }[]>([]);
   const trendRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
 
@@ -44,10 +49,14 @@ export default function DashboardPage() {
     chartApi.current = null;
   }, []);
 
+  // 포트별 다선 색 — 총자산(주황 면적) 외 KRW 포트 라인 (feature-dashboard §8, ADR-008)
+  const SERIES_COLORS = ["#2563eb", "#059669", "#7c3aed", "#db2777", "#0891b2", "#ca8a04"];
+
   const loadTrend = useCallback(async (r: string) => {
     const res = await apiFetch(`/portfolio/trend?range_=${r}`);
     if (!res.ok || !trendRef.current) return;
-    const items = ((await res.json()) as { items: { date: string; total: number }[] }).items;
+    const body = (await res.json()) as { items: { date: string; total: number }[]; series?: TrendSeries[] };
+    const items = body.items;
     disposeChart();
     if (items.length < 2) return;
     const chart = createChart(trendRef.current, {
@@ -63,7 +72,18 @@ export default function DashboardPage() {
       topColor: "rgba(180,83,9,0.16)", bottomColor: "rgba(180,83,9,0.0)",
       priceLineVisible: false,
     }).setData(items.map((i) => ({ time: i.date, value: i.total })));
+    // 실전매매 포트별 라인 — KRW 만 (US 는 센트 단위라 환율 도입 전 제외, ASSUMPTIONS 2026-09-02)
+    const legend: { name: string; color: string }[] = [{ name: "총자산", color: "#b45309" }];
+    (body.series ?? []).filter((sr) => sr.currency === "KRW" && sr.points.length >= 2)
+      .forEach((sr, i) => {
+        const color = SERIES_COLORS[i % SERIES_COLORS.length];
+        chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
+          .setData(sr.points.map((pt) => ({ time: pt.date, value: pt.equity })));
+        legend.push({ name: sr.name, color });
+      });
+    setTrendLegend(legend.length > 1 ? legend : []);
     chart.timeScale().fitContent();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [disposeChart]);
 
   useEffect(() => {
@@ -122,6 +142,39 @@ export default function DashboardPage() {
           ) : <p className="text-[13px] text-faint">{signal?.status ?? "—"} — 시딩·배치 후 표시됩니다</p>}
         </Card>
 
+        {/* 자산 내용 — 한국/미국 주식 구분 (feature-dashboard §5, 2026-09-02) */}
+        <Card className="md:col-span-6">
+          <CardTitle>자산 내용</CardTitle>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div>
+              <div className="text-[13px] text-faint">총자산 (KRW · 미국 자산 별도)</div>
+              <div className="mt-1 text-xl font-bold tabular-nums">{dash ? fmtWon(dash.total) : "—"}</div>
+            </div>
+            <div>
+              <div className="text-[13px] text-faint">한국 주식 (실전매매)</div>
+              <div className="mt-1 text-xl font-bold tabular-nums">{dash ? fmtWon(dash.kr_stock.value) : "—"}</div>
+              {dash && dash.kr_stock.cost > 0 && (
+                <div className={`text-[13.5px] font-semibold ${toneCls[pnlTone(dash.kr_stock.pnl)]}`}>
+                  {dash.kr_stock.pnl >= 0 ? "+" : ""}{fmtWon(dash.kr_stock.pnl)}
+                  {dash.kr_stock.pnl_pct != null && ` (${fmtPct(dash.kr_stock.pnl_pct, 2)})`}
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="text-[13px] text-faint">미국 주식 (실전매매 · $)</div>
+              <div className="mt-1 text-xl font-bold tabular-nums">
+                {dash ? `$${(dash.us_stock.value / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "—"}
+              </div>
+              {dash && dash.us_stock.cost > 0 && (
+                <div className={`text-[13.5px] font-semibold ${toneCls[pnlTone(dash.us_stock.pnl)]}`}>
+                  {dash.us_stock.pnl >= 0 ? "+" : ""}${(dash.us_stock.pnl / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                  {dash.us_stock.pnl_pct != null && ` (${fmtPct(dash.us_stock.pnl_pct, 2)})`}
+                </div>
+              )}
+            </div>
+          </div>
+        </Card>
+
         {/* 자산 추이 */}
         <Card className="md:col-span-4">
           <CardTitle right={
@@ -135,6 +188,15 @@ export default function DashboardPage() {
             </span>
           }>자산 추이</CardTitle>
           <div ref={trendRef} className="h-52" />
+          {trendLegend.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-muted">
+              {trendLegend.map((l) => (
+                <span key={l.name} className="inline-flex items-center gap-1.5">
+                  <i className="inline-block h-2 w-2 rounded-full" style={{ background: l.color }} />{l.name}
+                </span>
+              ))}
+            </div>
+          )}
         </Card>
 
         {/* 자산 구성 */}

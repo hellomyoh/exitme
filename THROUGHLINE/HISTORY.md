@@ -249,3 +249,15 @@
 - 작업 내용: "이번 달 일간 손익" 타일이 브라우저 기본 `title` 속성을 사용 — 약 1초 정지해야 뜨고 환경에 따라 미표시(사용자 보고). 앱 공통 group-hover 커스텀 툴팁 패턴(ui.tsx `Tip`과 동일 방식의 소형 변형)으로 교체: 즉시 표시, `날짜 · ±금액`(손익 색상), `role="img"`+aria-label 병기. `.card` 무클리핑 확인 후 타일 상단 중앙 배치.
 - 테스트 결과: web tsc 무오류, /dashboard 200 (dev 핫리로드). 수동 QA(hover 즉시 표시)는 사용자 확인 대기.
 - Git commit: fix: instant custom tooltip on daily pnl calendar
+
+## [2026-09-02] feat | 대시보드 자산 구분(KR/US)·포트별 추이·손익 비율 (ADR-008)
+
+- 작업 내용: 사용자 지시·결정(A안 $ 별도 표기 / 포트별 다선 / 이중 기준 비율) 반영. Multi-Agent 검토(병렬 서브에이전트 3기 — Backend·DB·QA, [discussion/review-dashboard-asset-breakdown-20260902.md](discussion/review-dashboard-asset-breakdown-20260902.md)) 후 구현: (1) **portfolio_snapshots 신설**(0011 — FK CASCADE·currency 비정규화·ON CONFLICT upsert)과 사용자 스냅샷의 **합산 유도** 재구성([ADR-008](adr/008-portfolio-snapshots.md)) + latest_close 일괄 조회(N+1 제거) + 배치 날짜 kst_today 통일(기존 UTC 결함 수정). (2) /dashboard 에 kr_stock/us_stock 카드(평가액·원가·손익 금액/%, US 는 센트→$ 표기), /portfolio/trend 에 series(포트별, 기존 items 비파괴, ALL 주단위 샘플). (3) /portfolio/summary 에 principal·invested_cost·net_pnl·net_pnl_pct(÷납입원금)·unrealized_pnl_pct(÷보유원가) — 분모≤0 → % null·금액 표시. (4) 거래 등록·삭제 시 당일 스냅샷 즉시 재계산(유령값 방지). (5) 웹: 자산 내용 카드·추이 다선(+범례)·실전매매 카드 % 병기.
+- 테스트 결과: api **131 passed / 2 failed**(ws 플레이크 — 단독 재실행 2 passed, NOTES 기록 항목). 신규: 합산 불변식·KR/US 혼합 금지·중복 적재 유일성·삭제 후 스냅샷 정합·포트 삭제 CASCADE·분모 경계 3종. web tsc 무오류, /dashboard·/portfolio 200.
+- Git commit: feat: market asset breakdown, per-portfolio trend, pnl ratios (ADR-008)
+
+## [2026-09-02] fix | 오늘의 주문표 시점 동결 — B안: 신호 기준일 종가 시점 상태로 계산 (사용자 승인)
+
+- 작업 내용: 사용자 보고("체결 등록 시 미체결 수량이 즉시 변동 — 오늘 주문은 변경되면 안 되는 것 아닌가") 검토 결과, 포트 기준 주문표가 조회 시점 원장(당일 체결 포함)으로 재계산되고 그 결과가 portfolio_plans 보존본까지 덮어쓰는 이중 결함 확인 — 정본 §8 "종가 신호 → 익일 발주" 주기 위반 + HTS 주문장과 화면 불일치. **B안(기준 시점 고정 재계산)** 채택: `_state_before(pid, exec_day)` 시점 재생(실행일 이전 체결만, FIFO 등록 경로와 동일 의미론)을 RAVG(`_portfolio_orders`)·TF(`_tf_portfolio_orders`) 공통 적용, exec_day 산출 일원화(`_next_exec_day`). 시작 등록(보유분·시작 입금)은 직전 영업일 15:30 KST 로 기록해 당일 주문표에 반영되도록 조정, 주문표 헤더에 기준 시점·"오늘 체결은 내일 반영" 명시. feature-portfolio §5·§12, ASSUMPTIONS 갱신.
+- 테스트 결과: api **134 passed / 1 failed**(ws 플레이크 — NOTES 기록 항목, 단독 통과). 신규: 당일 체결 등록 후 주문표 불변 + 소급 등록 반영(자가 치유) + 시점 재생 ↔ 로트 테이블 동등성. 기존 포트 주문표 테스트 1건은 합성 봉 범위 내 시각으로 정정. web tsc 무오류.
+- Git commit: fix: freeze today's order sheet at signal-date state (B-plan)

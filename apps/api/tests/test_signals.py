@@ -120,7 +120,7 @@ def test_portfolio_basis_orders_respect_holdings():
     h = {"Authorization": f"Bearer {token}"}
 
     pid = client.post("/portfolios", json={"name": "내 계좌 검증"}, headers=h).json()["id"]
-    now = "2026-08-28T10:00:00+09:00"
+    now = "2025-07-01T10:00:00+09:00"  # 합성 봉 범위 내 — 주문표는 신호 기준일 이전 체결만 반영 (B안, 2026-09-02)
     client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 100_000_000,
                                     "executed_at": now}, headers=h)
     client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500",
@@ -137,3 +137,91 @@ def test_portfolio_basis_orders_respect_holdings():
     # 신호 이력 엔드포인트
     j = client.get("/signals/journal?days=10", headers=h).json()
     assert len(j["items"]) > 0 and {"date", "planned", "fills", "day_pnl"} <= set(j["items"][0])
+
+
+# ── 2026-09-02 B안: 주문표 = 신호 기준일 종가 시점 상태 (feature-portfolio §5·§12)
+
+def _last_bar_and_exec_day(code="069500"):
+    from datetime import timedelta as _td
+    from sqlalchemy import select
+    from app.models import Instrument, OhlcvDaily
+    with SessionLocal() as s:
+        inst = s.scalar(select(Instrument).where(Instrument.code == code))
+        from sqlalchemy import func
+        last = s.scalar(select(func.max(OhlcvDaily.trade_date)).where(OhlcvDaily.instrument_id == inst.id))
+    exec_day = last + _td(days=1)
+    while exec_day.weekday() >= 5:
+        exec_day += _td(days=1)
+    return last, exec_day
+
+
+def test_same_day_fill_does_not_change_order_sheet():
+    """실행일 당일 체결 등록 → 오늘의 주문표 불변. 기준일 이전 소급 거래 → 반영 (자가 치유)."""
+    from tests.test_backtest_api import seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+
+    client = TestClient(app, base_url="https://testserver")
+    email = f"bf{uuid.uuid4().hex[:8]}@stocklab.dev"
+    token = client.post("/auth/register", json={"email": email, "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "b안 검증"}, headers=h).json()["id"]
+    base_day, exec_day = _last_bar_and_exec_day()
+
+    past = f"{(base_day)}T10:00:00+09:00"
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 50_000_000,
+                                    "executed_at": past}, headers=h)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500",
+                                    "qty": 100, "price": 60000, "executed_at": past}, headers=h)
+    before = client.get(f"/signals/daily?portfolio_id={pid}", headers=h).json()
+    assert before["basis"] == "portfolio" and before["account"]["qty_200"] == 100
+
+    # 실행일 당일 체결 등록 — 주문표는 바뀌면 안 된다 (HTS 주문장은 원수량 그대로)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500",
+                                    "qty": 30, "price": 59000,
+                                    "executed_at": f"{exec_day}T10:05:00+09:00"}, headers=h)
+    after = client.get(f"/signals/daily?portfolio_id={pid}", headers=h).json()
+    assert after["orders"] == before["orders"]
+    assert after["account"] == before["account"]     # 계산 기준 상태도 동결
+
+    # 기준일 이전 소급 입금 — 계획이 올바르게 갱신돼야 한다 (동결이 아니라 시점 재생임을 증명)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 10_000_000,
+                                    "executed_at": past}, headers=h)
+    healed = client.get(f"/signals/daily?portfolio_id={pid}", headers=h).json()
+    assert healed["account"]["cash"] == before["account"]["cash"] + 10_000_000
+
+
+def test_state_replay_matches_current_ledger():
+    """동등성 고정: cutoff=미래의 시점 재생 == 현재 로트 테이블·현금 원장 (등록 경로와 FIFO 일치)."""
+    from datetime import date as _date
+    from sqlalchemy import select
+    from app.signals import _state_before
+    from app.models import PositionLot
+    from tests.test_backtest_api import seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+
+    client = TestClient(app, base_url="https://testserver")
+    email = f"eq{uuid.uuid4().hex[:8]}@stocklab.dev"
+    token = client.post("/auth/register", json={"email": email, "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "동등성"}, headers=h).json()["id"]
+    ts = "2025-06-01T10:00:00+09:00"
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 20_000_000,
+                                    "executed_at": ts}, headers=h)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500",
+                                    "qty": 100, "price": 60000, "executed_at": ts}, headers=h)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500",
+                                    "qty": 50, "price": 61000, "executed_at": "2025-06-02T10:00:00+09:00"}, headers=h)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "sell", "code": "069500",
+                                    "qty": 120, "price": 65000, "executed_at": "2025-06-03T10:00:00+09:00"}, headers=h)
+    with SessionLocal() as s:
+        lots, cash = _state_before(s, pid, _date(2100, 1, 1))
+        table = s.scalars(select(PositionLot).where(PositionLot.portfolio_id == pid)
+                          .order_by(PositionLot.opened_at, PositionLot.id)).all()
+        assert [(l["qty"], l["price"]) for l in lots] == [(t.qty_open, t.price) for t in table]
+    summ = client.get(f"/portfolio/summary?portfolio_id={pid}", headers=h).json()
+    assert cash == summ["cash"]

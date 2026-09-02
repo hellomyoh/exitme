@@ -182,6 +182,9 @@ def register_transaction(body: TransactionIn, user_id: int = Depends(current_use
                           realized_pnl=realized, executed_at=body.executed_at,
                           memo=body.memo, tags=body.tags)
     session.add(tx)
+    # 당일 스냅샷 즉시 재계산 — 열람 적재분이 방금 거래를 반영하지 못하는 유령값 방지 (검토 Q1, ADR-008)
+    from app.dashboard import compute_user_snapshot, kst_today
+    compute_user_snapshot(session, user_id, kst_today())
     session.commit()
     return {"id": tx.id, "portfolio_id": pf.id, "realized_pnl": realized}
 
@@ -248,6 +251,9 @@ def delete_transaction(tx_id: int, user_id: int = Depends(current_user_id),
     session.delete(tx)
     session.flush()
     _rebuild_ledger(session, pf.id)
+    # 당일 스냅샷 즉시 재계산 (검토 Q1 — 삭제 전 열람으로 적재된 오늘 값의 유령화 방지)
+    from app.dashboard import compute_user_snapshot, kst_today
+    compute_user_snapshot(session, user_id, kst_today())
     session.commit()
     return {"deleted": tx_id}
 
@@ -513,14 +519,26 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
         xirr_val = xirr(sorted(cfs, key=lambda x: x[0]))
     twr_val = _compute_twr(session, pf.id, txs)
 
+    # 손익 비율 이중 기준 (2026-09-02 사용자 결정): 순손익% ÷ 납입원금, 평가손익% ÷ 보유원가.
+    # 분모 ≤ 0(원금 초과 출금·전량 매도 — 정상 경로)이면 % 만 null, 금액은 항상 표시 (검토 B2·Q3).
+    principal = sum(t.amount for t in txs if t.kind == "deposit") \
+        - sum(t.amount for t in txs if t.kind == "withdraw")
+    invested_cost = round(sum(l.qty_open * l.price for l in lots))
+    unrealized_total = round(sum(p["unrealized"] for p in positions))
+    net_pnl = unrealized_total + realized_total - (round(est_cost) if include_costs else 0)
+
     return {
         "portfolio": {"id": pf.id, "name": pf.name, "kind": pf.kind, "backtest_id": pf.backtest_id,
                       "market": pf.market},
         "as_of": as_of.isoformat() if as_of else None, "delayed": True,
         "cash": cash, "stock_value": round(total_value), "total_equity": round(total_equity),
         "realized_pnl": realized_total,
-        "unrealized_pnl": round(sum(p["unrealized"] for p in positions)),
+        "unrealized_pnl": unrealized_total,
         "estimated_costs": round(est_cost) if include_costs else 0,
+        "principal": principal, "invested_cost": invested_cost,
+        "net_pnl": net_pnl,
+        "net_pnl_pct": (net_pnl / principal) if principal > 0 else None,
+        "unrealized_pnl_pct": (unrealized_total / invested_cost) if invested_cost > 0 else None,
         "twr": twr_val, "xirr": xirr_val,
         "positions": positions,
     }
