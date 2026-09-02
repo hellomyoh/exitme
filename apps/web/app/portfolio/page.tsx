@@ -310,9 +310,9 @@ function PortfolioPage() {
             비용 포함 (추정 수수료)
           </label>
           {sum?.as_of && <span className="text-xs text-faint">기준일 {sum.as_of} · 지연 시세</span>}
-          {/* 파괴적 액션은 선택 줄에서 분리 — 우측 끝, 절제된 표기 */}
-          <button className="text-[12.5px] text-faint underline-offset-2 transition-colors hover:text-down hover:underline"
-            onClick={() => void deletePortfolio()}>이 포트 삭제</button>
+          {/* 파괴적 액션은 탭 줄과 분리하되 명확히 보이게 — 확인 대화상자로 이중 안전 (2026-09-02) */}
+          <button className="rounded-lg border border-line bg-inset px-3 py-1.5 text-[13px] text-muted transition-colors hover:border-down hover:text-down"
+            onClick={() => void deletePortfolio()}>🗑 이 포트 삭제</button>
         </span>
       </div>
 
