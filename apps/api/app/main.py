@@ -23,16 +23,39 @@ app = FastAPI(title="ExitMe API", version="0.1.0")
 
 
 @app.on_event("startup")
-def _bootstrap_admin() -> None:
-    """기본 관리자(myoh) 보증 — 테이블이 아직 없으면(첫 마이그레이션 전) 건너뜀."""
-    from app.auth import ensure_admin_account
-    from app.db import SessionLocal
+def _migrate_and_bootstrap() -> None:
+    """기동 시 마이그레이션 자동 적용 + 기본 관리자 보증 (2026-09-02).
 
+    'git pull 후 alembic 누락'으로 원격 배포가 반복적으로 깨져(0010·0011) 자동화.
+    다중 레플리카 경합은 PostgreSQL advisory lock 으로 직렬화한다.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    from app.auth import ensure_admin_account
+    from app.db import SessionLocal, engine
+
+    log = logging.getLogger("startup")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT pg_advisory_lock(772026)"))
+            try:
+                from alembic import command
+                from alembic.config import Config
+
+                cfg = Config("alembic.ini")
+                command.upgrade(cfg, "head")
+                log.info("alembic upgrade head 완료")
+            finally:
+                conn.execute(text("SELECT pg_advisory_unlock(772026)"))
+    except Exception:
+        log.exception("startup migration failed — 수동 확인 필요")
     try:
         with SessionLocal() as s:
             ensure_admin_account(s)
     except Exception:
-        pass
+        log.exception("admin bootstrap failed")
 app.include_router(quotes_router)
 app.include_router(auth_router)
 app.include_router(charts_router)

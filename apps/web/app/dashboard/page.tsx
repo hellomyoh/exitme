@@ -25,6 +25,7 @@ const toneCls = { up: "text-up", down: "text-down", default: "text-muted" };
 
 export default function DashboardPage() {
   const router = useRouter();
+  const [loadError, setLoadError] = useState("");
   const [dash, setDash] = useState<Dash | null>(null);
   const [signal, setSignal] = useState<Signal | null>(null);
   const [calendar, setCalendar] = useState<CalItem[]>([]);
@@ -36,7 +37,8 @@ export default function DashboardPage() {
 
   const load = useCallback(async () => {
     const d = await apiFetch("/dashboard");
-    if (d.ok) setDash((await d.json()) as Dash);
+    if (d.ok) { setLoadError(""); setDash((await d.json()) as Dash); }
+    else setLoadError(`대시보드 데이터를 불러오지 못했습니다 (HTTP ${d.status}) — 서버 로그·마이그레이션 상태를 확인하세요.`);
     const s = await apiFetch("/signals/daily");
     if (s.ok) setSignal((await s.json()) as Signal);
     const month = new Date().toISOString().slice(0, 7);
@@ -110,6 +112,7 @@ export default function DashboardPage() {
   return (
     <main>
       <PageTitle title="대시보드" sub="총자산과 전략 상태를 한 화면에서 — 일별 스냅샷 기준, 지연 시세" />
+      {loadError && <div className="mb-4 rounded-xl border border-down/40 bg-down/5 px-4 py-3 text-[14px] font-semibold text-down">⚠️ {loadError}</div>}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-6">
         {/* 히어로 — 총자산 */}
         <Card className="md:col-span-4">
