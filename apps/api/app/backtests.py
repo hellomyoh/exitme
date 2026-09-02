@@ -56,6 +56,8 @@ class BacktestIn(BaseModel):
     date_from: date
     date_to: date
     etf: str = Field(default="KODEX", pattern="^(KODEX|TIGER|QQQ_QLD|QQQ_TQQQ|QQQ_TF)$")
+    algo: dict[str, float] | None = None            # 알고리즘 변수 수동 오버라이드 (2026-09-02)
+    holdings: list[dict] | None = None              # 보유 상태로 시작: [{leg: K200|LEV, qty, price}]
     costs: Costs = Costs()
     flags: Flags = Flags()
 
@@ -122,12 +124,15 @@ def run_engine(p: dict, bars_200, bars_lev, capital: float, params,
     """전략 디스패처 — 미국 QQQ_TF 는 TF(추세 필터) 엔진, 그 외는 RAVG (2026-08-31 시장별 분리)."""
     from app.strategy.backtest import run_backtest
 
+    holdings = p.get("holdings") or None
     if p.get("etf") == "QQQ_TF":
         from app.strategy.trendfilter import run_tf_backtest
 
-        return run_tf_backtest(bars_200, capital, start_index=start_index, progress_cb=progress_cb)
+        return run_tf_backtest(bars_200, capital, start_index=start_index, progress_cb=progress_cb,
+                               initial_lots=holdings)
     return run_backtest(bars_200, bars_lev, capital, params, start_index=start_index,
-                        collect_plans=collect_plans, progress_cb=progress_cb, plan_final=plan_final)
+                        collect_plans=collect_plans, progress_cb=progress_cb, plan_final=plan_final,
+                        initial_lots=holdings)
 
 
 def params_from_job(p: dict):
@@ -192,10 +197,25 @@ def create_backtest(body: BacktestIn, user_id: int = Depends(current_user_id),
                     session: Session = Depends(get_session)) -> dict:
     if body.date_from >= body.date_to:
         raise HTTPException(status_code=422, detail="date_from must be before date_to")
+    for h in (body.holdings or []):
+        if h.get("leg") not in ("K200", "LEV") or not (int(h.get("qty", 0)) > 0 and float(h.get("price", 0)) > 0):
+            raise HTTPException(status_code=422, detail="holdings: leg(K200|LEV)·qty>0·price>0 필요")
     job_params = json.loads(body.model_dump_json())
+    # 알고리즘 변수: 사용자 설정 스냅샷 + 이번 실행의 수동 오버라이드 (2026-09-02) — 레지스트리 범위 검증
     algo = user_algo_overrides(session, user_id)
+    if body.algo:
+        from app.settings import PARAM_REGISTRY
+
+        bounds = {k: (lo, hi) for k, _l, _h, lo, hi, ed, _g in PARAM_REGISTRY if ed}
+        for k, v in body.algo.items():
+            if k not in bounds:
+                raise HTTPException(status_code=422, detail=f"허용되지 않는 변수: {k}")
+            lo, hi = bounds[k]
+            if not (lo <= v <= hi):
+                raise HTTPException(status_code=422, detail=f"{k}: {lo}~{hi} 범위여야 합니다 (입력 {v})")
+        algo = {**algo, **{k: (int(v) if k in ("grid_steps", "min_history") else float(v)) for k, v in body.algo.items()}}
     if algo:
-        job_params["algo"] = algo  # 실행 시점 설정 스냅샷 — 이후 설정 변경과 무관하게 재현 (2026-08-31)
+        job_params["algo"] = algo  # 실행 시점 스냅샷 — 이후 설정 변경과 무관하게 재현
     # 동일 조건 + 동일 데이터면 결과가 결정론적으로 같음 — 중복 기록 대신 기존 잡 재사용 (2026-08-31 검토).
     # 시세가 갱신됐으면(지문 상이) 새로 실행한다.
     dup = session.scalars(
