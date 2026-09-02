@@ -34,7 +34,7 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number } };
+type Signal = { status: string; exec_day?: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number } };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -449,7 +449,14 @@ function PortfolioPage() {
       {/* 오늘의 주문표 (2026-08-28 지시 — 실전매매 중간 섹션) */}
       <Card className="mb-4">
         <CardTitle right={<Link href={`/signals${market === "US" ? "?market=US" : ""}`} className="text-[13.5px] font-semibold normal-case text-accent">전체 주문표 →</Link>}>
-          오늘의 주문표 {signal?.status === "OK" && (
+          {(() => {
+            const today = new Date().toISOString().slice(0, 10);
+            const ed = signal?.exec_day;
+            if (!ed) return "오늘의 주문표";
+            return ed === today
+              ? `오늘(${ed.slice(5)}) 실행 주문표 — 확정`
+              : `${ed.slice(5)} 실행 예정 주문표`;
+          })()} {signal?.status === "OK" && (
             <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}
               {signal.basis === "portfolio" && signal.account
                 ? ` · 계산 기준(${signal.trade_date} 종가 시점): 보유 ${signal.account.qty_200.toLocaleString()}주/레버 ${signal.account.qty_lev.toLocaleString()}주 · 현금 ${fm(signal.account.cash)} — 오늘 체결 등록은 내일 주문표부터 반영`

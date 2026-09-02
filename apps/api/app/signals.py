@@ -243,6 +243,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
                            "qty": o.qty, "price": o.price, "kind": o.kind}
     out = {
         "basis": "portfolio", "portfolio": {"id": pf_row.id, "name": pf_row.name},
+        "exec_day": exec_day.isoformat(),  # 이 주문표의 실행일 — 오늘/예정 표시용 (2026-09-02)
         "code_200": codes[0], "name_200": {"069500": "KODEX 200", "102110": "TIGER 200", "QQQ": "QQQ"}.get(codes[0], codes[0]),
         "account": {"cash": cash, "qty_200": qty_200, "qty_lev": qty_lev,
                     "equity": round(user_pf.equity(m200.closes[last], mlev.closes[last]))},

@@ -8,7 +8,8 @@ import { apiFetch, ensureSession } from "../../lib/api";
 import { Badge, Card, CardTitle, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone } from "../../components/ui";
 
 type Breakdown = { value: number; cost: number; pnl: number; pnl_pct: number | null };
-type Dash = {
+type PortRow = { id: number; name: string; market: string; equity: number; stock_value: number; cash: number; pnl: number; pnl_pct: number | null };
+type Dash = { portfolios?: PortRow[]; 
   total: number; stock: number; cash: number; other: number;
   change_amount: number; change_pct: number | null; since_inception_pct: number | null;
   kr_stock: Breakdown; us_stock: Breakdown;  // us_stock 값 단위: 센트
@@ -61,7 +62,14 @@ export default function DashboardPage() {
     const items = body.items;
     disposeChart();
     if (items.length < 2) return;
+    const korUnit = (v: number) => {
+      const a = Math.abs(v);
+      if (a >= 1e8) return `${(v / 1e8).toFixed(a >= 1e9 ? 0 : 1)}억`;
+      if (a >= 1e4) return `${Math.round(v / 1e4).toLocaleString()}만`;
+      return `${Math.round(v).toLocaleString()}`;
+    };
     const chart = createChart(trendRef.current, {
+      localization: { priceFormatter: korUnit },  // 축 금액 억/만 자동 단위 (2026-09-02 지시)
       layout: { background: { color: "transparent" }, textColor: "#858c9b", attributionLogo: false, fontSize: 12 },
       grid: { vertLines: { visible: false }, horzLines: { color: "rgba(18,24,40,0.07)" } },
       rightPriceScale: { borderVisible: false },
@@ -176,7 +184,25 @@ export default function DashboardPage() {
               )}
             </div>
           </div>
-        </Card>
+        
+        {(dash?.portfolios?.length ?? 0) > 0 && (
+          <div className="mt-4 border-t border-line pt-3">
+            <div className="mb-1.5 text-[12.5px] font-semibold uppercase tracking-wide text-faint">포트별 (진행 중 실전매매)</div>
+            <div className="grid gap-1 text-[14px]">
+              {dash!.portfolios!.map((p) => (
+                <div key={p.id} className="flex flex-wrap items-baseline gap-x-3">
+                  <span className="w-40 truncate font-semibold">{p.market === "US" ? "🇺🇸 " : ""}{p.name}</span>
+                  <span className="text-muted">평가 <b className="text-ink">{p.market === "US" ? `$${(p.equity / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : `${p.equity.toLocaleString()}원`}</b></span>
+                  <span className={p.pnl > 0 ? "text-up" : p.pnl < 0 ? "text-down" : "text-faint"}>
+                    {p.pnl >= 0 ? "+" : ""}{p.market === "US" ? `$${(p.pnl / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : `${p.pnl.toLocaleString()}원`}
+                    {p.pnl_pct !== null && ` (${(p.pnl_pct * 100).toFixed(2)}%)`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </Card>
 
         {/* 자산 추이 */}
         <Card className="md:col-span-4">
