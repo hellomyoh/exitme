@@ -243,3 +243,9 @@
 - 작업 내용: (1) **오염 사고**: 컨테이너 안 `pytest` 직접 실행(v2.5 명명 작업 중의 전체 스위트 실행)이 compose 환경변수(개발 DB)로 통합 테스트를 돌려 `seed_synthetic` 합성 봉이 개발 DB에 유입 — 069500/122630 각 28개(휴장일 날짜만, ON CONFLICT 가 실데이터 날짜 차단), 102110 400개(실데이터 부재로 전량). 2026-08-28 사고의 재발로, 수동 격리 규칙의 한계 확인. (2) **복구**: `DELETE ... WHERE source='pykrx'`(456행, 사용자 실행) + 102110 KIS 10년 재시딩(2,369봉) → 휴장일 봉 0건, 기준 백테스트(+230.8%/−20.63%/0.98) 바이트 재현 확인. (3) **재발 방지(코드 강제)**: `tests/conftest.py`가 DATABASE_URL 의 DB 이름이 `_ci` 미접미면 stocklab_ci 로 강제 재지정 + 격리 DB 자동 생성·alembic 마이그레이션. qa/README·NOTES(탐지 쿼리 3종 포함) 갱신.
 - 테스트 결과: 무오버라이드 `docker compose exec api python -m pytest -q` → **127 passed / 1 failed**(ws 플레이크 — 라이브 Redis 공유 경합, 단독 재실행 통과·NOTES 기록). 실행 후 개발 DB 무변화(3종목 kis 2,369봉 유지)·stocklab_ci 에 합성 봉 격리 적재 확인.
 - Git commit: fix: enforce test DB isolation in conftest
+
+## [2026-09-02] fix | 대시보드 손익 캘린더 툴팁 미표시 수정
+
+- 작업 내용: "이번 달 일간 손익" 타일이 브라우저 기본 `title` 속성을 사용 — 약 1초 정지해야 뜨고 환경에 따라 미표시(사용자 보고). 앱 공통 group-hover 커스텀 툴팁 패턴(ui.tsx `Tip`과 동일 방식의 소형 변형)으로 교체: 즉시 표시, `날짜 · ±금액`(손익 색상), `role="img"`+aria-label 병기. `.card` 무클리핑 확인 후 타일 상단 중앙 배치.
+- 테스트 결과: web tsc 무오류, /dashboard 200 (dev 핫리로드). 수동 QA(hover 즉시 표시)는 사용자 확인 대기.
+- Git commit: fix: instant custom tooltip on daily pnl calendar
