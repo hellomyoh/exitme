@@ -6,11 +6,13 @@
 - **"테스트 통과"의 정의: 테스트가 실제로 실행되고 결과(실행 명령 + 통과/실패 요약)가 [HISTORY.md](../HISTORY.md)에 기록되었을 때만 통과로 인정한다.** 실행 없는 통과 주장은 무효.
 - Multi-Agent 검토([discussion/](../discussion/))에서 제기된 검증 가능한 실패 조건은 feature §12 또는 이 폴더의 체크리스트로 반드시 추적된다.
 
-## 테스트 DB 격리 (필수)
+## 테스트 DB 격리 (필수 — 2026-09-01부터 코드로 강제)
 
-- 통합 테스트는 실코드(069500 등)에 합성 데이터를 적재하므로 **개발 DB(stocklab)가 아니라 격리 DB(stocklab_ci)에서 실행**한다:
-  `docker compose run --rm --no-deps -e DATABASE_URL=postgresql+psycopg://stocklab:stocklab-dev-password@db:5432/stocklab_ci api sh -c "alembic upgrade head && pytest -q tests/"`
-- 개발 DB에서 실행하면 실 시세와 합성 데이터가 섞인다 (HISTORY 2026-08-28 오염 사고 참조).
+- 통합 테스트는 실코드(069500 등)에 합성 데이터를 적재하므로 **개발 DB(stocklab)가 아니라 격리 DB(stocklab_ci)에서 실행**한다.
+- **강제 장치**: `tests/conftest.py`가 DATABASE_URL의 DB 이름이 `_ci`로 끝나지 않으면 자동으로 `stocklab_ci`로 재지정하고, 격리 DB가 없으면 생성 + 마이그레이션까지 수행한다. 컨테이너 안에서 `pytest`만 실행해도 안전하다:
+  `docker compose exec api python -m pytest -q`
+- 배경: 수동 오버라이드 규칙만으로는 지켜지지 않아 2026-08-28·2026-09-01 두 차례 개발 DB 오염이 실제 발생 (HISTORY·NOTES 참조). `-e DATABASE_URL=...stocklab_ci` 수동 지정도 여전히 유효하다.
+- 오염 여부 점검 쿼리는 [NOTES.md](../NOTES.md) "테스트 DB 격리" 항목 참조.
 
 ## 자동 테스트와 수동 QA의 구분
 

@@ -237,3 +237,9 @@
 
 - 작업 내용: 지정가 체결만 1분봉 순서로 재생하는 대조 실행기로 1년(243일) 검증 — 수익·MDD·체결 80건 완전 일치(평가액 괴리 최대 111원). 부수 발견: 분봉(수정주가) vs 일봉(원주가) 가격 기준 불일치(계단형 분배락) — 무보정 시 +13.9%p 허위 개선. 상세: docs/minute-fill-study-20260901.md. TODO 완료 처리.
 - Git commit: docs: minute-fill validation study
+
+## [2026-09-01] fix | 테스트 DB 격리 코드 강제 + 개발 DB 오염 복구 (재발 사고)
+
+- 작업 내용: (1) **오염 사고**: 컨테이너 안 `pytest` 직접 실행(v2.5 명명 작업 중의 전체 스위트 실행)이 compose 환경변수(개발 DB)로 통합 테스트를 돌려 `seed_synthetic` 합성 봉이 개발 DB에 유입 — 069500/122630 각 28개(휴장일 날짜만, ON CONFLICT 가 실데이터 날짜 차단), 102110 400개(실데이터 부재로 전량). 2026-08-28 사고의 재발로, 수동 격리 규칙의 한계 확인. (2) **복구**: `DELETE ... WHERE source='pykrx'`(456행, 사용자 실행) + 102110 KIS 10년 재시딩(2,369봉) → 휴장일 봉 0건, 기준 백테스트(+230.8%/−20.63%/0.98) 바이트 재현 확인. (3) **재발 방지(코드 강제)**: `tests/conftest.py`가 DATABASE_URL 의 DB 이름이 `_ci` 미접미면 stocklab_ci 로 강제 재지정 + 격리 DB 자동 생성·alembic 마이그레이션. qa/README·NOTES(탐지 쿼리 3종 포함) 갱신.
+- 테스트 결과: 무오버라이드 `docker compose exec api python -m pytest -q` → **127 passed / 1 failed**(ws 플레이크 — 라이브 Redis 공유 경합, 단독 재실행 통과·NOTES 기록). 실행 후 개발 DB 무변화(3종목 kis 2,369봉 유지)·stocklab_ci 에 합성 봉 격리 적재 확인.
+- Git commit: fix: enforce test DB isolation in conftest
