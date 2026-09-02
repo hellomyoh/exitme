@@ -259,10 +259,12 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
     payload = {"regime": regime.value, "signal_date": base_day.isoformat(),
                "orders": out["orders"], "gap_cancel_below": p.gap_cancel_below,
                "account": out["account"], "e_target": p.e_target}
+    from app.dashboard import kst_today
     if row is None:
         session.add(PortfolioPlan(portfolio_id=pid, trade_date=exec_day, payload=payload))
-    else:
-        row.payload = payload
+    elif exec_day > kst_today():
+        row.payload = payload  # 아직 실행 전 — 최신 상태로 갱신
+    # 실행일 도래(오늘·과거) 계획은 불변 — "그날 아침의 계획" 보존 (2026-09-02 지시)
     session.commit()
     return out
 
@@ -401,10 +403,12 @@ def _tf_portfolio_orders(session: Session, pf_row, pid: int) -> dict:
     payload = {"regime": lp.regime.value, "signal_date": base_day.isoformat(),
                "orders": out["orders"], "gap_cancel_below": None,
                "account": out["account"], "e_target": lp.e_target, "strategy": "TF"}
+    from app.dashboard import kst_today
     if row is None:
         session.add(PortfolioPlan(portfolio_id=pid, trade_date=exec_day, payload=payload))
-    else:
-        row.payload = payload
+    elif exec_day > kst_today():
+        row.payload = payload  # 아직 실행 전 — 최신 상태로 갱신
+    # 실행일 도래(오늘·과거) 계획은 불변 — "그날 아침의 계획" 보존 (2026-09-02 지시)
     session.commit()
     return out
 

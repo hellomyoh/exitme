@@ -510,3 +510,38 @@ def test_pnl_pct_denominator_edges():
     assert s2["principal"] == 0 and s2["net_pnl_pct"] is None
     assert s2["invested_cost"] == 350_000
     assert s2["unrealized_pnl_pct"] is not None      # 보유원가 분모는 정상
+
+
+def test_portfolio_plan_frozen_once_exec_day_arrives(monkeypatch):
+    """2026-09-02 지시: 실행일이 도래한 계획 스냅샷은 불변 — 재조회·재계산이 덮지 못한다."""
+    from tests.test_backtest_api import seed_synthetic
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+    client = TestClient(app, base_url="https://testserver")
+    import uuid as _u
+    token = client.post("/auth/register", json={"email": f"fz{_u.uuid4().hex[:8]}@stocklab.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "frz", "market": "KR"}, headers=h).json()["id"]
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 30_000_000,
+                                    "executed_at": datetime(2025, 5, 1, tzinfo=timezone.utc).isoformat()}, headers=h)
+    assert client.get(f"/signals/daily?portfolio_id={pid}", headers=h).status_code == 200
+    from sqlalchemy import select
+    from app.models import PortfolioPlan
+    with SessionLocal() as s:
+        row = s.scalars(select(PortfolioPlan).where(PortfolioPlan.portfolio_id == pid)).first()
+        orig = dict(row.payload)
+        exec_day = row.trade_date
+    # 실행일이 오늘이 되었다고 가정 — kst_today 를 실행일로 고정
+    import app.signals as sig_mod
+    import app.dashboard as dash_mod
+    monkeypatch.setattr(dash_mod, "kst_today", lambda: exec_day)
+    # 상태를 바꿔(입금) 재조회 — 실행일 도래 계획은 덮이지 않아야
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 70_000_000,
+                                    "executed_at": datetime(2025, 5, 2, tzinfo=timezone.utc).isoformat()}, headers=h)
+    assert client.get(f"/signals/daily?portfolio_id={pid}", headers=h).status_code == 200
+    with SessionLocal() as s:
+        row2 = s.scalars(select(PortfolioPlan).where(PortfolioPlan.portfolio_id == pid,
+                                                     PortfolioPlan.trade_date == exec_day)).first()
+        assert row2.payload["orders"] == orig["orders"], "실행일 도래 계획이 덮였음"

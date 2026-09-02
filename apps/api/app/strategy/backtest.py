@@ -136,7 +136,8 @@ class Cancelled(RuntimeError):
 def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
                  params: Params, start_index: int | None = None,
                  collect_plans: bool = False, progress_cb=None,
-                 plan_final: bool = False) -> BacktestResult:
+                 plan_final: bool = False,
+                 initial_lots: list[dict] | None = None) -> BacktestResult:
     """bars: [{date, open, high, low, close, volume}] 두 시계열은 날짜 정렬·동일 길이 가정."""
     if len(bars_200) != len(bars_lev):
         raise ValueError("bars_200 and bars_lev must be aligned")
@@ -150,6 +151,12 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
 
     m200, mlev = to_market(bars_200), to_market(bars_lev)
     pf = Portfolio(cash=capital)
+    # 보유 상태로 시작 (2026-09-02 지시) — 실전 '보유분 입력'과 동일 의미론: 자본금 = 현금, 보유는 별도
+    first0 = start_index if start_index is not None else 0
+    for h in (initial_lots or []):
+        leg = K200 if h.get("leg", "K200") == "K200" else LEV
+        kind = "core" if leg == K200 else "lev_strat"
+        pf.lots.append(Lot(leg, int(h["qty"]), int(round(float(h["price"]))), kind, None, first0))
     ledger = _Ledger(params)
     regime = Regime.NEUTRAL
     first = start_index if start_index is not None else 0

@@ -66,6 +66,14 @@ function SimulatorPage() {
   const [error, setError] = useState("");
   const [history, setHistory] = useState<Job[]>([]);
   const [overlay, setOverlay] = useState<number[]>([]);
+  // 알고리즘 변수 수동 입력 (2026-09-02) — /settings/algorithm 레지스트리 기반
+  type AlgoItem = { key: string; label: string; help: string; editable: boolean; default: number; value: number; min: number; max: number };
+  const [algoItems, setAlgoItems] = useState<AlgoItem[]>([]);
+  const [algoEdit, setAlgoEdit] = useState<Record<string, string>>({});
+  const [algoOpen, setAlgoOpen] = useState(false);
+  // 보유 상태로 시작 (2026-09-02)
+  const [simHoldings, setSimHoldings] = useState<{ leg: "K200" | "LEV"; qty: string; price: string }[]>([]);
+  const liveOverlayRef = useRef<{ name: string; points: { time: string; value: number }[] } | null>(null);
   const [journal, setJournal] = useState<JournalDay[] | null>(null);
   const [journalBusy, setJournalBusy] = useState(false);
   const [tradedOnly, setTradedOnly] = useState(true);
@@ -89,6 +97,17 @@ function SimulatorPage() {
     chartApi.current = null;
   }
 
+  async function openAlgo() {
+    setAlgoOpen(true);
+    if (algoItems.length) return;
+    const res = await apiFetch("/settings/algorithm");
+    if (res.ok) {
+      const items = (((await res.json()) as { items: AlgoItem[] }).items).filter((i) => i.editable);
+      setAlgoItems(items);
+      setAlgoEdit(Object.fromEntries(items.map((i) => [i.key, String(i.value)])));
+    }
+  }
+
   async function loadHistory() {
     const res = await apiFetch("/backtests");
     if (res.ok) setHistory(((await res.json()) as { items: Job[] }).items.filter((j) => j.status === "DONE"));
@@ -102,6 +121,22 @@ function SimulatorPage() {
         capital: market === "US" ? Math.round(Number(capital) * 100) : Number(capital),
         date_from: dateFrom, date_to: dateTo, etf, flags,
         costs: { fee_200: ETF_INFO[etf].fee },
+        // 변수 수동 오버라이드 — 기본값과 다른 항목만 (2026-09-02)
+        algo: (() => {
+          const out: Record<string, number> = {};
+          for (const it of algoItems) {
+            const v = Number(algoEdit[it.key]);
+            if (Number.isFinite(v) && v !== it.default) out[it.key] = v;
+          }
+          return Object.keys(out).length ? out : undefined;
+        })(),
+        holdings: (() => {
+          const rows = simHoldings
+            .map((h) => ({ leg: h.leg, qty: Number(h.qty),
+                           price: market === "US" ? Math.round(Number(h.price) * 100) : Number(h.price) }))
+            .filter((h) => h.qty > 0 && h.price > 0);
+          return rows.length ? rows : undefined;
+        })(),
       }),
     });
     if (!res.ok) {
@@ -130,6 +165,25 @@ function SimulatorPage() {
     if (!res.ok) return;
     const j = (await res.json()) as Job;
     setJob(j); setStep(3); setOverlay([]);
+    // 이 백테스트에서 전환된 실전 포트가 있으면 실제 수익 곡선을 함께 그림 (2026-09-02 지시)
+    liveOverlayRef.current = null;
+    try {
+      const pl = await apiFetch("/portfolios");
+      if (pl.ok) {
+        const mine = ((await pl.json()) as { items: { id: number; name: string; backtest_id: number | null }[] }).items;
+        const linked = mine.find((x) => x.backtest_id === j.id);
+        if (linked) {
+          const eq = await apiFetch(`/portfolio/equity?portfolio_id=${linked.id}`);
+          if (eq.ok) {
+            const pts = ((await eq.json()) as { items: { date: string; index: number }[] }).items;
+            if (pts.length >= 2) {
+              liveOverlayRef.current = { name: linked.name, points: pts.map((x) => ({ time: x.date, value: x.index })) };
+              setTimeout(() => drawEquity(j, othersRef.current), 80);  // 오버레이 로드 후 재드로우
+            }
+          }
+        }
+      }
+    } catch { /* 비교 실패는 무시 */ }
     setJournal(null); setVisibleDays(30);
     void loadHistory();
     setTimeout(() => drawEquity(j, []), 60);
@@ -176,6 +230,10 @@ function SimulatorPage() {
     // 시리즈 on/off (2026-08-28 지시) — 전략 수익 / 매수보유 수익(같은 축 비교) / 종목 추세(하단)
     if (opt.strategy) {
       chart.addSeries(LineSeries, { color: "#b45309", lineWidth: 2, title: "전략" }).setData(norm(main.equity, "equity"));
+      if (liveOverlayRef.current) {
+        chart.addSeries(LineSeries, { color: "#0e9f6e", lineWidth: 2, title: `실전 ${liveOverlayRef.current.name}` })
+          .setData(liveOverlayRef.current.points);
+      }
     }
     if (opt.hold) {
       chart.addSeries(LineSeries, { color: "#64748b", lineWidth: 1, title: "매수보유" }).setData(norm(main.equity, "benchmark"));
@@ -258,6 +316,49 @@ function SimulatorPage() {
               <label className="grid gap-1 text-xs text-faint">자본금({market === "US" ? "$" : "원"})
                 <input className="input" value={capital} onChange={(e) => setCapital(e.target.value)} /></label>
             </div>
+          </Card>
+
+          <Card className="mb-4">
+            <details>
+              <summary className="cursor-pointer text-[14px] font-semibold text-accent">보유 상태로 시작 (선택) — 실전과 동일하게 현재 보유를 넣고 시뮬레이션</summary>
+              <p className="mb-2 mt-2 text-[13px] text-faint">자본금은 <b className="text-muted">현금</b>으로 별도 계상됩니다. 보유는 시작 시점 로트로 등록되어 첫날부터 전략 규칙(익절·축소)의 대상이 됩니다.</p>
+              {simHoldings.map((h, i) => (
+                <div key={i} className="mb-2 flex flex-wrap items-center gap-2">
+                  <select className="input !py-2" value={h.leg}
+                    onChange={(e) => setSimHoldings(simHoldings.map((x, j) => j === i ? { ...x, leg: e.target.value as "K200" | "LEV" } : x))}>
+                    <option value="K200">{market === "US" ? "QQQ" : "주력 200 ETF"}</option>
+                    {etf !== "QQQ_TF" && <option value="LEV">레버리지</option>}
+                  </select>
+                  <input className="input w-28 !py-2" placeholder="수량(주)" value={h.qty}
+                    onChange={(e) => setSimHoldings(simHoldings.map((x, j) => j === i ? { ...x, qty: e.target.value } : x))} />
+                  <input className="input w-40 !py-2" placeholder={market === "US" ? "평단($)" : "평단(원)"} value={h.price}
+                    onChange={(e) => setSimHoldings(simHoldings.map((x, j) => j === i ? { ...x, price: e.target.value } : x))} />
+                  <button className="btn-ghost btn !px-2 !py-1.5" onClick={() => setSimHoldings(simHoldings.filter((_, j) => j !== i))}>✕</button>
+                </div>
+              ))}
+              <button className="btn-ghost btn w-fit !py-1.5 text-[13.5px]"
+                onClick={() => setSimHoldings([...simHoldings, { leg: "K200", qty: "", price: "" }])}>＋ 보유 추가</button>
+            </details>
+          </Card>
+
+          <Card className="mb-4">
+            <details open={algoOpen} onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) void openAlgo(); }}>
+              <summary className="cursor-pointer text-[14px] font-semibold text-accent">고급 — 알고리즘 변수 (선택) · 기본값과 다르게 입력한 항목만 이번 실행에 적용</summary>
+              {algoItems.length === 0 ? (
+                <p className="mt-2 text-[13px] text-faint">변수 목록을 불러오는 중…</p>
+              ) : (
+                <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 md:grid-cols-3">
+                  {algoItems.map((it) => (
+                    <label key={it.key} className="grid gap-1 text-[12.5px] text-faint" title={it.help}>
+                      <span>{it.label} <span className="text-[11px]">({it.min}~{it.max} · 기본 {it.default})</span></span>
+                      <input className={`input !py-1.5 ${Number(algoEdit[it.key]) !== it.default ? "border-accent" : ""}`}
+                        value={algoEdit[it.key] ?? ""}
+                        onChange={(e) => setAlgoEdit({ ...algoEdit, [it.key]: e.target.value })} />
+                    </label>
+                  ))}
+                </div>
+              )}
+            </details>
           </Card>
           <Card>
             <CardTitle>절제(Ablation) 플래그 <span className="normal-case text-faint">· 하나씩 꺼서 모듈 기여 검증</span></CardTitle>

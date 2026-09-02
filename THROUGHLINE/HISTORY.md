@@ -261,3 +261,9 @@
 - 작업 내용: 사용자 보고("체결 등록 시 미체결 수량이 즉시 변동 — 오늘 주문은 변경되면 안 되는 것 아닌가") 검토 결과, 포트 기준 주문표가 조회 시점 원장(당일 체결 포함)으로 재계산되고 그 결과가 portfolio_plans 보존본까지 덮어쓰는 이중 결함 확인 — 정본 §8 "종가 신호 → 익일 발주" 주기 위반 + HTS 주문장과 화면 불일치. **B안(기준 시점 고정 재계산)** 채택: `_state_before(pid, exec_day)` 시점 재생(실행일 이전 체결만, FIFO 등록 경로와 동일 의미론)을 RAVG(`_portfolio_orders`)·TF(`_tf_portfolio_orders`) 공통 적용, exec_day 산출 일원화(`_next_exec_day`). 시작 등록(보유분·시작 입금)은 직전 영업일 15:30 KST 로 기록해 당일 주문표에 반영되도록 조정, 주문표 헤더에 기준 시점·"오늘 체결은 내일 반영" 명시. feature-portfolio §5·§12, ASSUMPTIONS 갱신.
 - 테스트 결과: api **134 passed / 1 failed**(ws 플레이크 — NOTES 기록 항목, 단독 통과). 신규: 당일 체결 등록 후 주문표 불변 + 소급 등록 반영(자가 치유) + 시점 재생 ↔ 로트 테이블 동등성. 기존 포트 주문표 테스트 1건은 합성 봉 범위 내 시각으로 정정. web tsc 무오류.
 - Git commit: fix: freeze today's order sheet at signal-date state (B-plan)
+
+## [2026-09-02] feat | 계획 스냅샷 불변화 + 시뮬레이터 변수·보유 시작·실전 비교 (사용자 지시)
+
+- 작업 내용: (1) **실행일 도래 계획 불변** — portfolio_plans upsert 가 미래 실행분만 갱신, 도래분은 최초 저장본 보존(사용자 보고: 일지의 그날 계획 수량이 사후 재계산으로 덮임 — 파라미터 개정·재조회 경로 확인). 회귀: kst_today 고정 후 재조회에도 orders 불변. (2) **시뮬레이터 확장**: 실행 폼에 알고리즘 변수 수동 입력(설정 레지스트리 기반, 기본값과 다른 항목만 잡 algo 로 — 서버 범위 검증), '보유 상태로 시작'(엔진 initial_lots — RAVG core/lev_strat 시딩, TF K200) — 잡 params 에 스냅샷되어 재현·전환 정합. (3) **실전 비교**: 백테스트에서 전환된 실전 포트가 있으면 결과 차트에 실전 TWR 지수 라인(초록) 오버레이. E2E: algo+holdings 잡 DONE(시작 평가 43.1M = 현금 30M+300주), 범위 초과 422. 주의: celery 워커는 코드 리로드가 없어 백엔드 변경 후 재시작 필요(운영 절차).
+- 테스트: 계획 동결 회귀 신규 — api 136 passed 예정 확인.
+- Git commit: feat: immutable arrived plans; simulator variables, seeded holdings, live comparison

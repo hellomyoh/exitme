@@ -26,7 +26,8 @@ def run_tf_backtest(bars: list[dict], capital: float,
                     start_index: int | None = None,
                     commission: float = TF_COMMISSION,
                     fee_annual: float = TF_FEE_ANNUAL,
-                    progress_cb=None) -> BacktestResult:
+                    progress_cb=None,
+                    initial_lots: list[dict] | None = None) -> BacktestResult:
     """bars: [{date, open, high, low, close, volume}] — 센트 정수 스케일 권장."""
     n = len(bars)
     dates = [b["date"] for b in bars]
@@ -46,6 +47,11 @@ def run_tf_backtest(bars: list[dict], capital: float,
     cash, qty = float(capital), 0
     buy_px = 0.0
     buy_i = 0
+    for h in (initial_lots or []):  # 보유 상태로 시작 — K200(QQQ) 레그만 유효 (2026-09-02)
+        if h.get("leg", "K200") == "K200":
+            qty += int(h["qty"])
+            buy_px = float(h["price"])
+            buy_i = first
     trades: list[ClosedTrade] = []
     fills: list[Fill] = []
     plans: list[Plan] = []
