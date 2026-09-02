@@ -158,13 +158,18 @@ function SignalsPage() {
       ) : (
         <div className="grid gap-4">
           {/* 기준 선택 + 안내 (2026-08-28 검토 반영) */}
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-[14px] font-semibold text-muted">주문 기준</span>
-            <select className="input !py-2" value={basisPid ?? ""}
-              onChange={(e) => setBasisPid(e.target.value ? Number(e.target.value) : null)}>
-              <option value="">모델 포트폴리오 (전략 참고 신호)</option>
-              {portfolios.map((p) => <option key={p.id} value={p.id}>내 실전매매: {p.name}</option>)}
-            </select>
+          {/* 기준 선택: 드롭다운 → 탭(알약) — 실전매매 화면과 동일 패턴 (2026-09-02 지시) */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-[14px] font-semibold text-muted">주문 기준</span>
+            {[{ id: null as number | null, name: "모델 포트폴리오 (참고 신호)" },
+              ...portfolios.map((p) => ({ id: p.id as number | null, name: p.name }))].map((p) => (
+              <button key={p.id ?? "model"} onClick={() => setBasisPid(p.id)}
+                className={`rounded-lg border px-3.5 py-2 text-[14px] transition-colors ${
+                  basisPid === p.id ? "border-accent bg-accent-dim font-semibold text-accent"
+                                    : "border-line bg-inset text-muted hover:border-line-strong hover:text-ink"}`}>
+                {p.name}
+              </button>
+            ))}
           </div>
           {sig.basis === "portfolio" && sig.account ? (
             <Callout icon="🎯">

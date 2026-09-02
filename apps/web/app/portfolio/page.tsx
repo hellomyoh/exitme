@@ -292,19 +292,27 @@ function PortfolioPage() {
     <main>
       <PageTitle title={`실전매매 · ${MARKET_LABEL[market]}`} sub="체결 내역을 등록해 매수 시점 기준 수익률을 추적합니다 — 지연 시세 기준" />
 
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <select className="input" value={pid ?? ""} onChange={(e) => setPid(e.target.value ? Number(e.target.value) : null)}>
-          <option value="">내 계좌 (기본)</option>
-          {portfolios.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        <button className="btn-ghost btn !py-2 text-[14px] !text-up" onClick={() => void deletePortfolio()}>이 포트 삭제</button>
-        <span className="mx-1 h-5 w-px bg-line-strong" />
-        <button className="btn btn-primary !py-2" onClick={() => setShowStart(!showStart)}>＋ 새 실전매매 시작</button>
-        <label className="flex items-center gap-1.5 text-[13px] text-muted">
-          <input type="checkbox" className="accent-[#b45309]" checked={includeCosts} onChange={(e) => setIncludeCosts(e.target.checked)} />
-          비용 포함 (추정 수수료)
-        </label>
-        {sum?.as_of && <span className="ml-auto text-xs text-faint">기준일 {sum.as_of} · 지연 시세</span>}
+      {/* 포트 선택: 드롭다운 → 탭(알약) — 한 번의 클릭으로 전환 (2026-09-02 지시) */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        {[{ id: null as number | null, name: "내 계좌 (기본)" }, ...portfolios].map((p) => (
+          <button key={p.id ?? "default"} onClick={() => setPid(p.id)}
+            className={`rounded-lg border px-3.5 py-2 text-[14px] transition-colors ${
+              pid === p.id ? "border-accent bg-accent-dim font-semibold text-accent"
+                           : "border-line bg-inset text-muted hover:border-line-strong hover:text-ink"}`}>
+            {p.name}
+          </button>
+        ))}
+        <button className="btn btn-primary !py-2" onClick={() => setShowStart(!showStart)}>＋ 새 실전매매</button>
+        <span className="ml-auto flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-1.5 text-[13px] text-muted">
+            <input type="checkbox" className="accent-[#b45309]" checked={includeCosts} onChange={(e) => setIncludeCosts(e.target.checked)} />
+            비용 포함 (추정 수수료)
+          </label>
+          {sum?.as_of && <span className="text-xs text-faint">기준일 {sum.as_of} · 지연 시세</span>}
+          {/* 파괴적 액션은 선택 줄에서 분리 — 우측 끝, 절제된 표기 */}
+          <button className="text-[12.5px] text-faint underline-offset-2 transition-colors hover:text-down hover:underline"
+            onClick={() => void deletePortfolio()}>이 포트 삭제</button>
+        </span>
       </div>
 
       {showStart && (
