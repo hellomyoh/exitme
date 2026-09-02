@@ -139,7 +139,7 @@ def params_from_job(p: dict):
     """잡 파라미터 dict → Params — 마켓 기본 + 사용자 알고리즘 스냅샷 + 비용 오버라이드 병합."""
     from app.strategy.params import AblationFlags, Params
 
-    merged = {**base_costs_for(p.get("etf", "KODEX")), **p.get("algo", {}), **p.get("costs", {})}
+    merged = {**base_costs_for(p.get("etf", "KODEX")), **(p.get("algo") or {}), **(p.get("costs") or {})}
     return Params(**merged, flags=AblationFlags(**p.get("flags", {})))
 
 
@@ -200,7 +200,7 @@ def create_backtest(body: BacktestIn, user_id: int = Depends(current_user_id),
     for h in (body.holdings or []):
         if h.get("leg") not in ("K200", "LEV") or not (int(h.get("qty", 0)) > 0 and float(h.get("price", 0)) > 0):
             raise HTTPException(status_code=422, detail="holdings: leg(K200|LEV)·qty>0·price>0 필요")
-    job_params = json.loads(body.model_dump_json())
+    job_params = {k: v for k, v in json.loads(body.model_dump_json()).items() if v is not None}
     # 알고리즘 변수: 사용자 설정 스냅샷 + 이번 실행의 수동 오버라이드 (2026-09-02) — 레지스트리 범위 검증
     algo = user_algo_overrides(session, user_id)
     if body.algo:
