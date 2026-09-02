@@ -12,7 +12,7 @@ export function hasToken(): boolean {
   return accessToken !== null;
 }
 
-/** 새로고침 후 세션 복원 — refresh 쿠키(1시간 롤링)로 access 재발급. */
+/** 새로고침 후 세션 복원 — refresh 쿠키(3시간 롤링)로 access 재발급. */
 export async function ensureSession(): Promise<boolean> {
   if (accessToken) return true;
   try {
@@ -37,7 +37,7 @@ export async function apiFetch(path: string, init: RequestInit = {}, retry = tru
   const res = await fetch(`/api${path}`, { ...init, headers, credentials: "include" });
   if (res.status === 401 && retry) {
     if (await tryRefresh()) return apiFetch(path, init, false);
-    // refresh 쿠키(1시간 롤링)까지 만료 — "invalid token" 원문 노출 대신 재로그인 안내 (2026-08-29)
+    // refresh 쿠키(3시간 롤링)까지 만료 — "invalid token" 원문 노출 대신 재로그인 안내 (2026-08-29)
     accessToken = null;
     if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
       window.location.href = "/login?expired=1";
