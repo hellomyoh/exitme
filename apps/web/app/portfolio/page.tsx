@@ -284,7 +284,9 @@ function PortfolioPage() {
   // 손익 비율 이중 기준 (feature-portfolio §5): 순손익 ÷ 납입원금, 평가손익 ÷ 보유원가 — 분모 ≤ 0 이면 % 미표시
   const netPct = sum && sum.principal > 0 ? net / sum.principal : null;
   const evalPct = sum && sum.invested_cost > 0 ? sum.unrealized_pnl / sum.invested_cost : null;
-  const withPct = (amount: string, pct: number | null) => pct == null ? amount : `${amount} (${fmtPct(pct, 2)})`;
+  // %는 작은 글씨·한 덩어리로 — 카드가 좁으면 금액 아래 줄로 자연 줄바꿈 (2026-09-02 지시)
+  const withPct = (amount: string, pct: number | null) => pct == null ? amount
+    : <>{amount} <span className="whitespace-nowrap text-[14px]">({fmtPct(pct, 2)})</span></>;
 
   return (
     <main>
@@ -480,7 +482,8 @@ function PortfolioPage() {
         </CardTitle>
         {signal?.status === "OK" && signal.orders && signal.orders.length > 0 ? (
           <div className="overflow-x-auto">
-            <table className="w-full text-[14.5px]">
+            {/* 모바일: 셀 줄바꿈 대신 가로 스크롤 (2026-09-02 지시) */}
+            <table className="w-full min-w-[560px] whitespace-nowrap text-[14.5px]">
               <thead><tr className="border-b border-line text-left text-[13px] text-faint">
                 <th className="pb-2 font-medium">구분</th><th className="pb-2 font-medium">종목</th>
                 <th className="pb-2 font-medium">방향</th>
@@ -592,7 +595,8 @@ function PortfolioPage() {
                     ) : j.planned.length === 0 ? (
                       <p className="text-[13px] text-faint">신규 주문 없음.</p>
                     ) : (
-                      <table className="w-full text-[14px]">
+                      <div className="overflow-x-auto">
+                      <table className="w-full min-w-[480px] whitespace-nowrap text-[14px]">
                         <thead><tr className="text-left text-xs text-faint">
                           <th className="pb-1 font-medium">구분</th><th className="pb-1 font-medium">종목</th>
                           <th className="pb-1 font-medium">방향</th>
@@ -623,6 +627,7 @@ function PortfolioPage() {
                           ))}
                         </tbody>
                       </table>
+                      </div>
                     )}
                     {j.gap_cancel_below && (
                       <p className="mt-2 text-[12.5px] text-faint">⚠️ 시가 {j.gap_cancel_below.toLocaleString()}원 이하 출발 시 그리드 취소</p>
@@ -646,7 +651,8 @@ function PortfolioPage() {
                           : "없음"}
                       </p>
                     ) : (
-                      <table className="w-full text-[14px]">
+                      <div className="overflow-x-auto">
+                      <table className="w-full min-w-[480px] whitespace-nowrap text-[14px]">
                         <thead><tr className="text-left text-xs text-faint">
                           <th className="pb-1 font-medium">구분</th><th className="pb-1 font-medium">종목</th>
                           <th className="pb-1 font-medium">방향</th>
@@ -672,6 +678,7 @@ function PortfolioPage() {
                           ))}
                         </tbody>
                       </table>
+                      </div>
                     )}
                   </div>
                   {j.account && (

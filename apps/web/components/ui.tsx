@@ -16,9 +16,10 @@ export function Card({ children, className = "" }: { children: ReactNode; classN
 
 export function CardTitle({ children, right }: { children: ReactNode; right?: ReactNode }) {
   return (
-    <div className="mb-4 flex items-center justify-between">
-      <h2 className="text-[13.5px] font-semibold uppercase tracking-wide text-muted">{children}</h2>
-      {right}
+    <div className="mb-4 flex items-center justify-between gap-3">
+      <h2 className="min-w-0 text-[13.5px] font-semibold uppercase tracking-wide text-muted">{children}</h2>
+      {/* 우측 액션은 제목이 길어도 세로로 짜부라지지 않게 (2026-09-02 모바일) */}
+      {right && <div className="shrink-0 whitespace-nowrap">{right}</div>}
     </div>
   );
 }
@@ -31,7 +32,8 @@ export function Stat({ label, value, tone = "default", hint, tip }: {
   return (
     <div className="card px-4 py-3.5">
       <div className="text-[13px] text-faint">{labelEl}</div>
-      <div className={`mt-1 whitespace-nowrap text-[19px] font-bold ${color}`}>{value}</div>
+      {/* nowrap 금지 — 긴 값(금액+%)은 공백에서 줄바꿈되어 카드 밖으로 넘치지 않게 (2026-09-02) */}
+      <div className={`mt-1 break-keep text-[19px] font-bold leading-snug ${color}`}>{value}</div>
       {hint && <div className="mt-0.5 text-[11px] text-faint">{hint}</div>}
     </div>
   );
@@ -87,7 +89,7 @@ export function Tip({ tip, children }: { tip: ReactNode; children: ReactNode }) 
   return (
     <span className="group relative inline-flex cursor-help items-center gap-1">
       {children}
-      <span className="pointer-events-none invisible absolute bottom-full left-0 z-30 mb-2 w-80 rounded-xl border border-line bg-surface p-3.5 text-left text-[13.5px] font-normal normal-case leading-relaxed text-muted opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100">
+      <span className="pointer-events-none invisible absolute bottom-full left-0 z-30 mb-2 w-80 max-w-[calc(100vw-2.5rem)] rounded-xl border border-line bg-surface p-3.5 text-left text-[13.5px] font-normal normal-case leading-relaxed text-muted opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100">
         {tip}
       </span>
     </span>

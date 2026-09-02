@@ -513,10 +513,12 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
              for t in txs if t.kind in ("deposit", "withdraw")]
     xirr_val = None
     if flows:
-        cfs = [(d, -f) for d, f in flows]  # 입금 = 투자(−)
         from app.dashboard import kst_today
-        cfs.append((kst_today(), total_equity))
-        xirr_val = xirr(sorted(cfs, key=lambda x: x[0]))
+        # 연환산은 30일 미만이면 무의미하게 폭발 (신생 포트 71만% 사례) — 보유 연환산과 동일 규약 (2026-09-02)
+        if (kst_today() - min(d for d, _ in flows)).days >= 30:
+            cfs = [(d, -f) for d, f in flows]  # 입금 = 투자(−)
+            cfs.append((kst_today(), total_equity))
+            xirr_val = xirr(sorted(cfs, key=lambda x: x[0]))
     twr_val = _compute_twr(session, pf.id, txs)
 
     # 손익 비율 이중 기준 (2026-09-02 사용자 결정): 순손익% ÷ 납입원금, 평가손익% ÷ 보유원가.

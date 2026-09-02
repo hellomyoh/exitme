@@ -49,7 +49,8 @@ export default function Shell({ children }: { children: ReactNode }) {
     <>
       <NavBar />
       <div className="lg:pl-[210px]">
-        <div className="mx-auto max-w-7xl px-5 py-7">{children}</div>
+        {/* overflow-x-clip: 숨은 툴팁·표 등 밖으로 뻗는 요소가 페이지 가로 스크롤을 만들지 않게 (2026-09-02) */}
+        <div className="mx-auto max-w-7xl overflow-x-clip px-5 py-7">{children}</div>
         <footer className="mx-auto max-w-7xl px-5 pb-8 pt-2 text-[12.5px] leading-relaxed text-faint">
           모든 수치는 모의·과거 데이터 기반이며 투자 권유가 아닙니다. 시세는 지연 제공됩니다.
           비용(수수료·세금·슬리피지)은 단순화 모델로 계산됩니다.
