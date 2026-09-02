@@ -220,12 +220,18 @@ export default function DashboardPage() {
           {calendar.length > 0 ? (
             <div className="grid grid-cols-10 gap-1.5">
               {calendar.map((c) => (
-                <div key={c.date} title={`${c.date} · ${fmtWon(c.pnl)}`}
-                  className="aspect-square rounded-[5px]"
-                  style={{
-                    background: c.pnl > 0 ? "var(--color-up)" : c.pnl < 0 ? "var(--color-down)" : "var(--color-raised)",
-                    opacity: c.pnl === 0 ? 0.6 : Math.min(Math.abs(c.pnl) / 500000 + 0.3, 1),
-                  }} />
+                // 기본 title 툴팁은 ~1초 정지해야 뜨고 환경에 따라 미표시 — 앱 공통 group-hover 패턴으로 즉시 표시 (2026-09-02)
+                <div key={c.date} className="group relative">
+                  <div role="img" aria-label={`${c.date} ${fmtWon(c.pnl)}`}
+                    className="aspect-square rounded-[5px]"
+                    style={{
+                      background: c.pnl > 0 ? "var(--color-up)" : c.pnl < 0 ? "var(--color-down)" : "var(--color-raised)",
+                      opacity: c.pnl === 0 ? 0.6 : Math.min(Math.abs(c.pnl) / 500000 + 0.3, 1),
+                    }} />
+                  <span className="pointer-events-none invisible absolute bottom-full left-1/2 z-30 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12.5px] tabular-nums text-ink opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100">
+                    {c.date} · <b className={c.pnl > 0 ? "text-up" : c.pnl < 0 ? "text-down" : ""}>{c.pnl > 0 ? "+" : ""}{fmtWon(c.pnl)}</b>
+                  </span>
+                </div>
               ))}
             </div>
           ) : <p className="text-[13px] text-faint">일별 스냅샷이 쌓이면 표시됩니다.</p>}

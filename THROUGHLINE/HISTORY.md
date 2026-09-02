@@ -244,6 +244,12 @@
 - 테스트 결과: 무오버라이드 `docker compose exec api python -m pytest -q` → **127 passed / 1 failed**(ws 플레이크 — 라이브 Redis 공유 경합, 단독 재실행 통과·NOTES 기록). 실행 후 개발 DB 무변화(3종목 kis 2,369봉 유지)·stocklab_ci 에 합성 봉 격리 적재 확인.
 - Git commit: fix: enforce test DB isolation in conftest
 
+## [2026-09-02] fix | 대시보드 손익 캘린더 툴팁 미표시 수정
+
+- 작업 내용: "이번 달 일간 손익" 타일이 브라우저 기본 `title` 속성을 사용 — 약 1초 정지해야 뜨고 환경에 따라 미표시(사용자 보고). 앱 공통 group-hover 커스텀 툴팁 패턴(ui.tsx `Tip`과 동일 방식의 소형 변형)으로 교체: 즉시 표시, `날짜 · ±금액`(손익 색상), `role="img"`+aria-label 병기. `.card` 무클리핑 확인 후 타일 상단 중앙 배치.
+- 테스트 결과: web tsc 무오류, /dashboard 200 (dev 핫리로드). 수동 QA(hover 즉시 표시)는 사용자 확인 대기.
+- Git commit: fix: instant custom tooltip on daily pnl calendar
+
 ## [2026-09-02] feat | 대시보드 자산 구분(KR/US)·포트별 추이·손익 비율 (ADR-008)
 
 - 작업 내용: 사용자 지시·결정(A안 $ 별도 표기 / 포트별 다선 / 이중 기준 비율) 반영. Multi-Agent 검토(병렬 서브에이전트 3기 — Backend·DB·QA, [discussion/review-dashboard-asset-breakdown-20260902.md](discussion/review-dashboard-asset-breakdown-20260902.md)) 후 구현: (1) **portfolio_snapshots 신설**(0011 — FK CASCADE·currency 비정규화·ON CONFLICT upsert)과 사용자 스냅샷의 **합산 유도** 재구성([ADR-008](adr/008-portfolio-snapshots.md)) + latest_close 일괄 조회(N+1 제거) + 배치 날짜 kst_today 통일(기존 UTC 결함 수정). (2) /dashboard 에 kr_stock/us_stock 카드(평가액·원가·손익 금액/%, US 는 센트→$ 표기), /portfolio/trend 에 series(포트별, 기존 items 비파괴, ALL 주단위 샘플). (3) /portfolio/summary 에 principal·invested_cost·net_pnl·net_pnl_pct(÷납입원금)·unrealized_pnl_pct(÷보유원가) — 분모≤0 → % null·금액 표시. (4) 거래 등록·삭제 시 당일 스냅샷 즉시 재계산(유령값 방지). (5) 웹: 자산 내용 카드·추이 다선(+범례)·실전매매 카드 % 병기.
