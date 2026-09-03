@@ -37,6 +37,10 @@ class Params:
     grid_min: float = 0.008
     grid_max: float = 0.04
     grid_steps: int = 3
+    # 그리드 예산 가중 — 균등 1/3 → 50/30/20 (2026-09-03 사용자 승인, docs/order-formula-study-20260903.md:
+    # 실측 체결 확률 기준 기대 투입률 +35%, 10년 +14.7%p·샤프 0.98→1.00, MDD +1.0%p 교환).
+    # 길이가 grid_steps 와 다르면 앞에서 grid_steps 개를 취해 합으로 정규화, 합이 0이면 균등 분배.
+    grid_weights: tuple[float, ...] = (0.5, 0.3, 0.2)
     tick: int = 5              # ETF 호가 단위(원)
     cash_buffer: float = 0.005
     band: float = 0.05         # 리밸런싱 밴드 ±5%p — 그리드 신규매수에는 미적용
