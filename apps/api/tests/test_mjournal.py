@@ -35,7 +35,9 @@ def test_journal_fifo_and_summary():
     assert s["buy_amount"] == 220000 and s["sell_amount"] == 195000
     assert s["cost"] == round(100000 * 0.001) + round(120000 * 0.001) + 585
     assert s["realized"] == sell["realized"]
-    assert d["holdings"] == [{"symbol": "대원제약", "qty": 5, "avg_price": 12000, "cost": 60000}]
+    assert d["holdings"] == [{"symbol": "대원제약", "qty": 5, "avg_price": 12000, "cost": 60000,
+                              "realized": 34415, "matched": 160000, "return_pct": 34415 / 160000}]
+    assert s["return_pct"] == 34415 / 160000  # 요약 수익률 = 실현손익 ÷ 매도분 원가 (2026-09-05)
 
     # 보유 초과 매도 거부
     r = c.post(f"/mjournals/{jid}/entries",
@@ -70,7 +72,8 @@ def test_multi_symbol_fifo_isolation():
     d = c.get(f"/mjournals/{jid}", headers=h).json()
     sell = next(r for r in d["rows"] if r["side"] == "sell")
     assert sell["symbol"] == "휴메딕스" and sell["realized"] == 5 * (2100 - 2000)  # 대원제약 로트와 안 섞임
-    assert d["holdings"] == [{"symbol": "대원제약", "qty": 10, "avg_price": 1000, "cost": 10000}]
+    assert d["holdings"] == [{"symbol": "대원제약", "qty": 10, "avg_price": 1000, "cost": 10000,
+                              "realized": 0, "matched": 0, "return_pct": None}]
     assert set(d["symbols"]) == {"대원제약", "휴메딕스"}
     ov = c.get("/mjournals/overview", headers=h).json()["items"]
     me = next(x for x in ov if x["id"] == jid)
