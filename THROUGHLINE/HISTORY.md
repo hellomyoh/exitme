@@ -279,3 +279,9 @@
 - 작업 내용: 주문표 공식 수리 검토([docs/order-formula-study-20260903.md](docs/order-formula-study-20260903.md) — E 탄력성 −1·배분 도함수·반사원리 체결 확률 캘리브레이션) 후속. 단계별 체결 확률이 실측 25%/6.3%/1.45%로 극단 비대칭인데 균등 1/3은 확률 무관 배분 → 기대 투입률 10.9%/일에 그침. **`Params.grid_weights=(0.5,0.3,0.2)` 신설**로 예산을 체결 빈도에 정렬(기대 투입률 +35%, 평균 심도 −8.6%): 3구간 백테스트 일관 개선(10년 +230.8→+245.5%, 샤프 0.98→1.00, 1구간 −1.1→−0.3%, 2구간 +158.4→+167.9%), MDD −20.6→−21.7% 교환. 길이 부족·합 0 균등 폴백, v1 설정 레지스트리 미노출. feature §5.5·이력, strategy-guide 갱신. E 공식·배분·grid_coef(고원 중앙)·clip·3단 구조는 유지 판정.
 - 테스트 결과: api **136 passed / 1 failed**(ws 플레이크 — NOTES 항목, 단독 통과). 골든 갱신: 가중비 수렴 검증 + 균등 폴백 신설. 전략 스위트 55/55 green.
 - Git commit: change: adopt weighted grid budget 50/30/20 (user approved)
+
+## [2026-09-04] feat | 매매 도우미 챗봇 — OpenRouter tool-calling (사용자 지시)
+
+- 작업 내용: 우측 슬라이드 챗 패널(플로팅 💬 로 열고 ✕ 로 닫기, 닫아도 대화 유지) + 백엔드 /chat SSE 하네스. OpenRouter(OpenAI 호환) tool-calling 루프(≤6회)로 읽기 전용·user_id 스코프 도구 7종(포트 목록/자산 요약/일지/주문표(실디스패치 동일)/백테스트/알고리즘 설정/시세) 실행. 무상태 서버(이력은 클라이언트, 최근 20턴). OPENROUTER_API_KEY 만 넣으면 동작(미설정 503 안내), OPENROUTER_MODEL 교체 가능. 시스템 프롬프트에 RAVG v2.5·TF 요지와 안전 규칙(數値 날조 금지·투자 권유 아님) 내장. 상세: features/feature-chatbot.md.
+- 테스트: chat 하네스 4건 신규 — 전체 142 passed, tsc 클린, 헤드리스(열기/전송/503 말풍선/닫기/대화 유지) 확인.
+- Git commit: feat: trading assistant chatbot — OpenRouter tool-calling harness, right-side panel

@@ -6,6 +6,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { ensureSession, fetchMe } from "../lib/api";
+import ChatBot from "./chatbot";
 import NavBar from "./nav";
 
 export default function Shell({ children }: { children: ReactNode }) {
@@ -56,6 +57,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           비용(수수료·세금·슬리피지)은 단순화 모델로 계산됩니다.
         </footer>
       </div>
+      <ChatBot />
     </>
   );
 }
