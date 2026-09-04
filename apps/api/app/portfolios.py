@@ -387,6 +387,23 @@ def create_portfolio(body: PortfolioIn, user_id: int = Depends(current_user_id),
     return {"id": pf.id, "name": pf.name, "market": pf.market}
 
 
+class RenameIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
+@router.patch("/portfolios/{pid}")
+def rename_portfolio(pid: int, body: RenameIn, user_id: int = Depends(current_user_id),
+                     session: Session = Depends(get_session)) -> dict:
+    """포트 이름 변경 (2026-09-05 지시) — 탭이 많아지면 이름으로 구분해야 하므로."""
+    pf = _owned_portfolio(session, pid, user_id)
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="이름이 비어 있습니다")
+    pf.name = name
+    session.commit()
+    return {"id": pf.id, "name": pf.name}
+
+
 @router.delete("/portfolios/{pid}")
 def delete_portfolio(pid: int, user_id: int = Depends(current_user_id),
                      session: Session = Depends(get_session)) -> dict:

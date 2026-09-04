@@ -315,6 +315,16 @@ function PortfolioPage() {
             비용 포함 (추정 수수료)
           </label>
           {sum?.as_of && <span className="text-xs text-faint">기준일 {sum.as_of} · 지연 시세</span>}
+          {/* 이름 변경 (2026-09-05 지시) — 탭이 많아지면 이름으로 구분 */}
+          <button className="rounded-lg border border-line bg-inset px-3 py-1.5 text-[13px] text-muted transition-colors hover:border-accent hover:text-accent"
+            onClick={() => void (async () => {
+              if (!sum) return;
+              const name = window.prompt("새 이름 (60자 이내)", sum.portfolio.name)?.trim();
+              if (!name || name === sum.portfolio.name) return;
+              const r = await apiFetch(`/portfolios/${sum.portfolio.id}`, { method: "PATCH", body: JSON.stringify({ name }) });
+              if (r.ok) void load(pid);
+              else window.alert(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `변경 실패 (${r.status})`);
+            })()}>✏️ 이름 변경</button>
           {/* 파괴적 액션은 탭 줄과 분리하되 명확히 보이게 — 확인 대화상자로 이중 안전 (2026-09-02) */}
           <button className="rounded-lg border border-line bg-inset px-3 py-1.5 text-[13px] text-muted transition-colors hover:border-down hover:text-down"
             onClick={() => void deletePortfolio()}>🗑 이 포트 삭제</button>
