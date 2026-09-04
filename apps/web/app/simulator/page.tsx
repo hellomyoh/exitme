@@ -229,7 +229,7 @@ function SimulatorPage() {
     };
     // 시리즈 on/off (2026-08-28 지시) — 전략 수익 / 매수보유 수익(같은 축 비교) / 종목 추세(하단)
     if (opt.strategy) {
-      chart.addSeries(LineSeries, { color: "#b45309", lineWidth: 2, title: "전략" }).setData(norm(main.equity, "equity"));
+      chart.addSeries(LineSeries, { color: "#f97316", lineWidth: 2, title: "전략" }).setData(norm(main.equity, "equity"));
       if (liveOverlayRef.current) {
         chart.addSeries(LineSeries, { color: "#0e9f6e", lineWidth: 2, title: `실전 ${liveOverlayRef.current.name}` })
           .setData(liveOverlayRef.current.points);
@@ -367,7 +367,7 @@ function SimulatorPage() {
                 <label key={key} className={`flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 transition-colors hover:bg-raised ${
                   key !== "f4_leverage" || flags.f4_leverage ? "" : "opacity-60"}`}>
                   <span className="flex items-center gap-3">
-                    <input type="checkbox" className="accent-[#b45309]" checked={flags[key]}
+                    <input type="checkbox" className="accent-[#f97316]" checked={flags[key]}
                       onChange={(e) => setFlags({ ...flags, [key]: e.target.checked })} />
                     <span className="font-medium">{label}</span>
                   </span>
@@ -485,7 +485,7 @@ function SimulatorPage() {
             <CardTitle right={
               <span className="flex items-center gap-4 text-[13px] font-normal normal-case text-muted">
                 <label className="flex cursor-pointer items-center gap-1.5">
-                  <input type="checkbox" className="accent-[#b45309]" checked={show.strategy}
+                  <input type="checkbox" className="accent-[#f97316]" checked={show.strategy}
                     onChange={(e) => toggleSeries("strategy", e.target.checked)} />
                   <i className="inline-block h-0.5 w-4 bg-accent" />전략 수익
                 </label>
@@ -525,7 +525,7 @@ function SimulatorPage() {
                 <span className="text-faint">오버레이 = 지난 백테스트를 같은 차트에 겹쳐 비교 (최대 4개):</span>
                 {history.filter((h) => h.id !== job.id).slice(0, 8).map((h) => (
                   <label key={h.id} className="flex cursor-pointer items-center gap-1">
-                    <input type="checkbox" className="accent-[#b45309]" checked={overlay.includes(h.id)}
+                    <input type="checkbox" className="accent-[#f97316]" checked={overlay.includes(h.id)}
                       disabled={!overlay.includes(h.id) && overlay.length >= 4}
                       onChange={(e) => {
                         const next = e.target.checked ? [...overlay, h.id] : overlay.filter((x) => x !== h.id);
@@ -541,7 +541,7 @@ function SimulatorPage() {
           <Card>
             <CardTitle right={journal ? (
               <label className="flex items-center gap-1.5 text-[13px] font-normal normal-case text-muted">
-                <input type="checkbox" className="accent-[#b45309]" checked={tradedOnly}
+                <input type="checkbox" className="accent-[#f97316]" checked={tradedOnly}
                   onChange={(e) => { setTradedOnly(e.target.checked); setVisibleDays(30); }} />
                 거래 있는 날만
               </label>

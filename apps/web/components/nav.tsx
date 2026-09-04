@@ -5,8 +5,9 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
-import { ensureSession, fetchMe, logout } from "../lib/api";
+import { ensureSession, fetchMe, logout, type Me } from "../lib/api";
 import { MarketFlag } from "./flags";
+import { ICON_BY_LABEL, NavIcon } from "./navicons";
 
 type Item = { href: string; label: string; market?: "KR" | "US"; adminOnly?: boolean };
 type Group = { title: string | null; flag?: "KR" | "US"; items: Item[] };
@@ -38,13 +39,14 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter();
   const sp = useSearchParams();
   const [loggedIn, setLoggedIn] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [me, setMe] = useState<Me | null>(null);
   useEffect(() => {
     void ensureSession().then(async (ok) => {
       setLoggedIn(ok);
-      if (ok) setIsAdmin((await fetchMe())?.is_admin === true);
+      if (ok) setMe(await fetchMe());
     });
   }, [pathname]);
+  const isAdmin = me?.is_admin === true;
   const curMarket = sp?.get("market") === "US" ? "US" : "KR";
 
   function isActive(it: Item): boolean {
@@ -57,9 +59,14 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <nav className="flex h-full flex-col gap-1 overflow-y-auto px-3 py-4">
-      <Link href="/dashboard" className="mb-3 flex items-center gap-2 px-2 text-[17px] font-extrabold tracking-tight text-ink" onClick={onNavigate}>
-        <span className="inline-block h-2.5 w-2.5 rounded-sm bg-accent" />
-        ExitMe
+      <Link href="/dashboard" className="mb-4 flex items-center gap-2.5 px-2 pt-1" onClick={onNavigate}>
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-ink">
+          <span className="inline-block h-2.5 w-2.5 rotate-45 rounded-[2px] bg-white" />
+        </span>
+        <span className="leading-tight">
+          <span className="block text-[15.5px] font-extrabold tracking-tight text-ink">ExitMe</span>
+          <span className="block text-[9.5px] font-semibold uppercase tracking-[0.18em] text-faint">Auto Trading</span>
+        </span>
       </Link>
       {GROUPS.map((g, gi) => (
         <div key={gi} className="mb-1.5">
@@ -83,9 +90,11 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
                     }
                     onNavigate?.();
                   }}
-                  className={`rounded-lg px-3 py-2 text-[14.5px] font-medium transition-colors ${
-                    active ? "bg-raised font-semibold text-ink" : "text-muted hover:bg-raised/60 hover:text-ink"
+                  className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 text-[14px] font-medium transition-colors ${
+                    active ? "border-line bg-surface font-semibold text-ink shadow-sm"
+                           : "border-transparent text-muted hover:bg-surface/70 hover:text-ink"
                   }`}>
+                  <NavIcon kind={ICON_BY_LABEL[it.label] ?? "orders"} />
                   {it.label}
                 </Link>
               );
@@ -93,15 +102,27 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         </div>
       ))}
-      <div className="mt-auto grid gap-2 px-2 pt-4">
-        <span className="text-[11.5px] leading-relaxed text-faint">모의·지연 시세<br />투자 권유 아님</span>
-        {loggedIn ? (
-          <button className="btn btn-ghost !justify-center !py-2 text-[13.5px]" onClick={() => {
-            void logout().then(() => { onNavigate?.(); router.push("/login"); });
-          }}>로그아웃</button>
-        ) : (
-          <Link href="/login" className="btn btn-ghost !justify-center !py-2 text-[13.5px]" onClick={onNavigate}>로그인</Link>
-        )}
+      <div className="mt-auto pt-4">
+        <span className="block px-2 pb-2 text-[11px] leading-relaxed text-faint">모의·지연 시세 · 투자 권유 아님</span>
+        <div className="border-t border-line px-1 pt-3">
+          {loggedIn && me ? (
+            <div className="flex items-center gap-2.5 rounded-lg px-1.5 py-1">
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-ink text-[12.5px] font-bold uppercase text-white">
+                {me.login.slice(0, 1)}
+              </span>
+              <span className="min-w-0 flex-1 leading-tight">
+                <span className="block truncate text-[13.5px] font-semibold text-ink">{me.login}</span>
+                <span className="block text-[11px] text-faint">{isAdmin ? "관리자" : "사용자"}</span>
+              </span>
+              <button aria-label="로그아웃" title="로그아웃" className="rounded-lg p-1.5 text-muted transition-colors hover:bg-raised hover:text-ink"
+                onClick={() => { void logout().then(() => { onNavigate?.(); router.push("/login"); }); }}>
+                <NavIcon kind="logout" />
+              </button>
+            </div>
+          ) : (
+            <Link href="/login" className="btn !w-full !justify-center !py-2 text-[13.5px]" onClick={onNavigate}>로그인</Link>
+          )}
+        </div>
       </div>
     </nav>
   );
@@ -114,20 +135,22 @@ export default function NavBar() {
   return (
     <Suspense fallback={null}>
       {/* 데스크톱: 고정 사이드바 */}
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[210px] border-r border-line bg-[rgba(255,255,255,0.92)] backdrop-blur lg:block">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[210px] border-r border-line bg-inset lg:block">
         <NavInner />
       </aside>
       {/* 모바일: 상단 바 + 슬라이드 오버 */}
-      <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-line bg-[rgba(255,255,255,0.92)] px-4 backdrop-blur lg:hidden">
+      <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-line bg-inset px-4 lg:hidden">
         <button aria-label="메뉴" className="btn !px-2.5 !py-1.5" onClick={() => setOpen(true)}>☰</button>
         <Link href="/dashboard" className="flex items-center gap-2 text-[16px] font-extrabold text-ink">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-accent" />ExitMe
+          <span className="grid h-7 w-7 place-items-center rounded-lg bg-ink">
+            <span className="inline-block h-2 w-2 rotate-45 rounded-[2px] bg-white" />
+          </span>ExitMe
         </Link>
       </header>
       {open && (
         <div className="fixed inset-0 z-40 lg:hidden">
           <div className="absolute inset-0 bg-black/30" onClick={() => setOpen(false)} />
-          <aside className="absolute inset-y-0 left-0 w-[240px] border-r border-line bg-bg shadow-xl">
+          <aside className="absolute inset-y-0 left-0 w-[240px] border-r border-line bg-inset shadow-xl">
             <NavInner onNavigate={() => setOpen(false)} />
           </aside>
         </div>

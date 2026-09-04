@@ -291,3 +291,9 @@
 - 작업 내용: 시뮬레이터에서 변수를 바꿔 검증한 뒤 '실전매매로 전환'하면 그 변수로 실전 주문표가 계산되도록 구조 변경. **DB 설계**: 새 테이블 없이 portfolios.params["algo"] 를 공식 동결 슬롯으로 정의 — 전환 시 잡의 algo 스냅샷을 항상 명시 저장({} = 기본값 동결), 키 부재 = 구형/수동 포트(설정 추종, 기존 동작 보존). 격리 단위 = 포트 행이라 한 계정에서 여러 공식 동시 운용 시에도 섞이지 않음. 주문표(_portfolio_orders)·계획 복구 스크립트가 동일 규칙으로 해석(개정으로 사라진 키는 무시), 응답에 algo_source/algo_overrides 노출, 실전 화면 캡션에 '공식: 이 포트 고정 (변수 N건)' 표시(툴팁에 값). 알고리즘 설정 변경은 추종 포트에만 적용.
 - 테스트: 격리 2건 신규 — 같은 계정 두 포트 상이 공식 동시 운용(grid_coef 2.0 동결 vs 설정 0.3 추종, 그리드 가격 분리)·설정 변경 무영향·유령 키 견고성·전환 동결 저장. 전체 148 passed, tsc 클린.
 - Git commit: feat: per-portfolio frozen strategy parameters from simulator conversion
+
+## [2026-09-05] feat | Zenith(shadcn/ui) 스타일 디자인 개편 (사용자 지시, 스샷·dashboardpack 데모 기준)
+
+- 작업 내용: 메뉴·본문 내용은 유지하고 디자인 토큰 층에서 전면 교체 — ① globals.css: 중립 징크 그레이 위계(bg #f6f7f8 · inset 사이드바 · 백색 카드 12px 라운드/연한 그림자), 강조 주황(텍스트 #c2410c AA·차트/마크 #f97316), 주 버튼 검정 솔리드, 상승 적/하락 청 국내 관례 유지. ② 사이드바: 검정 라운드 로고+ExitMe/AUTO TRADING 브랜드 블록, 메뉴별 라인 아이콘(navicons), 활성 = 백색 알약(테두리+그림자), 하단 사용자 카드(아바타·이름·역할·로그아웃 아이콘). ③ 하드코딩 앰버(#b45309) 12곳 → #f97316 (차트 라인·체크박스 등). 토큰 기반이라 전 페이지 일괄 적용.
+- 테스트: tsc 클린, 대시보드·실전매매·시뮬레이터 헤드리스 스크린샷 육안 확인(레이아웃 붕괴 없음).
+- Git commit: feat: Zenith-style design overhaul — tokens, sidebar, orange accent

@@ -23,7 +23,7 @@ const PRESETS = [
   { code: "TQQQ", label: "TQQQ 🇺🇸" },
 ];
 const MA_STYLES: [string, string, string][] = [
-  ["ma20", "MA20", "#b45309"], ["ma60", "MA60", "#2563eb"], ["ma200", "MA200", "#7c3aed"], ["ema20", "EMA20", "#0e9f6e"],
+  ["ma20", "MA20", "#f97316"], ["ma60", "MA60", "#2563eb"], ["ma200", "MA200", "#7c3aed"], ["ema20", "EMA20", "#0e9f6e"],
 ];
 
 export default function ChartPage() {
@@ -123,7 +123,7 @@ export default function ChartPage() {
     chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
     vol.setData(bars.map((b) => ({ time: b.date, value: b.volume })));
 
-    chart.addSeries(LineSeries, { color: "#b45309", lineWidth: 1 }, 1)
+    chart.addSeries(LineSeries, { color: "#f97316", lineWidth: 1 }, 1)
       .setData(rsi(closes, 14).flatMap((v, i) => (v === null ? [] : [{ time: times[i], value: v }])));
 
     chart.timeScale().fitContent();

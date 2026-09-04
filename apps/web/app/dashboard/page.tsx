@@ -146,12 +146,12 @@ export default function DashboardPage() {
     });
     chartApi.current = chart;
     chart.addSeries(AreaSeries, {
-      lineColor: "#b45309", lineWidth: 2,
+      lineColor: "#f97316", lineWidth: 2,
       topColor: "rgba(180,83,9,0.16)", bottomColor: "rgba(180,83,9,0.0)",
       priceLineVisible: false,
     }).setData(items.map((i) => ({ time: i.date, value: i.total })));
     // 실전매매 포트별 라인 — KRW 만 (US 는 센트 단위라 환율 도입 전 제외, ASSUMPTIONS 2026-09-02)
-    const legend: { name: string; color: string }[] = [{ name: "총자산", color: "#b45309" }];
+    const legend: { name: string; color: string }[] = [{ name: "총자산", color: "#f97316" }];
     (body.series ?? []).filter((sr) => sr.currency === "KRW" && sr.points.length >= 2)
       .forEach((sr, i) => {
         const color = SERIES_COLORS[i % SERIES_COLORS.length];

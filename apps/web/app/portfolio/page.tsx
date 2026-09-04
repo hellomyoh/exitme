@@ -25,7 +25,7 @@ type Summary = {
 type PortfolioItem = { id: number; name: string; kind: string; market?: string; color?: string | null };
 
 // 탭 배경색 프리셋 — 라이트·다크 모두에서 20% 틴트로 사용 (2026-09-05 지시)
-const TAB_COLORS = ["#b45309", "#2563eb", "#059669", "#dc2626", "#7c3aed", "#0891b2", "#db2777", "#64748b"];
+const TAB_COLORS = ["#f97316", "#2563eb", "#059669", "#dc2626", "#7c3aed", "#0891b2", "#db2777", "#64748b"];
 type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
 type JournalFill = {
   id: number; kind: string; code: string | null; name: string | null; qty: number | null;
@@ -284,7 +284,7 @@ function PortfolioPage() {
     });
     eqApi.current = chart;
     chart.addSeries(LineSeries, {
-      color: "#b45309", lineWidth: 2, title: "수익률 지수",
+      color: "#f97316", lineWidth: 2, title: "수익률 지수",
       // 데이터가 짧아도(시작 직후) 점이 잘 보이도록 마커 표시
       pointMarkersVisible: curve.length <= 30,
     }).setData(curve.map((c) => ({ time: c.date, value: c.index })));
@@ -323,7 +323,7 @@ function PortfolioPage() {
         <button className="btn btn-primary !py-2" onClick={() => setShowStart(!showStart)}>＋ 새 실전매매</button>
         <span className="ml-auto flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-1.5 text-[13px] text-muted">
-            <input type="checkbox" className="accent-[#b45309]" checked={includeCosts} onChange={(e) => setIncludeCosts(e.target.checked)} />
+            <input type="checkbox" className="accent-[#f97316]" checked={includeCosts} onChange={(e) => setIncludeCosts(e.target.checked)} />
             비용 포함 (추정 수수료)
           </label>
           {sum?.as_of && <span className="text-xs text-faint">기준일 {sum.as_of} · 지연 시세</span>}
