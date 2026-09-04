@@ -209,9 +209,36 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
             "color": (pfr.params or {}).get("color"),  # 탭 배경색 (2026-09-05)
             "positions": positions,
         })
+    # 스파크라인용 추세 (2026-09-05 지시) — 포트별·시장별 최근 45일 스냅샷 equity 시리즈
+    from app.models import PortfolioSnapshot
+    since = today - timedelta(days=45)
+    snaps = session.execute(
+        select(PortfolioSnapshot.portfolio_id, PortfolioSnapshot.snap_date,
+               PortfolioSnapshot.equity, PortfolioSnapshot.currency)
+        .where(PortfolioSnapshot.portfolio_id.in_([p["id"] for p in port_rows] or [0]),
+               PortfolioSnapshot.snap_date >= since)
+        .order_by(PortfolioSnapshot.snap_date)).all()
+    by_port: dict[int, list[int]] = {}
+    kr_by_date: dict = {}
+    us_by_date: dict = {}
+    total_by_date: dict = {}
+    for pid_, d_, eq_, cur_ in snaps:
+        by_port.setdefault(pid_, []).append(eq_)
+        bucket = us_by_date if cur_ == "USD" else kr_by_date
+        bucket[d_] = bucket.get(d_, 0) + eq_
+    for p in port_rows:
+        p["trend"] = by_port.get(p["id"], [])
+    # 총자산 추세는 사용자 스냅샷에서
+    totals = session.scalars(select(AssetSnapshot).where(
+        AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date >= since)
+        .order_by(AssetSnapshot.snap_date)).all()
+    total_by_date = [s_.total for s_ in totals]
     return {
         "total": snap.total, "stock": snap.stock, "cash": snap.cash, "other": snap.other,
         "portfolios": port_rows,
+        "total_trend": total_by_date,
+        "kr_trend": [v for _d, v in sorted(kr_by_date.items())],
+        "us_trend": [v for _d, v in sorted(us_by_date.items())],
         "change_amount": change,
         "change_pct": change_pct,
         "since_inception_pct": since_pct,

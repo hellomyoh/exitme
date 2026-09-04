@@ -469,7 +469,8 @@ function SimulatorPage() {
           {job.stale && <Callout icon="⚠️">시세 데이터가 갱신되었습니다(stale) — 재실행을 권장합니다.</Callout>}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
             <Stat label="총수익률" value={fmtPct(kpi?.total_return)} tone={(kpi?.total_return ?? 0) >= 0 ? "up" : "down"}
-              tip="기간 전체 누적 수익률 — (최종 평가액 ÷ 투입 자본) − 1. 비용(수수료·슬리피지·세금) 반영" />
+              tip="기간 전체 누적 수익률 — (최종 평가액 ÷ 투입 자본) − 1. 비용(수수료·슬리피지·세금) 반영"
+              spark={job.equity?.map((e) => e.equity)} />
             <Stat label="CAGR" value={kpi?.cagr === null ? "1년 미만" : fmtPct(kpi?.cagr)}
               tip="연평균 복리 수익률 — 매년 같은 비율로 늘었다고 환산한 값. 전략이 실제로 매매한 활동 구간 기준이며, 1년(252거래일) 미만이면 왜곡이 커서 표시하지 않습니다" />
             <Stat label="MDD" value={fmtPct(kpi?.mdd)} tone="down"

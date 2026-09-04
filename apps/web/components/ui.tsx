@@ -1,5 +1,6 @@
 /** 공용 UI 프리미티브 — 디자인 토큰(globals.css) 기반. 화면 간 일관성의 단일 출처. */
 import type { ReactNode } from "react";
+import { Spark } from "./spark";
 
 export function PageTitle({ title, sub }: { title: string; sub?: string }) {
   return (
@@ -24,8 +25,9 @@ export function CardTitle({ children, right }: { children: ReactNode; right?: Re
   );
 }
 
-export function Stat({ label, value, tone = "default", hint, tip }: {
+export function Stat({ label, value, tone = "default", hint, tip, spark, sparkColor }: {
   label: string; value: ReactNode; tone?: "default" | "up" | "down" | "accent"; hint?: string; tip?: ReactNode;
+  spark?: number[] | null; sparkColor?: string;  // 카드 하단 미니 추세 (2026-09-05, Zenith 스타일)
 }) {
   const color = { default: "text-ink", up: "text-up", down: "text-down", accent: "text-accent" }[tone];
   const labelEl = tip ? <Tip tip={tip}><span>{label}</span><span className="text-faint">ⓘ</span></Tip> : label;
@@ -35,6 +37,7 @@ export function Stat({ label, value, tone = "default", hint, tip }: {
       {/* nowrap 금지 — 긴 값(금액+%)은 공백에서 줄바꿈되어 카드 밖으로 넘치지 않게 (2026-09-02) */}
       <div className={`mt-1 break-keep text-[19px] font-bold leading-snug ${color}`}>{value}</div>
       {hint && <div className="mt-0.5 text-[11px] text-faint">{hint}</div>}
+      {spark && spark.length >= 2 && <Spark data={spark} color={sparkColor} />}
     </div>
   );
 }

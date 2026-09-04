@@ -7,11 +7,12 @@ import { useRouter } from "next/navigation";
 import { createChart, IChartApi, AreaSeries, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { MarketFlag } from "../../components/flags";
+import { Spark } from "../../components/spark";
 import { Badge, Card, CardTitle, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone } from "../../components/ui";
 
 type Breakdown = { value: number; cost: number; pnl: number; pnl_pct: number | null };
 type PortPosition = { code: string; name: string; qty: number; value: number };
-type PortRow = { id: number; name: string; market: string; equity: number; stock_value: number; cash: number; pnl: number; pnl_pct: number | null; color?: string | null; positions?: PortPosition[] };
+type PortRow = { trend?: number[];  id: number; name: string; market: string; equity: number; stock_value: number; cash: number; pnl: number; pnl_pct: number | null; color?: string | null; positions?: PortPosition[] };
 
 /** 계좌별 도넛 (2026-09-05 지시) — 계좌마다 도넛 하나, 조각 = 보유 종목(+현금).
  *  같은 종목은 모든 도넛에서 같은 색(색은 엔티티를 따른다). hover 에 종목/수량/평가액. */
@@ -80,7 +81,7 @@ function AccountDonut({ row, fmt }: { row: PortRow; fmt: (v: number) => string }
     </div>
   );
 }
-type Dash = { portfolios?: PortRow[]; 
+type Dash = { portfolios?: PortRow[]; total_trend?: number[]; kr_trend?: number[]; us_trend?: number[]; 
   total: number; stock: number; cash: number; other: number;
   change_amount: number; change_pct: number | null; since_inception_pct: number | null;
   kr_stock: Breakdown; us_stock: Breakdown;  // us_stock 값 단위: 센트
@@ -193,22 +194,45 @@ export default function DashboardPage() {
       <PageTitle title="대시보드" sub="총자산과 전략 상태를 한 화면에서 — 일별 스냅샷 기준, 지연 시세" />
       {loadError && <div className="mb-4 rounded-xl border border-down/40 bg-down/5 px-4 py-3 text-[14px] font-semibold text-down">⚠️ {loadError}</div>}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-6">
-        {/* 히어로 — 총자산 */}
-        <Card className="md:col-span-4">
-          <CardTitle>총자산</CardTitle>
-          <div className="text-5xl font-extrabold tracking-tight">{dash ? fmtWon(dash.total) : "—"}</div>
+        {/* 1열 KPI 4카드 — 숫자+스파크라인, 자산 내용과의 중복 제거 (2026-09-05 지시) */}
+        <Card className="px-4 py-3.5 md:col-span-2">
+          <div className="text-[13px] text-faint">총자산 (KRW · 미국 자산 별도)</div>
+          <div className="mt-1 text-[24px] font-extrabold tracking-tight">{dash ? fmtWon(dash.total) : "—"}</div>
           {dash && (
-            <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[15px]">
+            <div className="mt-0.5 flex flex-wrap gap-x-3 text-[12.5px]">
               <span className={`font-semibold ${toneCls[ct]}`}>
-                {dash.change_amount >= 0 ? "▲" : "▼"} 전일대비 {fmtWon(Math.abs(dash.change_amount))} ({fmtPct(dash.change_pct, 2)})
+                {dash.change_amount >= 0 ? "▲" : "▼"} 전일 {fmtWon(Math.abs(dash.change_amount))} ({fmtPct(dash.change_pct, 2)})
               </span>
-              <span className="text-faint">전체 기간 {fmtPct(dash.since_inception_pct, 2)}</span>
+              <span className="text-faint">전체 {fmtPct(dash.since_inception_pct, 2)}</span>
             </div>
           )}
+          <Spark data={dash?.total_trend} />
         </Card>
-
-        {/* 레짐 게이지 */}
-        <Card className="md:col-span-2">
+        <Card className="px-4 py-3.5 md:col-span-1">
+          <div className="flex items-center gap-1.5 text-[13px] text-faint"><MarketFlag market="KR" /> 한국 주식</div>
+          <div className="mt-1 text-[20px] font-bold">{dash ? fmtWon(dash.kr_stock.value) : "—"}</div>
+          {dash && dash.kr_stock.cost > 0 && (
+            <div className={`text-[12.5px] font-semibold ${toneCls[pnlTone(dash.kr_stock.pnl)]}`}>
+              {dash.kr_stock.pnl >= 0 ? "+" : ""}{fmtWon(dash.kr_stock.pnl)}
+              {dash.kr_stock.pnl_pct != null && ` (${fmtPct(dash.kr_stock.pnl_pct, 2)})`}
+            </div>
+          )}
+          <Spark data={dash?.kr_trend} color="#2a78d6" />
+        </Card>
+        <Card className="px-4 py-3.5 md:col-span-1">
+          <div className="flex items-center gap-1.5 text-[13px] text-faint"><MarketFlag market="US" /> 미국 주식 ($)</div>
+          <div className="mt-1 text-[20px] font-bold">
+            {dash ? `$${(dash.us_stock.value / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "—"}
+          </div>
+          {dash && dash.us_stock.cost > 0 && (
+            <div className={`text-[12.5px] font-semibold ${toneCls[pnlTone(dash.us_stock.pnl)]}`}>
+              {dash.us_stock.pnl >= 0 ? "+" : ""}${(dash.us_stock.pnl / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+              {dash.us_stock.pnl_pct != null && ` (${fmtPct(dash.us_stock.pnl_pct, 2)})`}
+            </div>
+          )}
+          <Spark data={dash?.us_trend} color="#1baf7a" />
+        </Card>
+        <Card className="px-4 py-3.5 md:col-span-2">
           <CardTitle>RAVG v2.5 레짐</CardTitle>
           {signal?.status === "OK" ? (
             <>
@@ -224,53 +248,52 @@ export default function DashboardPage() {
           ) : <p className="text-[13px] text-faint">{signal?.status ?? "—"} — 시딩·배치 후 표시됩니다</p>}
         </Card>
 
-        {/* 자산 내용 — 한국/미국 주식 구분 (feature-dashboard §5, 2026-09-02) */}
-        <Card className="md:col-span-6">
-          <CardTitle>자산 내용</CardTitle>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <div>
-              <div className="text-[13px] text-faint">총자산 (KRW · 미국 자산 별도)</div>
-              <div className="mt-1 text-xl font-bold tabular-nums">{dash ? fmtWon(dash.total) : "—"}</div>
-            </div>
-            <div>
-              <div className="text-[13px] text-faint">한국 주식 (실전매매)</div>
-              <div className="mt-1 text-xl font-bold tabular-nums">{dash ? fmtWon(dash.kr_stock.value) : "—"}</div>
-              {dash && dash.kr_stock.cost > 0 && (
-                <div className={`text-[13.5px] font-semibold ${toneCls[pnlTone(dash.kr_stock.pnl)]}`}>
-                  {dash.kr_stock.pnl >= 0 ? "+" : ""}{fmtWon(dash.kr_stock.pnl)}
-                  {dash.kr_stock.pnl_pct != null && ` (${fmtPct(dash.kr_stock.pnl_pct, 2)})`}
-                </div>
-              )}
-            </div>
-            <div>
-              <div className="text-[13px] text-faint">미국 주식 (실전매매 · $)</div>
-              <div className="mt-1 text-xl font-bold tabular-nums">
-                {dash ? `$${(dash.us_stock.value / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "—"}
-              </div>
-              {dash && dash.us_stock.cost > 0 && (
-                <div className={`text-[13.5px] font-semibold ${toneCls[pnlTone(dash.us_stock.pnl)]}`}>
-                  {dash.us_stock.pnl >= 0 ? "+" : ""}${(dash.us_stock.pnl / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                  {dash.us_stock.pnl_pct != null && ` (${fmtPct(dash.us_stock.pnl_pct, 2)})`}
-                </div>
-              )}
-            </div>
-          </div>
-        
+        {/* 계좌별 현황 — 도넛 → 순위 테이블 (2026-09-05 지시, Zenith 'Top Selling' 스타일) */}
         {(dash?.portfolios?.length ?? 0) > 0 && (
-          <div className="mt-4 border-t border-line pt-3">
-            <div className="mb-2.5 text-[12.5px] font-semibold uppercase tracking-wide text-faint">계좌별 구성 (진행 중 실전매매) · 조각 = 보유 종목, 마우스를 올리면 종목·수량</div>
-            {/* 계좌마다 도넛 하나 — 이름 / 도넛 / 금액 구조, 여러 개를 줄로 나열 (2026-09-05 지시) */}
-            <div className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 lg:grid-cols-4">
-              {(dash!.portfolios ?? []).filter((p) => p.equity > 0)
-                .sort((a, b) => b.equity - a.equity)
-                .map((p) => (
-                  <AccountDonut key={p.id} row={p}
-                    fmt={(v) => p.market === "US" ? `$${(v / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : `${v.toLocaleString()}원`} />
-                ))}
+          <Card className="md:col-span-6">
+            <CardTitle>계좌별 현황 <span className="normal-case text-faint">· 진행 중 실전매매 — 이름 클릭 시 해당 실전매매로</span></CardTitle>
+            <div className="overflow-x-auto">
+              <table className="w-full whitespace-nowrap text-[14px]">
+                <thead><tr className="border-b border-line text-left text-[12px] text-faint">
+                  <th className="pb-2 pr-2 font-medium">#</th>
+                  <th className="pb-2 font-medium">계좌</th>
+                  <th className="pb-2 text-right font-medium">평가액</th>
+                  <th className="pb-2 text-right font-medium">평가손익</th>
+                  <th className="pb-2 pl-6 font-medium">추세</th>
+                </tr></thead>
+                <tbody>
+                  {(dash!.portfolios ?? []).filter((p) => p.equity > 0)
+                    .sort((a, b) => b.equity - a.equity)
+                    .map((p, i) => {
+                      const money = (v: number) => p.market === "US"
+                        ? `$${(v / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : `${v.toLocaleString()}원`;
+                      const posSummary = (p.positions ?? []).map((x) => `${x.name} ${x.qty.toLocaleString()}주`).join(" · ");
+                      return (
+                        <tr key={p.id} className="border-b border-line/50 last:border-0">
+                          <td className="py-2.5 pr-2 text-faint">{i + 1}</td>
+                          <td className="py-2.5">
+                            <Link href={`/portfolio?${p.market === "US" ? "market=US&" : ""}pid=${p.id}`}
+                              className="group inline-flex items-center gap-1.5">
+                              <MarketFlag market={p.market} />
+                              {p.color && <i className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: p.color }} />}
+                              <span className="font-semibold underline-offset-2 group-hover:text-accent group-hover:underline">{p.name}</span>
+                            </Link>
+                            <div className="text-[12px] text-faint">{posSummary || "현금 대기"}</div>
+                          </td>
+                          <td className="table-num py-2.5 font-bold">{money(p.equity)}</td>
+                          <td className={`table-num py-2.5 font-semibold ${p.pnl > 0 ? "text-up" : p.pnl < 0 ? "text-down" : "text-faint"}`}>
+                            {p.pnl !== 0 ? `${p.pnl >= 0 ? "+" : ""}${money(p.pnl)}` : "—"}
+                            {p.pnl_pct !== null && p.pnl !== 0 && ` (${(p.pnl_pct * 100).toFixed(2)}%)`}
+                          </td>
+                          <td className="py-1 pl-6"><div className="w-28"><Spark data={p.trend} className="h-7 w-full" /></div></td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
             </div>
-          </div>
+          </Card>
         )}
-      </Card>
 
         {/* 자산 추이 */}
         <Card className="md:col-span-4">
