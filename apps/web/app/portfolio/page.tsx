@@ -22,7 +22,10 @@ type Summary = {
   net_pnl: number; net_pnl_pct: number | null; unrealized_pnl_pct: number | null;
   twr: number | null; xirr: number | null; positions: Position[];
 };
-type PortfolioItem = { id: number; name: string; kind: string; market?: string };
+type PortfolioItem = { id: number; name: string; kind: string; market?: string; color?: string | null };
+
+// 탭 배경색 프리셋 — 라이트·다크 모두에서 20% 틴트로 사용 (2026-09-05 지시)
+const TAB_COLORS = ["#b45309", "#2563eb", "#059669", "#dc2626", "#7c3aed", "#0891b2", "#db2777", "#64748b"];
 type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
 type JournalFill = {
   id: number; kind: string; code: string | null; name: string | null; qty: number | null;
@@ -85,6 +88,10 @@ function PortfolioPage() {
     { code: market === "US" ? "QQQ" : "102110", qty: "", price: "" },
   ]);
   const [journal, setJournal] = useState<JournalItem[]>([]);
+  // 포트 이름·탭 배경색 편집 패널 (2026-09-05 지시)
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editColor, setEditColor] = useState("");
   const [entryOpen, setEntryOpen] = useState(false);  // 체결 입력 폼 펼침 (2026-08-29 일지 개편)
   const [signal, setSignal] = useState<Signal | null>(null);
   const [curve, setCurve] = useState<{ date: string; equity: number; index: number }[]>([]);
@@ -300,14 +307,19 @@ function PortfolioPage() {
       {/* 포트 선택: 드롭다운 → 탭(알약) — 한 번의 클릭으로 전환 (2026-09-02 지시) */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
         {/* '내 계좌 (기본)' 별칭 탭 제거 — 서버 기본값은 가장 오래된 포트와 동일해 중복 (2026-09-02 질문) */}
-        {portfolios.map((p) => (
-          <button key={p.id} onClick={() => setPid(p.id)}
-            className={`rounded-lg border px-3.5 py-2 text-[14px] transition-colors ${
-              (pid ?? sum?.portfolio.id) === p.id ? "border-accent bg-accent-dim font-semibold text-accent"
-                           : "border-line bg-inset text-muted hover:border-line-strong hover:text-ink"}`}>
-            {p.name}
-          </button>
-        ))}
+        {portfolios.map((p) => {
+          const sel = (pid ?? sum?.portfolio.id) === p.id;
+          return (
+            <button key={p.id} onClick={() => setPid(p.id)}
+              // 사용자 지정 배경색은 20% 틴트 — 선택 여부는 테두리·굵기로 (2026-09-05 지시)
+              style={p.color ? { backgroundColor: `${p.color}33`, borderColor: sel ? undefined : `${p.color}88` } : undefined}
+              className={`rounded-lg border px-3.5 py-2 text-[14px] transition-colors ${
+                sel ? `border-accent font-semibold ${p.color ? "text-ink" : "bg-accent-dim text-accent"}`
+                    : `border-line text-muted hover:border-line-strong hover:text-ink ${p.color ? "" : "bg-inset"}`}`}>
+              {p.name}
+            </button>
+          );
+        })}
         <button className="btn btn-primary !py-2" onClick={() => setShowStart(!showStart)}>＋ 새 실전매매</button>
         <span className="ml-auto flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-1.5 text-[13px] text-muted">
@@ -315,21 +327,55 @@ function PortfolioPage() {
             비용 포함 (추정 수수료)
           </label>
           {sum?.as_of && <span className="text-xs text-faint">기준일 {sum.as_of} · 지연 시세</span>}
-          {/* 이름 변경 (2026-09-05 지시) — 탭이 많아지면 이름으로 구분 */}
+          {/* 이름·배경색 편집 (2026-09-05 지시) — 탭이 많아지면 이름과 색으로 구분 */}
           <button className="rounded-lg border border-line bg-inset px-3 py-1.5 text-[13px] text-muted transition-colors hover:border-accent hover:text-accent"
-            onClick={() => void (async () => {
+            onClick={() => {
               if (!sum) return;
-              const name = window.prompt("새 이름 (60자 이내)", sum.portfolio.name)?.trim();
-              if (!name || name === sum.portfolio.name) return;
-              const r = await apiFetch(`/portfolios/${sum.portfolio.id}`, { method: "PATCH", body: JSON.stringify({ name }) });
-              if (r.ok) void load(pid);
-              else window.alert(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `변경 실패 (${r.status})`);
-            })()}>✏️ 이름 변경</button>
+              setEditName(sum.portfolio.name);
+              setEditColor(portfolios.find((p) => p.id === sum.portfolio.id)?.color ?? "");
+              setEditOpen(!editOpen);
+            }}>✏️ 이름·색</button>
           {/* 파괴적 액션은 탭 줄과 분리하되 명확히 보이게 — 확인 대화상자로 이중 안전 (2026-09-02) */}
           <button className="rounded-lg border border-line bg-inset px-3 py-1.5 text-[13px] text-muted transition-colors hover:border-down hover:text-down"
             onClick={() => void deletePortfolio()}>🗑 이 포트 삭제</button>
         </span>
       </div>
+
+      {editOpen && sum && (
+        <Card className="mb-4 max-w-xl border-accent">
+          <CardTitle>포트 이름 · 탭 배경색</CardTitle>
+          <div className="grid gap-3">
+            <label className="grid gap-1 text-[13px] text-faint">이름 (60자 이내)
+              <input className="input" value={editName} maxLength={60} onChange={(e) => setEditName(e.target.value)} /></label>
+            <div className="grid gap-1 text-[13px] text-faint">탭 배경색
+              <div className="flex flex-wrap items-center gap-2">
+                <button title="색 없음" onClick={() => setEditColor("")}
+                  className={`h-8 w-8 rounded-lg border text-[11px] text-faint ${editColor === "" ? "border-accent ring-2 ring-accent/40" : "border-line"}`}>
+                  없음
+                </button>
+                {TAB_COLORS.map((c) => (
+                  <button key={c} title={c} onClick={() => setEditColor(c)}
+                    style={{ backgroundColor: `${c}33`, borderColor: c }}
+                    className={`h-8 w-8 rounded-lg border-2 ${editColor === c ? "ring-2 ring-accent/60" : ""}`} />
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <button className="btn btn-primary" onClick={() => void (async () => {
+                const r = await apiFetch(`/portfolios/${sum.portfolio.id}`, {
+                  method: "PATCH", body: JSON.stringify({ name: editName.trim(), color: editColor }) });
+                if (r.ok) { setEditOpen(false); void load(pid); }
+                else window.alert(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `변경 실패 (${r.status})`);
+              })()}>저장</button>
+              <button className="btn" onClick={() => setEditOpen(false)}>취소</button>
+              <span className="rounded-lg border px-3 py-1.5 text-[13px]"
+                style={editColor ? { backgroundColor: `${editColor}33`, borderColor: `${editColor}88` } : undefined}>
+                {editName.trim() || "미리보기"}
+              </span>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {showStart && (
         <Card className="mb-4 border-accent">

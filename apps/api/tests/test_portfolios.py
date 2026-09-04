@@ -563,3 +563,26 @@ def test_rename_portfolio():
                                                "password": "password123"}).json()["access_token"]
     assert client.patch(f"/portfolios/{pid}", json={"name": "탈취"},
                         headers={"Authorization": f"Bearer {tok2}"}).status_code == 404
+
+
+def test_portfolio_tab_color():
+    """탭 배경색 (2026-09-05): #rrggbb 저장·목록 노출·해제·형식 검증."""
+    import uuid as _u
+    client = TestClient(app, base_url="https://testserver")
+    tok = client.post("/auth/register", json={"email": f"cl{_u.uuid4().hex[:8]}@x.dev",
+                                              "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    pid = client.post("/portfolios", json={"name": "색깔포트"}, headers=h).json()["id"]
+    r = client.patch(f"/portfolios/{pid}", json={"name": "색깔포트", "color": "#2563eb"}, headers=h)
+    assert r.status_code == 200 and r.json()["color"] == "#2563eb"
+    item = next(x for x in client.get("/portfolios", headers=h).json()["items"] if x["id"] == pid)
+    assert item["color"] == "#2563eb"
+    assert client.patch(f"/portfolios/{pid}", json={"name": "색깔포트", "color": "blue"},
+                        headers=h).status_code == 422
+    r2 = client.patch(f"/portfolios/{pid}", json={"name": "색깔포트", "color": ""}, headers=h)
+    assert r2.json()["color"] is None  # 해제
+    # color 생략(None) = 유지
+    client.patch(f"/portfolios/{pid}", json={"name": "색깔포트", "color": "#059669"}, headers=h)
+    client.patch(f"/portfolios/{pid}", json={"name": "이름만"}, headers=h)
+    item2 = next(x for x in client.get("/portfolios", headers=h).json()["items"] if x["id"] == pid)
+    assert item2["name"] == "이름만" and item2["color"] == "#059669"
