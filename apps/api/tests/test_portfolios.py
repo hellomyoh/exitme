@@ -545,3 +545,21 @@ def test_portfolio_plan_frozen_once_exec_day_arrives(monkeypatch):
         row2 = s.scalars(select(PortfolioPlan).where(PortfolioPlan.portfolio_id == pid,
                                                      PortfolioPlan.trade_date == exec_day)).first()
         assert row2.payload["orders"] == orig["orders"], "실행일 도래 계획이 덮였음"
+
+
+def test_rename_portfolio():
+    """이름 변경 (2026-09-05): 소유자만, 빈 이름 거부, 타인 404."""
+    import uuid as _u
+    client = TestClient(app, base_url="https://testserver")
+    tok = client.post("/auth/register", json={"email": f"rn{_u.uuid4().hex[:8]}@x.dev",
+                                              "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    pid = client.post("/portfolios", json={"name": "옛이름"}, headers=h).json()["id"]
+    r = client.patch(f"/portfolios/{pid}", json={"name": "  새이름  "}, headers=h)
+    assert r.status_code == 200 and r.json()["name"] == "새이름"
+    assert any(x["name"] == "새이름" for x in client.get("/portfolios", headers=h).json()["items"])
+    assert client.patch(f"/portfolios/{pid}", json={"name": "   "}, headers=h).status_code == 422
+    tok2 = client.post("/auth/register", json={"email": f"rn{_u.uuid4().hex[:8]}@x.dev",
+                                               "password": "password123"}).json()["access_token"]
+    assert client.patch(f"/portfolios/{pid}", json={"name": "탈취"},
+                        headers={"Authorization": f"Bearer {tok2}"}).status_code == 404
