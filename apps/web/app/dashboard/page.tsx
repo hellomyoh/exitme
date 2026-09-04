@@ -8,70 +8,66 @@ import { apiFetch, ensureSession } from "../../lib/api";
 import { Badge, Card, CardTitle, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone } from "../../components/ui";
 
 type Breakdown = { value: number; cost: number; pnl: number; pnl_pct: number | null };
-type PortRow = { id: number; name: string; market: string; equity: number; stock_value: number; cash: number; pnl: number; pnl_pct: number | null; color?: string | null };
+type PortPosition = { code: string; name: string; qty: number; value: number };
+type PortRow = { id: number; name: string; market: string; equity: number; stock_value: number; cash: number; pnl: number; pnl_pct: number | null; color?: string | null; positions?: PortPosition[] };
 
-/** 포트별 도넛 (2026-09-05 지시) — 조각 hover 툴팁에 금액·비중, 하단 범례는 계좌명만.
- *  색: 포트 탭 색 우선, 없으면 검증된 카테고리 팔레트(dataviz 8슬롯) 순서 배정.
- *  1% 미만 조각은 '기타'로 묶어 hover 로 목록 확인(극소 조각은 마우스로 집기 불가 문제 보완). */
-const DONUT_PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
+/** 계좌별 도넛 (2026-09-05 지시) — 계좌마다 도넛 하나, 조각 = 보유 종목(+현금).
+ *  같은 종목은 모든 도넛에서 같은 색(색은 엔티티를 따른다). hover 에 종목/수량/평가액. */
+const INST_COLORS: Record<string, string> = {
+  "102110": "#2a78d6",  // TIGER 200 — blue
+  "069500": "#eb6834",  // KODEX 200 — orange
+  "122630": "#1baf7a",  // KODEX 레버리지 — aqua
+  QQQ: "#2a78d6", QLD: "#1baf7a", TQQQ: "#eda100",
+};
+const CASH_COLOR = "#a8a29e";
+const FALLBACK_COLOR = "#4a3aa7";
 
-function PortDonut({ rows, fmt, title }: { rows: PortRow[]; fmt: (v: number) => string; title: string }) {
+function AccountDonut({ row, fmt }: { row: PortRow; fmt: (v: number) => string }) {
   const [tip, setTip] = useState<{ x: number; y: number; html: string } | null>(null);
-  const total = rows.reduce((a, r) => a + r.equity, 0);
-  if (total <= 0 || rows.length === 0) return null;
-  // 1% 미만 → 기타로 폴딩
-  const big = rows.filter((r) => r.equity / total >= 0.01).sort((a, b) => b.equity - a.equity);
-  const small = rows.filter((r) => r.equity / total < 0.01 && r.equity > 0);
-  type Slice = { name: string; value: number; pnl: number | null; color: string; members?: string[] };
-  let paletteIdx = 0;
-  const nextColor = () => DONUT_PALETTE[paletteIdx++ % DONUT_PALETTE.length];
-  const slices: Slice[] = big.map((r) => ({ name: r.name, value: r.equity, pnl: r.pnl, color: r.color ?? nextColor() }));
-  if (small.length) {
-    slices.push({ name: `기타 ${small.length}개`, value: small.reduce((a, r) => a + r.equity, 0), pnl: null,
-                  color: "#a8a29e", members: small.map((s) => `${s.name} ${fmt(s.equity)}`) });
-  }
-  // SVG 아크 — 12시 시작, 시계 방향. 조각 사이 2px 간극(스페이서 규칙)
-  const R = 74, r0 = 44, C = 90;
+  type Slice = { label: string; sub: string; value: number; color: string };
+  const slices: Slice[] = (row.positions ?? []).map((p) => ({
+    label: p.name, sub: `${p.qty.toLocaleString()}주 · ${fmt(p.value)}`,
+    value: p.value, color: INST_COLORS[p.code] ?? FALLBACK_COLOR,
+  }));
+  if (row.cash > 0) slices.push({ label: "현금", sub: fmt(row.cash), value: row.cash, color: CASH_COLOR });
+  const total = slices.reduce((a, s) => a + s.value, 0);
+  if (total <= 0) return null;
+  // SVG 아크 — 12시 시작 시계 방향, 조각 사이 2px 간극(스페이서 규칙)
+  const R = 52, r0 = 30, C = 64;
   const gapRad = 2 / R;
   let angle = -Math.PI / 2;
   const paths = slices.map((s) => {
     const frac = s.value / total;
     const a0 = angle + gapRad / 2;
-    const a1 = angle + Math.max(frac * Math.PI * 2 - gapRad / 2, 0.004);
+    const a1 = angle + Math.max(frac * Math.PI * 2 - gapRad / 2, 0.006);
     angle += frac * Math.PI * 2;
     const p = (a: number, rad: number) => `${C + rad * Math.cos(a)},${C + rad * Math.sin(a)}`;
     const largeArc = a1 - a0 > Math.PI ? 1 : 0;
     return { s, frac, d: `M${p(a0, R)} A${R},${R} 0 ${largeArc} 1 ${p(a1, R)} L${p(a1, r0)} A${r0},${r0} 0 ${largeArc} 0 ${p(a0, r0)} Z` };
   });
   return (
-    <div className="relative">
-      <div className="mb-1 text-[12.5px] font-semibold uppercase tracking-wide text-faint">{title}</div>
-      <div className="flex flex-wrap items-center gap-4">
-        <svg viewBox="0 0 180 180" className="h-44 w-44 shrink-0" role="img" aria-label={`${title} 포트별 비중`}>
-          {paths.map(({ s, frac, d }, i) => (
-            <path key={i} d={d} fill={s.color} opacity={0.85}
-              onMouseMove={(e) => {
-                const box = (e.currentTarget.ownerSVGElement!.parentElement as HTMLElement).getBoundingClientRect();
-                setTip({ x: e.clientX - box.left + 12, y: e.clientY - box.top + 12,
-                  html: s.members
-                    ? `${s.name}\n${s.members.join("\n")}`
-                    : `${s.name}\n평가 ${fmt(s.value)} · ${(frac * 100).toFixed(1)}%${s.pnl !== null ? `\n손익 ${s.pnl >= 0 ? "+" : ""}${fmt(s.pnl)}` : ""}` });
-              }}
-              onMouseLeave={() => setTip(null)} />
-          ))}
-          <text x={C} y={C - 6} textAnchor="middle" className="fill-[var(--tw-prose-body,#6b7280)] text-[11px]" style={{ fill: "#858c9b" }}>합계</text>
-          <text x={C} y={C + 12} textAnchor="middle" className="text-[13px] font-bold" style={{ fill: "currentColor" }}>{fmt(total)}</text>
-        </svg>
-        {/* 범례 — 계좌명만 (금액은 hover), flex-wrap 으로 2줄 이상 자연 배치 (2026-09-05 지시) */}
-        <div className="flex min-w-0 flex-1 flex-wrap content-start gap-x-4 gap-y-1.5 text-[13px]">
-          {slices.map((s, i) => (
-            <span key={i} className="inline-flex cursor-default items-center gap-1.5 text-muted"
-              title={s.members ? s.members.join("\n") : `평가 ${fmt(s.value)} · ${((s.value / total) * 100).toFixed(1)}%`}>
-              <i className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: s.color }} />{s.name}
-            </span>
-          ))}
-        </div>
+    <div className="relative flex flex-col items-center gap-1.5">
+      <div className="flex max-w-full items-center gap-1.5 text-[13.5px] font-semibold">
+        {row.color && <i className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: row.color }} />}
+        <span className="truncate">{row.market === "US" ? "🇺🇸 " : ""}{row.name}</span>
       </div>
+      <svg viewBox="0 0 128 128" className="h-28 w-28" role="img" aria-label={`${row.name} 종목 구성`}>
+        {paths.map(({ s, frac, d }, i) => (
+          <path key={i} d={d} fill={s.color} opacity={0.85}
+            onMouseMove={(e) => {
+              const box = (e.currentTarget.ownerSVGElement!.parentElement as HTMLElement).getBoundingClientRect();
+              setTip({ x: e.clientX - box.left + 10, y: e.clientY - box.top + 10,
+                       html: `${s.label}\n${s.sub} (${(frac * 100).toFixed(1)}%)` });
+            }}
+            onMouseLeave={() => setTip(null)} />
+        ))}
+      </svg>
+      <div className="text-[14.5px] font-bold tabular-nums">{fmt(row.equity)}</div>
+      {row.pnl !== 0 && (
+        <div className={`-mt-1 text-[12.5px] font-semibold ${row.pnl > 0 ? "text-up" : "text-down"}`}>
+          {row.pnl >= 0 ? "+" : ""}{fmt(row.pnl)}{row.pnl_pct !== null && ` (${(row.pnl_pct * 100).toFixed(2)}%)`}
+        </div>
+      )}
       {tip && (
         <div className="pointer-events-none absolute z-20 whitespace-pre rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12.5px] leading-relaxed shadow-lg"
           style={{ left: tip.x, top: tip.y }}>{tip.html}</div>
@@ -257,12 +253,15 @@ export default function DashboardPage() {
         
         {(dash?.portfolios?.length ?? 0) > 0 && (
           <div className="mt-4 border-t border-line pt-3">
-            {/* 포트별 도넛 — 통화가 달라 마켓별 별도 도넛 (환산 없이 비중 왜곡 방지, 2026-09-05 지시) */}
-            <div className="grid gap-6 lg:grid-cols-2">
-              <PortDonut title="포트별 · 한국 (진행 중 실전매매)" fmt={(v) => `${v.toLocaleString()}원`}
-                rows={(dash!.portfolios ?? []).filter((p) => p.market !== "US" && p.equity > 0)} />
-              <PortDonut title="포트별 · 미국" fmt={(v) => `$${(v / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`}
-                rows={(dash!.portfolios ?? []).filter((p) => p.market === "US" && p.equity > 0)} />
+            <div className="mb-2.5 text-[12.5px] font-semibold uppercase tracking-wide text-faint">계좌별 구성 (진행 중 실전매매) · 조각 = 보유 종목, 마우스를 올리면 종목·수량</div>
+            {/* 계좌마다 도넛 하나 — 이름 / 도넛 / 금액 구조, 여러 개를 줄로 나열 (2026-09-05 지시) */}
+            <div className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 lg:grid-cols-4">
+              {(dash!.portfolios ?? []).filter((p) => p.equity > 0)
+                .sort((a, b) => b.equity - a.equity)
+                .map((p) => (
+                  <AccountDonut key={p.id} row={p}
+                    fmt={(v) => p.market === "US" ? `$${(v / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : `${v.toLocaleString()}원`} />
+                ))}
             </div>
           </div>
         )}

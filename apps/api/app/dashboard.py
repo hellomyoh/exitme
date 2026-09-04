@@ -188,11 +188,26 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
         if stock_v == 0 and cash_v == 0 and cost_v == 0:
             continue  # 활동 없는 빈 포트(기본 계좌 등)는 표기 생략
         pnl = stock_v - cost_v
+        # 계좌별 도넛용 종목 구성 (2026-09-05 지시) — 종목별 수량·평가액
+        from app.models import Instrument, PositionLot
+        pos: dict[int, dict] = {}
+        for l in session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pfr.id)).all():
+            it = pos.setdefault(l.instrument_id, {"qty": 0, "value": 0.0})
+            it["qty"] += l.qty_open
+            it["value"] += l.qty_open * all_prices.get(l.instrument_id, l.price)
+        positions = []
+        for iid, it in pos.items():
+            if it["qty"] <= 0:
+                continue
+            inst = session.get(Instrument, iid)
+            positions.append({"code": inst.code, "name": inst.name,
+                              "qty": it["qty"], "value": round(it["value"])})
         port_rows.append({
             "id": pfr.id, "name": pfr.name, "market": pfr.market,
             "equity": round(stock_v) + cash_v, "stock_value": round(stock_v), "cash": cash_v,
             "pnl": round(pnl), "pnl_pct": (pnl / cost_v) if cost_v > 0 else None,
-            "color": (pfr.params or {}).get("color"),  # 탭 배경색 — 도넛 조각과 색 언어 통일 (2026-09-05)
+            "color": (pfr.params or {}).get("color"),  # 탭 배경색 (2026-09-05)
+            "positions": positions,
         })
     return {
         "total": snap.total, "stock": snap.stock, "cash": snap.cash, "other": snap.other,
