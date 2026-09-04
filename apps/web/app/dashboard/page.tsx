@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createChart, IChartApi, AreaSeries, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
+import { MarketFlag } from "../../components/flags";
 import { Badge, Card, CardTitle, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone } from "../../components/ui";
 
 type Breakdown = { value: number; cost: number; pnl: number; pnl_pct: number | null };
@@ -48,8 +49,9 @@ function AccountDonut({ row, fmt }: { row: PortRow; fmt: (v: number) => string }
   return (
     <div className="relative flex flex-col items-center gap-1.5">
       <div className="flex max-w-full items-center gap-1.5 text-[13.5px] font-semibold">
+        <MarketFlag market={row.market} />
         {row.color && <i className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: row.color }} />}
-        <span className="truncate">{row.market === "US" ? "🇺🇸 " : ""}{row.name}</span>
+        <span className="truncate">{row.name}</span>
       </div>
       <svg viewBox="0 0 128 128" className="h-28 w-28" role="img" aria-label={`${row.name} 종목 구성`}>
         {paths.map(({ s, frac, d }, i) => (
