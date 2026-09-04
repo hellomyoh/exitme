@@ -5,7 +5,8 @@
  *  실현손익·수익률·보유기간·비용·합계는 서버가 FIFO 로 계산. 일지는 여러 개(이름 구분). */
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch, ensureSession } from "../../lib/api";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import { Card, CardTitle, EmptyState, PageTitle, Stat } from "../../components/ui";
 
 type JournalMeta = { id: number; name: string; symbol: string; broker: string };
@@ -22,12 +23,19 @@ type Detail = JournalMeta & {
 
 const fm = (v: number) => `${v.toLocaleString()}원`;
 
-export default function MJournalPage() {
+export default function MJournalPageWrapper() {
+  return <Suspense fallback={null}><MJournalPage /></Suspense>;
+}
+
+function MJournalPage() {
   const router = useRouter();
+  const sp = useSearchParams();
+  const spJid = sp?.get("jid");
+  const spNew = sp?.get("new") === "1";
   const [list, setList] = useState<JournalMeta[]>([]);
   const [jid, setJid] = useState<number | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
-  const [showNew, setShowNew] = useState(false);
+  const [showNew, setShowNew] = useState(spNew);
   const [nf, setNf] = useState({ name: "", symbol: "", broker: "", fee: "0.015", tax: "0.23" });
   const [ef, setEf] = useState({ side: "buy", qty: "", price: "", date: new Date().toISOString().slice(0, 10), reason: "" });
   const [msg, setMsg] = useState("");
@@ -46,8 +54,13 @@ export default function MJournalPage() {
   }, []);
 
   useEffect(() => {
-    void ensureSession().then((ok) => { if (!ok) { router.push("/login"); return; } void load(null); });
-  }, [load, router]);
+    // 서브메뉴(?jid=)·새 일지(?new=1) 파라미터 반영 — 메뉴 클릭 시마다 리로드 (2026-09-05)
+    void ensureSession().then((ok) => {
+      if (!ok) { router.push("/login"); return; }
+      setShowNew(spNew);
+      void load(spJid ? Number(spJid) : null);
+    });
+  }, [load, router, spJid, spNew]);
 
   async function createJournal() {
     setMsg("");

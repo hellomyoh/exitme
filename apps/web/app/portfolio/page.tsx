@@ -8,6 +8,7 @@ import { createChart, IChartApi, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { fmtMoneyM, fmtPriceM, MARKET_CODES, MARKET_LABEL, marketOf, priceToApi } from "../../lib/market";
 import { Badge, Card, CardTitle, EmptyState, fmtPct, GaugeBar, PageTitle, pnlTone, Stat, Tip } from "../../components/ui";
+import MarketSwitch from "../../components/marketswitch";
 
 type Position = {
   code: string; name: string; qty: number; avg_price: number; price: number; value: number;
@@ -303,6 +304,7 @@ function PortfolioPage() {
   return (
     <main>
       <PageTitle title={`실전매매 · ${MARKET_LABEL[market]}`} sub="체결 내역을 등록해 매수 시점 기준 수익률을 추적합니다 — 지연 시세 기준" />
+      <MarketSwitch />
 
       {/* 포트 선택: 드롭다운 → 탭(알약) — 한 번의 클릭으로 전환 (2026-09-02 지시) */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
