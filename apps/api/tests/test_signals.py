@@ -225,3 +225,87 @@ def test_state_replay_matches_current_ledger():
         assert [(l["qty"], l["price"]) for l in lots] == [(t.qty_open, t.price) for t in table]
     summ = client.get(f"/portfolio/summary?portfolio_id={pid}", headers=h).json()
     assert cash == summ["cash"]
+
+
+def test_per_portfolio_frozen_formula_isolation():
+    """공식 격리 (2026-09-05 지시): 포트에 동결된 algo 가 있으면 그것만 쓰고, 같은 계정의
+    다른 포트(설정 추종)와 섞이지 않는다. 설정 변경도 동결 포트에 영향 없음."""
+    from tests.test_backtest_api import seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+        from app.signals import run_signal_batch
+        if run_signal_batch(s).status != "OK":
+            pytest.skip("synthetic data insufficient")
+
+    client = TestClient(app, base_url="https://testserver")
+    token = client.post("/auth/register", json={"email": f"iso{uuid.uuid4().hex[:8]}@x.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    now = "2025-07-01T10:00:00+09:00"
+
+    def mk_port(name):
+        pid = client.post("/portfolios", json={"name": name}, headers=h).json()["id"]
+        client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 100_000_000,
+                                        "executed_at": now}, headers=h)
+        return pid
+
+    pid_frozen, pid_follow = mk_port("동결"), mk_port("추종")
+    # 포트 A 에 극단 grid_coef 동결 (전환 경로가 저장하는 형태 그대로)
+    from app.models import TradePortfolio
+    with SessionLocal() as s:
+        pf = s.get(TradePortfolio, pid_frozen)
+        pf.params = {**(pf.params or {}), "algo": {"grid_coef": 2.0}}
+        s.commit()
+
+    a = client.get(f"/signals/daily?portfolio_id={pid_frozen}", headers=h).json()
+    b = client.get(f"/signals/daily?portfolio_id={pid_follow}", headers=h).json()
+    assert a["algo_source"] == "portfolio" and a["algo_overrides"] == {"grid_coef": 2.0}
+    assert b["algo_source"] == "settings"
+    ga = [o["price"] for o in a["orders"] if o["kind"] == "grid1"]
+    gb = [o["price"] for o in b["orders"] if o["kind"] == "grid1"]
+    if ga and gb:
+        assert ga[0] < gb[0]  # coef 2.0 → 더 깊은 하락에서 매수 (같은 계정, 다른 공식 동시 운용)
+
+    # 사용자 설정 변경 → 추종 포트만 영향, 동결 포트 불변
+    client.put("/settings/algorithm", json={"values": {"grid_coef": 0.3}}, headers=h)
+    a2 = client.get(f"/signals/daily?portfolio_id={pid_frozen}", headers=h).json()
+    b2 = client.get(f"/signals/daily?portfolio_id={pid_follow}", headers=h).json()
+    assert a2["orders"] == a["orders"] and a2["algo_overrides"] == {"grid_coef": 2.0}
+    assert b2["algo_overrides"] == {"grid_coef": 0.3}
+    if gb:
+        gb2 = [o["price"] for o in b2["orders"] if o["kind"] == "grid1"]
+        assert not gb2 or gb2[0] > gb[0]
+
+    # 개정으로 사라진 키가 동결본에 있어도 무시(견고성)
+    with SessionLocal() as s:
+        pf = s.get(TradePortfolio, pid_frozen)
+        pf.params = {**pf.params, "algo": {"grid_coef": 2.0, "ghost_param": 9}}
+        s.commit()
+    assert client.get(f"/signals/daily?portfolio_id={pid_frozen}", headers=h).status_code == 200
+
+
+def test_conversion_freezes_algo_key():
+    """전환 시 params['algo'] 가 항상 명시 저장 — 잡에 algo 없으면 {} (기본값 동결) (2026-09-05)."""
+    from tests.test_backtest_api import run_job_inline, seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+
+    client = TestClient(app, base_url="https://testserver")
+    token = client.post("/auth/register", json={"email": f"cvz{uuid.uuid4().hex[:8]}@x.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    bt = client.post("/backtests", json={"capital": 30_000_000, "date_from": "2024-06-03",
+                                         "date_to": "2025-06-30", "etf": "KODEX",
+                                         "algo": {"grid_coef": 1.25}}, headers=h).json()
+    run_job_inline(bt["id"])
+    pid = client.post(f"/portfolios/from-backtest/{bt['id']}", headers=h).json()["id"]
+    from app.models import TradePortfolio
+    with SessionLocal() as s:
+        pf = s.get(TradePortfolio, pid)
+        assert pf.params.get("algo", {}).get("grid_coef") == 1.25
+    sig = client.get(f"/signals/daily?portfolio_id={pid}", headers=h).json()
+    assert sig["algo_source"] == "portfolio" and sig["algo_overrides"].get("grid_coef") == 1.25

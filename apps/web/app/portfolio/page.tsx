@@ -34,7 +34,7 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; exec_day?: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number } };
+type Signal = { status: string; exec_day?: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number> };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -488,7 +488,17 @@ function PortfolioPage() {
             <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}
               {signal.basis === "portfolio" && signal.account
                 ? ` · 계산 기준(${signal.trade_date} 종가 시점): 보유 ${signal.account.qty_200.toLocaleString()}주/레버 ${signal.account.qty_lev.toLocaleString()}주 · 현금 ${fm(signal.account.cash)} — 오늘 체결 등록은 내일 주문표부터 반영`
-                : " · 모델 기준"}</span>
+                : " · 모델 기준"}
+              {/* 공식 출처 — 포트 동결(전환 시 변수) vs 설정 추종 (2026-09-05) */}
+              {signal.algo_source === "portfolio" && (
+                <span title={Object.keys(signal.algo_overrides ?? {}).length
+                  ? `동결 변수: ${Object.entries(signal.algo_overrides!).map(([k, v]) => `${k}=${v}`).join(", ")}`
+                  : "전환 시점 기본값으로 동결"}>
+                  {" · "}<b className="text-accent">공식: 이 포트 고정</b>
+                  {Object.keys(signal.algo_overrides ?? {}).length > 0 && ` (변수 ${Object.keys(signal.algo_overrides!).length}건)`}
+                </span>
+              )}
+              {signal.algo_source === "settings" && " · 공식: 알고리즘 설정 기준"}</span>
           )}
         </CardTitle>
         {signal?.status === "OK" && signal.orders && signal.orders.length > 0 ? (

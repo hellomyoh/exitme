@@ -307,8 +307,12 @@ def create_from_backtest(bt_id: int, user_id: int = Depends(current_user_id),
     params = params_from_job(p)
     result = run_engine(p, bars_200, bars_lev, float(p["capital"]), params, start_index=start_idx)
 
+    # 공식 동결 (2026-09-05 지시): 이 포트의 주문표는 '시뮬한 그 변수'로 계산 — params["algo"] 를
+    # 항상 명시해 저장한다({} = 기본값 고정). 이후 알고리즘 설정 변경이 이 포트에 영향을 주지 않아
+    # 한 계정에서 포트마다 다른 공식을 섞임 없이 동시 운용할 수 있다. 키 부재 = 구형 포트(설정 추종).
     pf = TradePortfolio(user_id=user_id, name=f"실전 (백테스트 #{bt_id})",
-                        kind="from_backtest", backtest_id=bt_id, params=bt.params,
+                        kind="from_backtest", backtest_id=bt_id,
+                        params={**bt.params, "algo": p.get("algo") or {}},
                         market=market_of_etf(p.get("etf", "KODEX")))
     session.add(pf)
     session.flush()

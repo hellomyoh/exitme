@@ -285,3 +285,9 @@
 - 작업 내용: 우측 슬라이드 챗 패널(플로팅 💬 로 열고 ✕ 로 닫기, 닫아도 대화 유지) + 백엔드 /chat SSE 하네스. OpenRouter(OpenAI 호환) tool-calling 루프(≤6회)로 읽기 전용·user_id 스코프 도구 7종(포트 목록/자산 요약/일지/주문표(실디스패치 동일)/백테스트/알고리즘 설정/시세) 실행. 무상태 서버(이력은 클라이언트, 최근 20턴). OPENROUTER_API_KEY 만 넣으면 동작(미설정 503 안내), OPENROUTER_MODEL 교체 가능. 시스템 프롬프트에 RAVG v2.5·TF 요지와 안전 규칙(數値 날조 금지·투자 권유 아님) 내장. 상세: features/feature-chatbot.md.
 - 테스트: chat 하네스 4건 신규 — 전체 142 passed, tsc 클린, 헤드리스(열기/전송/503 말풍선/닫기/대화 유지) 확인.
 - Git commit: feat: trading assistant chatbot — OpenRouter tool-calling harness, right-side panel
+
+## [2026-09-05] feat | 포트별 공식 동결 — 시뮬 변수의 실전 승계 (사용자 지시)
+
+- 작업 내용: 시뮬레이터에서 변수를 바꿔 검증한 뒤 '실전매매로 전환'하면 그 변수로 실전 주문표가 계산되도록 구조 변경. **DB 설계**: 새 테이블 없이 portfolios.params["algo"] 를 공식 동결 슬롯으로 정의 — 전환 시 잡의 algo 스냅샷을 항상 명시 저장({} = 기본값 동결), 키 부재 = 구형/수동 포트(설정 추종, 기존 동작 보존). 격리 단위 = 포트 행이라 한 계정에서 여러 공식 동시 운용 시에도 섞이지 않음. 주문표(_portfolio_orders)·계획 복구 스크립트가 동일 규칙으로 해석(개정으로 사라진 키는 무시), 응답에 algo_source/algo_overrides 노출, 실전 화면 캡션에 '공식: 이 포트 고정 (변수 N건)' 표시(툴팁에 값). 알고리즘 설정 변경은 추종 포트에만 적용.
+- 테스트: 격리 2건 신규 — 같은 계정 두 포트 상이 공식 동시 운용(grid_coef 2.0 동결 vs 설정 0.3 추종, 그리드 가격 분리)·설정 변경 무영향·유령 키 견고성·전환 동결 저장. 전체 148 passed, tsc 클린.
+- Git commit: feat: per-portfolio frozen strategy parameters from simulator conversion
