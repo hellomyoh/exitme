@@ -293,6 +293,7 @@ class UserSettings(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False)
     algo_params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    chat_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")  # 챗봇 추가 지침 (0012)
 
 
 class PortfolioPlan(TimestampMixin, Base):

@@ -107,3 +107,31 @@ def test_chat_upstream_failure_becomes_error_event(monkeypatch):
     evs = _events(r.text)
     assert evs[-1]["type"] == "error"
     assert "402" in evs[-1]["content"]
+
+
+def test_chat_prompt_setting_appended(monkeypatch):
+    """일반 설정의 챗봇 추가 지침이 시스템 메시지 뒤에 덧붙는다 (2026-09-04)."""
+    client, headers = _authed_client()
+    from app import chat as chat_mod
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "openrouter_api_key", "test-key")
+
+    # 저장/조회 왕복
+    r = client.put("/settings/chat", json={"prompt": "답변 끝에 [끝] 을 붙여라"}, headers=headers)
+    assert r.status_code == 200 and r.json()["saved"]
+    assert client.get("/settings/chat", headers=headers).json()["prompt"] == "답변 끝에 [끝] 을 붙여라"
+
+    seen = {}
+
+    def fake_call(messages, tools):
+        seen["system"] = messages[0]["content"]
+        return {"choices": [{"message": {"role": "assistant", "content": "ok [끝]"}}]}
+
+    monkeypatch.setattr(chat_mod, "_openrouter_call", fake_call)
+    client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]}, headers=headers)
+    assert messages_contains(seen["system"])
+
+
+def messages_contains(system_text: str) -> bool:
+    return ("사용자 추가 지침" in system_text and "답변 끝에 [끝] 을 붙여라" in system_text
+            and system_text.index("핵심만 간결하게") < system_text.index("사용자 추가 지침"))
