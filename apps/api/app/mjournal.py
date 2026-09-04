@@ -134,6 +134,36 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
     }
 
 
+@router.get("/mjournals/overview")
+def journals_overview(user_id: int = Depends(current_user_id),
+                      session: Session = Depends(get_session)) -> dict:
+    """전 일지 합산 현황 (2026-09-05 지시) — 종목별 보유 비중(취득원가 기준) + 누적 실현손익 추이.
+
+    수동 일지는 시세 미연동 — 비중은 원가, 수익 라인은 실현손익(매도 시점) 기준.
+    """
+    journals = session.scalars(select(ManualJournal).where(ManualJournal.user_id == user_id)
+                               .order_by(ManualJournal.id)).all()
+    items = []
+    for j in journals:
+        entries = session.scalars(select(ManualJournalEntry)
+                                  .where(ManualJournalEntry.journal_id == j.id)).all()
+        c = _compute(j, entries)
+        by_date: dict[str, int] = {}
+        cum = 0
+        for r in reversed(c["rows"]):  # rows 는 최신순 → 시간순으로
+            if r["side"] == "sell" and r["realized"] is not None:
+                cum += r["realized"]
+                by_date[r["sell_date"]] = cum  # 같은 날 다건은 마지막 누적값 (차트 시간축 유일성)
+        series = [{"date": d, "value": v} for d, v in sorted(by_date.items())]
+        items.append({"id": j.id, "name": j.name, "symbol": j.symbol,
+                      "holding_qty": c["holding"]["qty"],
+                      "holding_cost": (c["holding"]["qty"] * c["holding"]["avg_price"]
+                                       if c["holding"]["qty"] else 0),
+                      "avg_price": c["holding"]["avg_price"],
+                      "realized": c["summary"]["realized"], "series": series})
+    return {"items": items}
+
+
 @router.get("/mjournals/{jid}")
 def get_journal(jid: int, user_id: int = Depends(current_user_id),
                 session: Session = Depends(get_session)) -> dict:

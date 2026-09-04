@@ -3,7 +3,8 @@
 /** 주식 매매일지 — 수동 기록 (2026-09-05 지시, 스프레드시트 대체).
  *  일지 생성 시 이름·종목·증권사·요율을 받고, 매일 입력은 구분·수량·단가만.
  *  실현손익·수익률·보유기간·비용·합계는 서버가 FIFO 로 계산. 일지는 여러 개(이름 구분). */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createChart, IChartApi, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
@@ -23,6 +24,111 @@ type Detail = JournalMeta & {
 
 const fm = (v: number) => `${v.toLocaleString()}원`;
 
+type OverviewItem = { id: number; name: string; symbol: string; holding_qty: number;
+  holding_cost: number; avg_price: number | null; realized: number; series: { date: string; value: number }[] };
+const OV_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
+
+/** 전체 현황 (2026-09-05 지시) — 좌: 종목별 보유 비중 도넛(취득원가 기준), 우: 누적 실현손익 라인.
+ *  수동 일지는 시세 미연동 — 미실현 평가손익은 표시하지 않음(원가·실현 기준임을 명시). */
+function Overview({ items }: { items: OverviewItem[] }) {
+  const [tip, setTip] = useState<{ x: number; y: number; html: string } | null>(null);
+  const chartRef = useRef<HTMLDivElement>(null);
+  const api = useRef<IChartApi | null>(null);
+  const held = items.filter((i) => i.holding_cost > 0);
+  const total = held.reduce((a, i) => a + i.holding_cost, 0);
+  const withSeries = items.filter((i) => i.series.length >= 1);
+  const color = (id: number) => OV_COLORS[items.findIndex((i) => i.id === id) % OV_COLORS.length];
+
+  useEffect(() => {
+    if (!chartRef.current || withSeries.length === 0) return;
+    api.current?.remove();
+    const chart = createChart(chartRef.current, {
+      layout: { background: { color: "transparent" }, textColor: "#9aa1ad", attributionLogo: false, fontSize: 11 },
+      grid: { vertLines: { visible: false }, horzLines: { color: "#eef0f3" } },
+      height: 190, autoSize: true, rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
+    });
+    api.current = chart;
+    for (const it of withSeries) {
+      const pts = it.series.map((p) => ({ time: p.date, value: p.value }));
+      if (pts.length === 1) {  // 점 하나로는 라인이 안 보임 — 전날 0 에서 출발
+        const d0 = new Date(pts[0].time);
+        d0.setDate(d0.getDate() - 1);
+        pts.unshift({ time: d0.toISOString().slice(0, 10), value: 0 });
+      }
+      chart.addSeries(LineSeries, { color: color(it.id), lineWidth: 2, title: it.symbol })
+        .setData(pts);
+    }
+    chart.timeScale().fitContent();
+    return () => { try { api.current?.remove(); } catch { /* noop */ } api.current = null; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(items)]);
+
+  if (held.length === 0 && withSeries.length === 0) return null;
+  const R = 52, r0 = 30, C = 64;
+  let angle = -Math.PI / 2;
+  const paths = held.map((it) => {
+    const frac = it.holding_cost / total;
+    const gap = 2 / R;
+    const a0 = angle + gap / 2, a1 = angle + Math.max(frac * Math.PI * 2 - gap / 2, 0.006);
+    angle += frac * Math.PI * 2;
+    const pt = (a: number, rad: number) => `${C + rad * Math.cos(a)},${C + rad * Math.sin(a)}`;
+    const la = a1 - a0 > Math.PI ? 1 : 0;
+    return { it, frac, d: `M${pt(a0, R)} A${R},${R} 0 ${la} 1 ${pt(a1, R)} L${pt(a1, r0)} A${r0},${r0} 0 ${la} 0 ${pt(a0, r0)} Z` };
+  });
+  return (
+    <Card className="relative mb-4">
+      <CardTitle>전체 현황 <span className="normal-case text-faint">· 보유 비중은 취득원가, 수익 라인은 실현손익 기준 (시세 미연동)</span></CardTitle>
+      <div className="grid gap-6 lg:grid-cols-[auto_1fr]">
+        <div className="flex items-center gap-4">
+          {held.length > 0 && (
+            <svg viewBox="0 0 128 128" className="h-32 w-32 shrink-0" role="img" aria-label="종목별 보유 비중">
+              {paths.map(({ it, frac, d }, i) => (
+                <path key={i} d={d} fill={color(it.id)} opacity={0.85}
+                  onMouseMove={(e) => {
+                    const box = (e.currentTarget.ownerSVGElement!.parentElement!.closest(".card") as HTMLElement).getBoundingClientRect();
+                    setTip({ x: e.clientX - box.left + 10, y: e.clientY - box.top + 10,
+                             html: `${it.symbol}
+${it.holding_qty.toLocaleString()}주 · 평단 ${fm(it.avg_price!)}
+원가 ${fm(it.holding_cost)} (${(frac * 100).toFixed(1)}%)` });
+                  }}
+                  onMouseLeave={() => setTip(null)} />
+              ))}
+            </svg>
+          )}
+          <div className="grid content-center gap-1 text-[13px]">
+            {held.map((it) => (
+              <span key={it.id} className="inline-flex items-center gap-1.5 text-muted"
+                title={`${it.holding_qty.toLocaleString()}주 · 원가 ${fm(it.holding_cost)}`}>
+                <i className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: color(it.id) }} />
+                {it.symbol} <b className="text-ink">{total > 0 ? ((it.holding_cost / total) * 100).toFixed(0) : 0}%</b>
+              </span>
+            ))}
+            {held.length === 0 && <span className="text-faint">현재 보유 없음</span>}
+          </div>
+        </div>
+        <div className="min-w-0">
+          <div className="mb-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-muted">
+            <span className="font-semibold text-faint">누적 실현손익</span>
+            {withSeries.map((it) => (
+              <span key={it.id} className="inline-flex items-center gap-1.5">
+                <i className="h-2 w-2 rounded-full" style={{ background: color(it.id) }} />
+                {it.symbol} <b className={it.realized > 0 ? "text-up" : it.realized < 0 ? "text-down" : "text-ink"}>
+                  {it.realized >= 0 ? "+" : ""}{it.realized.toLocaleString()}원</b>
+              </span>
+            ))}
+            {withSeries.length === 0 && <span className="text-faint">매도(실현) 기록이 생기면 추이가 그려집니다.</span>}
+          </div>
+          {withSeries.length > 0 && <div ref={chartRef} className="h-[190px]" />}
+        </div>
+      </div>
+      {tip && (
+        <div className="pointer-events-none absolute z-20 whitespace-pre rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12.5px] leading-relaxed shadow-lg"
+          style={{ left: tip.x, top: tip.y }}>{tip.html}</div>
+      )}
+    </Card>
+  );
+}
+
 export default function MJournalPageWrapper() {
   return <Suspense fallback={null}><MJournalPage /></Suspense>;
 }
@@ -39,10 +145,14 @@ function MJournalPage() {
   const [nf, setNf] = useState({ name: "", symbol: "", broker: "", fee: "0.015", tax: "0.23" });
   const [ef, setEf] = useState({ side: "buy", qty: "", price: "", date: new Date().toISOString().slice(0, 10), reason: "" });
   const [msg, setMsg] = useState("");
+  const [overview, setOverview] = useState<OverviewItem[]>([]);
 
   const load = useCallback(async (selected: number | null) => {
     const r = await apiFetch("/mjournals");
     if (!r.ok) return;
+    void apiFetch("/mjournals/overview").then(async (o) => {
+      if (o.ok) setOverview(((await o.json()) as { items: OverviewItem[] }).items);
+    });
     const items = ((await r.json()) as { items: JournalMeta[] }).items;
     setList(items);
     const id = selected ?? items[0]?.id ?? null;
@@ -87,6 +197,8 @@ function MJournalPage() {
   return (
     <main>
       <PageTitle title="주식 매매일지" sub="종목별 수동 매매 기록 — 실현손익·수익률·보유기간·비용은 자동 계산됩니다 (FIFO)" />
+
+      <Overview items={overview} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         {list.map((j) => (
