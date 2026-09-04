@@ -5,11 +5,11 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
-import { ensureSession, fetchMe, logout, type Me } from "../lib/api";
+import { apiFetch, ensureSession, fetchMe, logout, type Me } from "../lib/api";
 import { MarketFlag } from "./flags";
 import { ICON_BY_LABEL, NavIcon } from "./navicons";
 
-type Item = { href: string; label: string; market?: "KR" | "US"; adminOnly?: boolean };
+type Item = { href: string; label: string; reset?: boolean; adminOnly?: boolean };
 type Group = { title: string | null; flag?: "KR" | "US"; items: Item[] };
 
 const GROUPS: Group[] = [
@@ -17,15 +17,11 @@ const GROUPS: Group[] = [
     { href: "/dashboard", label: "대시보드" },
     { href: "/chart", label: "차트" },
   ]},
-  // 한국/미국 그룹 병합 — 항목별 시장 아이콘으로 구분 (2026-09-05 지시)
+  // 시장은 메뉴가 아니라 본문 스위치로 — 서브메뉴는 기능 3종만 (2026-09-05 지시)
   { title: "주식 실전 매매", items: [
-    { href: "/signals", label: "주문표", market: "KR" },
-    { href: "/simulator", label: "시뮬레이터", market: "KR" },
-    { href: "/portfolio", label: "실전매매", market: "KR" },
-    { href: "/signals?market=US", label: "주문표", market: "US" },
-    { href: "/simulator?market=US", label: "시뮬레이터", market: "US" },
-    { href: "/portfolio?market=US", label: "실전매매", market: "US" },
-    { href: "/mjournal", label: "매매일지" },
+    { href: "/signals", label: "주문표", reset: true },
+    { href: "/simulator", label: "시뮬레이터", reset: true },
+    { href: "/portfolio", label: "실전매매", reset: true },
   ]},
   { title: "⚙️ 설정", items: [
     { href: "/settings", label: "일반 설정" },
@@ -40,20 +36,36 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
   const sp = useSearchParams();
   const [loggedIn, setLoggedIn] = useState(false);
   const [me, setMe] = useState<Me | null>(null);
+  const [journals, setJournals] = useState<{ id: number; name: string }[]>([]);
   useEffect(() => {
     void ensureSession().then(async (ok) => {
       setLoggedIn(ok);
-      if (ok) setMe(await fetchMe());
+      if (ok) {
+        setMe(await fetchMe());
+        const r = await apiFetch("/mjournals");
+        if (r.ok) setJournals(((await r.json()) as { items: { id: number; name: string }[] }).items);
+      }
     });
   }, [pathname]);
+  // 등록된 매매일지가 서브메뉴로 (2026-09-05 지시) — 설정 그룹 앞에 주입
+  const groups: Group[] = [
+    ...GROUPS.slice(0, -1),
+    { title: "매매일지", items: [
+      ...journals.map((j) => ({ href: `/mjournal?jid=${j.id}`, label: j.name })),
+      { href: "/mjournal?new=1", label: "＋ 새 매매일지" },
+    ]},
+    GROUPS[GROUPS.length - 1],
+  ];
   const isAdmin = me?.is_admin === true;
-  const curMarket = sp?.get("market") === "US" ? "US" : "KR";
 
   function isActive(it: Item): boolean {
     const base = it.href.split("?")[0];
     if (base === "/settings") return pathname === "/settings";
     if (!pathname?.startsWith(base)) return false;
-    if (it.market) return curMarket === it.market;
+    if (base === "/mjournal") {  // 일지 서브메뉴 — jid 로 개별 활성 (2026-09-05)
+      const want = new URLSearchParams(it.href.split("?")[1] ?? "").get("jid");
+      return (sp?.get("jid") ?? null) === want;
+    }
     return true;
   }
 
@@ -68,7 +80,7 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
           <span className="block text-[9.5px] font-semibold uppercase tracking-[0.18em] text-faint">Auto Trading</span>
         </span>
       </Link>
-      {GROUPS.map((g, gi) => (
+      {groups.map((g, gi) => (
         <div key={gi} className="mb-1.5">
           {g.title && (
             <div className="mb-1 mt-2 flex items-center gap-1.5 px-2 text-[11.5px] font-bold uppercase tracking-wider text-faint">
@@ -79,7 +91,7 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
             {g.items.filter((it) => !it.adminOnly || isAdmin).map((it) => {
               const active = isActive(it);
               // 시뮬레이터·주문표·실전매매는 메뉴 클릭 시 항상 초기 화면으로 — 진행 중 상태 리셋 (2026-09-01 지시)
-              const resettable = it.market !== undefined;
+              const resettable = it.reset === true;
               return (
                 <Link key={it.href} href={it.href}
                   onClick={(e) => {
@@ -94,9 +106,8 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
                     active ? "border-line bg-surface font-semibold text-ink shadow-sm"
                            : "border-transparent text-muted hover:bg-surface/70 hover:text-ink"
                   }`}>
-                  <NavIcon kind={ICON_BY_LABEL[it.label] ?? "orders"} />
+                  <NavIcon kind={ICON_BY_LABEL[it.label] ?? (it.href.startsWith("/mjournal") ? "journal" : "orders")} />
                   <span className="flex-1">{it.label}</span>
-                  {it.market && <MarketFlag market={it.market} />}
                 </Link>
               );
             })}

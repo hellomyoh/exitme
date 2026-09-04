@@ -9,6 +9,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { fmtMoneyM, fmtPriceM, marketOf, MARKET_LABEL } from "../../lib/market";
 import { Badge, Callout, Card, CardTitle, EmptyState, fmtNum, fmtPct, GaugeBar, PageTitle, RegimeTip, Tip } from "../../components/ui";
+import MarketSwitch from "../../components/marketswitch";
 
 type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
 type Signal = {
@@ -149,6 +150,7 @@ function SignalsPage() {
   return (
     <main>
       <PageTitle title={`주문표 · ${MARKET_LABEL[market]}`} sub="RAVG v2.5 전략이 계산한 다음 거래일 주문 — 그리드 매수·익절은 지정가, 축소·레버리지는 시장가. 발주는 본인 HTS에서 직접 수행합니다. 모의 계산이며 투자 권유가 아닙니다." />
+      <MarketSwitch />
 
       {sig.status !== "OK" ? (
         <EmptyState icon="🛰️" title={sig.status === "INSUFFICIENT_HISTORY" ? "데이터 워밍업 중" : "시그널이 아직 없습니다"}

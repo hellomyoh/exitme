@@ -2,6 +2,7 @@
 
 /** 자산 대시보드 — 벤토: 히어로 총자산·구성·레짐 게이지·추이·손익 캘린더 (feature-dashboard §9). */
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createChart, IChartApi, AreaSeries, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
@@ -48,11 +49,13 @@ function AccountDonut({ row, fmt }: { row: PortRow; fmt: (v: number) => string }
   });
   return (
     <div className="relative flex flex-col items-center gap-1.5">
-      <div className="flex max-w-full items-center gap-1.5 text-[13.5px] font-semibold">
+      {/* 계좌명 클릭 → 해당 실전매매로 이동 (2026-09-05 지시) */}
+      <Link href={`/portfolio?${row.market === "US" ? "market=US&" : ""}pid=${row.id}`}
+        className="flex max-w-full items-center gap-1.5 text-[13.5px] font-semibold underline-offset-2 hover:text-accent hover:underline">
         <MarketFlag market={row.market} />
         {row.color && <i className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: row.color }} />}
         <span className="truncate">{row.name}</span>
-      </div>
+      </Link>
       <svg viewBox="0 0 128 128" className="h-28 w-28" role="img" aria-label={`${row.name} 종목 구성`}>
         {paths.map(({ s, frac, d }, i) => (
           <path key={i} d={d} fill={s.color} opacity={0.85}

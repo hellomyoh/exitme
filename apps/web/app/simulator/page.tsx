@@ -7,6 +7,7 @@ import { AreaSeries, createChart, IChartApi, LineSeries } from "lightweight-char
 import { apiFetch, ensureSession } from "../../lib/api";
 import { DEFAULT_CAPITAL, fmtMoneyM, fmtPriceM, MARKET_LABEL, marketOf } from "../../lib/market";
 import { Badge, Callout, Card, CardTitle, fmtPct, GaugeBar, PageTitle, Stat, Tip } from "../../components/ui";
+import MarketSwitch from "../../components/marketswitch";
 
 type Flags = Record<string, boolean>;
 type Kpi = { total_return: number; cagr: number | null; mdd: number; sharpe: number | null; trades: number; win_rate: number | null; profit_factor: number | null };
@@ -277,6 +278,7 @@ function SimulatorPage() {
   return (
     <main>
       <PageTitle title={`시뮬레이터 · ${MARKET_LABEL[market]}`} sub="RAVG v2.5 백테스트 — 조건 설정 → 실행 → 결과. 모의 계산이며 투자 권유가 아닙니다." />
+      <MarketSwitch />
 
       {/* 스텝 인디케이터 */}
       <div className="mb-5 flex items-center gap-2 text-[13px]">
