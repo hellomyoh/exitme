@@ -76,3 +76,13 @@ web ChatBot ── POST /chat {messages[≤40]} ──▶ api chat.py
 - 구현: react-markdown+remark-gfm(GFM 표), 봇 말풍선만 적용(사용자 말풍선은 평문), 표는 말풍선 내
   가로 스크롤, 디자인 토큰으로 컴포넌트 오버라이드. 링크는 새 탭+noreferrer.
 - 검증: 실 LLM 응답에서 표 1·굵게 8 렌더, 원문 ** 노출 0 (헤드리스 스크린샷), tsc 클린.
+
+## 8. 계정 격리 검증 (2026-09-05 지시)
+
+- 분석: 도구 7종 전부 JWT 의 user_id 로 스코프 — pid 인자를 받는 3종(summary/journal/order_sheet)은
+  `_owned_portfolio`/`pf_row.user_id` 검사로 타인 pid 에 404, 목록형 2종은 WHERE user_id, 설정 1종은
+  본인 행, 시세 1종은 공용 시장 데이터. user_id 는 토큰에서만 오고 LLM 이 조작할 수 없는 인자.
+- 침투 테스트(고정): A 계정에 식별 가능한 입금(93,750,000원) 후, B 계정 챗 도구로 A 의 pid 를
+  직접·엔드포인트(SSE 전문) 양쪽에서 조회 시도 — 금액·포트명 유출 0, 'portfolio not found' 만 반환.
+  목록형 도구에도 A 항목 미노출. (test_chat_tools_cannot_read_other_users_data, 전체 145 passed)
+- 결론: 타 계정 데이터 조회 불가. 유일한 공유 표면은 시세(공개 데이터)와 관리자 전역 시스템 프롬프트(설정값).
