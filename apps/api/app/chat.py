@@ -99,6 +99,8 @@ TOOLS = [
     _tool("list_backtests", "최근 백테스트(시뮬레이션) 목록과 KPI(총수익률·MDD·샤프 등).",
           {"limit": {"type": "integer", "description": "기본 10"}}),
     _tool("algorithm_params", "현재 알고리즘 변수 설정값(레지스트리) — 이름·현재값·기본값·범위·설명.", {}),
+    _tool("trading_journal", "수동 주식 매매일지 조회 — 인자 없으면 전체 요약(일지별 보유 종목·수량·원가, 누적 실현손익 추이), journal_id 지정 시 그 일지의 상세 기록(종목별 FIFO 실현손익·수익률·보유기간·비용).",
+          {"journal_id": {"type": "integer", "description": "생략 시 전체 요약"}}),
     _tool("price_history", "종목 일봉 시세(원주가) — 마지막 행이 최신 확정 종가. 장중 실시간 시세는 제공하지 않음(장 마감 후 배치로 당일 종가 적재). code 예: 102110(TIGER 200), 069500(KODEX 200), 122630(레버), QQQ.",
           {"code": {"type": "string"}, "days": {"type": "integer", "description": "기본 30"}}, ["code"]),
 ]
@@ -150,6 +152,12 @@ def _run_tool(name: str, args: dict, user_id: int) -> dict:
             if name == "algorithm_params":
                 from app.settings import get_algo_settings
                 return get_algo_settings(user_id=user_id, session=session)
+            if name == "trading_journal":
+                from app.mjournal import get_journal, journals_overview
+                jid = args.get("journal_id")
+                if jid:
+                    return get_journal(int(jid), user_id=user_id, session=session)
+                return journals_overview(user_id=user_id, session=session)
             if name == "price_history":
                 from sqlalchemy import select
                 from app.models import Instrument, OhlcvDaily
@@ -204,7 +212,7 @@ class ChatIn(BaseModel):
 TOOL_KO = {"list_portfolios": "포트폴리오 목록", "portfolio_summary": "자산 요약",
            "portfolio_journal": "매매 일지", "order_sheet": "주문표",
            "list_backtests": "시뮬레이션 목록", "algorithm_params": "알고리즘 설정",
-           "price_history": "시세 조회"}
+           "price_history": "시세 조회", "trading_journal": "매매일지"}
 
 
 @router.post("/chat")

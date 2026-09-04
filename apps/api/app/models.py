@@ -321,6 +321,7 @@ class ManualJournalEntry(TimestampMixin, Base):
     qty: Mapped[int] = mapped_column(BigInteger, nullable=False)
     price: Mapped[int] = mapped_column(BigInteger, nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    symbol: Mapped[str | None] = mapped_column(Text, nullable=True)  # NULL = 일지 기본 종목 (0015)
 
 
 class AppSetting(TimestampMixin, Base):

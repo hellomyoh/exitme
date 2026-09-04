@@ -35,7 +35,7 @@ def test_journal_fifo_and_summary():
     assert s["buy_amount"] == 220000 and s["sell_amount"] == 195000
     assert s["cost"] == round(100000 * 0.001) + round(120000 * 0.001) + 585
     assert s["realized"] == sell["realized"]
-    assert d["holding"] == {"qty": 5, "avg_price": 12000}
+    assert d["holdings"] == [{"symbol": "대원제약", "qty": 5, "avg_price": 12000, "cost": 60000}]
 
     # 보유 초과 매도 거부
     r = c.post(f"/mjournals/{jid}/entries",
@@ -54,3 +54,24 @@ def test_journal_isolation_and_delete():
     # 소유자 삭제 → CASCADE
     assert c.delete(f"/mjournals/{jid}", headers=h).json()["deleted"] is True
     assert c.get("/mjournals", headers=h).json()["items"] == []
+
+
+def test_multi_symbol_fifo_isolation():
+    """다종목 (0015): 종목별 FIFO 독립·종목별 보유 초과 매도 거부·overview holdings."""
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "멀티", "symbol": "대원제약",
+                                     "fee_rate": 0.0, "tax_rate": 0.0}, headers=h).json()["id"]
+    E = lambda b: c.post(f"/mjournals/{jid}/entries", json=b, headers=h)
+    assert E({"side": "buy", "qty": 10, "price": 1000, "trade_date": "2026-01-01"}).status_code == 201  # 기본 종목
+    assert E({"side": "buy", "qty": 5, "price": 2000, "trade_date": "2026-01-02", "symbol": "휴메딕스"}).status_code == 201
+    # 휴메딕스 보유 5 — 대원제약 10주가 있어도 휴메딕스 6주 매도는 거부 (종목별 검사)
+    assert E({"side": "sell", "qty": 6, "price": 2100, "trade_date": "2026-01-03", "symbol": "휴메딕스"}).status_code == 422
+    assert E({"side": "sell", "qty": 5, "price": 2100, "trade_date": "2026-01-03", "symbol": "휴메딕스"}).status_code == 201
+    d = c.get(f"/mjournals/{jid}", headers=h).json()
+    sell = next(r for r in d["rows"] if r["side"] == "sell")
+    assert sell["symbol"] == "휴메딕스" and sell["realized"] == 5 * (2100 - 2000)  # 대원제약 로트와 안 섞임
+    assert d["holdings"] == [{"symbol": "대원제약", "qty": 10, "avg_price": 1000, "cost": 10000}]
+    assert set(d["symbols"]) == {"대원제약", "휴메딕스"}
+    ov = c.get("/mjournals/overview", headers=h).json()["items"]
+    me = next(x for x in ov if x["id"] == jid)
+    assert me["holdings"][0]["symbol"] == "대원제약" and me["series"][0]["value"] == 500
