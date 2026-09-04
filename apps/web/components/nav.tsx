@@ -6,21 +6,22 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { ensureSession, fetchMe, logout } from "../lib/api";
+import { MarketFlag } from "./flags";
 
 type Item = { href: string; label: string; market?: "KR" | "US"; adminOnly?: boolean };
-type Group = { title: string | null; items: Item[] };
+type Group = { title: string | null; flag?: "KR" | "US"; items: Item[] };
 
 const GROUPS: Group[] = [
   { title: null, items: [
     { href: "/dashboard", label: "대시보드" },
     { href: "/chart", label: "차트" },
   ]},
-  { title: "🇰🇷 한국 주식", items: [
+  { title: "한국 주식", flag: "KR" as const, items: [
     { href: "/signals", label: "주문표", market: "KR" },
     { href: "/simulator", label: "시뮬레이터", market: "KR" },
     { href: "/portfolio", label: "실전매매", market: "KR" },
   ]},
-  { title: "🇺🇸 미국 주식", items: [
+  { title: "미국 주식", flag: "US" as const, items: [
     { href: "/signals?market=US", label: "주문표", market: "US" },
     { href: "/simulator?market=US", label: "시뮬레이터", market: "US" },
     { href: "/portfolio?market=US", label: "실전매매", market: "US" },
@@ -63,7 +64,9 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
       {GROUPS.map((g, gi) => (
         <div key={gi} className="mb-1.5">
           {g.title && (
-            <div className="mb-1 mt-2 px-2 text-[11.5px] font-bold uppercase tracking-wider text-faint">{g.title}</div>
+            <div className="mb-1 mt-2 flex items-center gap-1.5 px-2 text-[11.5px] font-bold uppercase tracking-wider text-faint">
+              {g.flag ? <MarketFlag market={g.flag} /> : null}{g.title}
+            </div>
           )}
           <div className="grid gap-0.5">
             {g.items.filter((it) => !it.adminOnly || isAdmin).map((it) => {
