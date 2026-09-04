@@ -46,7 +46,14 @@ def rebuild(session, pid: int, exec_day: date) -> dict:
         code_200 = pref or "069500"
     etf, codes = ("TIGER" if code_200 == "102110" else "KODEX"), (code_200, "122630")
 
-    algo = user_algo_overrides(session, pf.user_id)
+    # 공식 결정 — 주문표(_portfolio_orders)와 동일 규칙: 포트 동결 변수 우선 (2026-09-05)
+    pf_algo = (pf.params or {}).get("algo")
+    if isinstance(pf_algo, dict):
+        from dataclasses import fields as _dcf
+        _valid = {f.name for f in _dcf(Params)} - {"flags"}
+        algo = {k: v for k, v in pf_algo.items() if k in _valid}
+    else:
+        algo = user_algo_overrides(session, pf.user_id)
     params = Params(**{**base_costs_for(etf), **algo})
     # 핵심: 바를 실행일 전날까지로 잘라 '그날 아침' 시점을 재현
     bars_200, bars_lev, _ = load_aligned_bars(

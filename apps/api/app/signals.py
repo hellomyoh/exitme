@@ -187,7 +187,17 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
         else:
             code_200 = pref or "069500"  # 보유 없으면 생성 시 선택한 조합 (기존 포트는 KODEX 유지)
         etf, codes = ("TIGER" if code_200 == "102110" else "KODEX"), (code_200, "122630")
-    algo = user_algo_overrides(session, user_id)
+    # 공식 결정 (2026-09-05 지시): 포트에 동결된 변수(params["algo"], 전환 시 스냅샷)가 있으면 그것만 —
+    # 없으면(수동 포트·구형) 알고리즘 설정 추종. 포트별 공식이 섞이지 않는 격리 단위 = 포트 행.
+    pf_algo = (pf_row.params or {}).get("algo")
+    if isinstance(pf_algo, dict):
+        from dataclasses import fields as _dcf
+        _valid = {f.name for f in _dcf(Params)} - {"flags"}
+        algo = {k: v for k, v in pf_algo.items() if k in _valid}  # 개정으로 사라진 키는 무시(견고성)
+        algo_source = "portfolio"
+    else:
+        algo = user_algo_overrides(session, user_id)
+        algo_source = "settings"
     bars_200, bars_lev, _ = load_aligned_bars(session, date(1990, 1, 1), date(2100, 1, 1), codes=codes)
     params = Params(**{**base_costs_for(etf), **algo})
     result = run_backtest(bars_200, bars_lev, MODEL_CAPITAL, params)
@@ -244,6 +254,8 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
     out = {
         "basis": "portfolio", "portfolio": {"id": pf_row.id, "name": pf_row.name},
         "exec_day": exec_day.isoformat(),  # 이 주문표의 실행일 — 오늘/예정 표시용 (2026-09-02)
+        # 어떤 공식으로 계산했는지 표시용 (2026-09-05): portfolio = 전환 시 동결 변수, settings = 설정 추종
+        "algo_source": algo_source, "algo_overrides": algo,
         "code_200": codes[0], "name_200": {"069500": "KODEX 200", "102110": "TIGER 200", "QQQ": "QQQ"}.get(codes[0], codes[0]),
         "account": {"cash": cash, "qty_200": qty_200, "qty_lev": qty_lev,
                     "equity": round(user_pf.equity(m200.closes[last], mlev.closes[last]))},
