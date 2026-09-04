@@ -219,8 +219,9 @@ export default function DashboardPage() {
           <div ref={trendRef} className="h-52" />
           {trendLegend.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-muted">
-              {trendLegend.map((l) => (
-                <span key={l.name} className="inline-flex items-center gap-1.5">
+              {/* 이름은 중복 가능(예: '내 계좌' 2개) — 위치 기반 키 (2026-09-05 중복 키 오류) */}
+              {trendLegend.map((l, i) => (
+                <span key={i} className="inline-flex items-center gap-1.5">
                   <i className="inline-block h-2 w-2 rounded-full" style={{ background: l.color }} />{l.name}
                 </span>
               ))}
