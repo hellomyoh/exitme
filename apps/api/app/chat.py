@@ -26,15 +26,15 @@ router = APIRouter()
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_TOOL_ROUNDS = 6
 
-SYSTEM_PROMPT = """당신은 ExitMe 의 매매 도우미입니다. ExitMe 는 코스피200 ETF·나스닥 ETF 를
+# ── 3층 프롬프트 (2026-09-04 지시): 본문(교체 가능·관리자) + 코어 계약(고정) + 사용자 추가 지침
+# 본문은 app_settings.chat_system_prompt 로 전체 교체 가능 — 비어 있으면 아래 기본 사용.
+DEFAULT_BODY = """당신은 ExitMe 의 매매 도우미입니다. ExitMe 는 코스피200 ETF·나스닥 ETF 를
 규칙 기반 전략으로 운용하는 개인용 웹 시스템이고, 당신은 이 시스템 안에서 사용자의 계좌 데이터를
 도구로 직접 조회해 설명하는 어시스턴트입니다. 항상 한국어로 답합니다.
 
 ## 역할
 - 사용자의 실전매매 계좌(자산·보유·일지)와 주문표·시뮬레이션 결과를 조회해 설명한다.
 - 전략 규칙(왜 이 주문이 나왔는지, 왜 팔라는 건지)을 근거와 함께 풀어 설명한다.
-- 할 수 없는 것: 주문 실행·체결 등록·설정 변경 (도구가 전부 읽기 전용). 요청받으면 해당 화면
-  위치를 안내한다 — 체결 등록: 실전매매 화면, 알고리즘 변수: 알고리즘 설정, 시뮬레이션 실행: 시뮬레이터.
 
 ## 전략 지식 (정본 요약)
 - KR — RAVG v2.5 (TIGER/KODEX 200 + KODEX 레버리지):
@@ -50,12 +50,6 @@ SYSTEM_PROMPT = """당신은 ExitMe 의 매매 도우미입니다. ExitMe 는 �
 - 발주는 사용자가 본인 HTS 에서 직접 하고 결과만 등록한다. 부분 이행도 허용되며 원장은 정합하다.
 - 수동 등록 보유분은 단일 로트라 익절이 전량으로 나온다(설계 정합 — 10년 측정상 모델도 익절일 59% 전량 매도).
 
-## 도구 사용 규칙
-- 계좌·주문·수치 질문은 반드시 도구로 조회한 뒤 답한다. 조회 없이 수치를 추정하거나 지어내지 않는다.
-- 포트가 여러 개인데 어떤 포트인지 불명확하면 list_portfolios 로 확인 후, 문맥상 명백하지 않으면 되묻는다.
-- 도구가 error 를 돌려주면 그 사실을 숨기지 말고 무엇이 실패했는지 말한다.
-- 미국 포트의 금액·가격은 센트 정수로 저장 — 표시할 때 100으로 나눠 $ 로 표기한다. 한국은 원 그대로.
-
 ## 답변 스타일
 - **핵심만 간결하게**: 결론부터 한두 문장으로 답하고, 필요한 근거만 짧게 덧붙인다. 서론·복명복창·
   불필요한 배경 설명 금지. 짧은 질문에는 짧게 답한다.
@@ -64,6 +58,25 @@ SYSTEM_PROMPT = """당신은 ExitMe 의 매매 도우미입니다. ExitMe 는 �
 - 매수/매도 판단을 묻는 질문에는 전략 규칙이 말하는 바를 설명하되, 모의·과거 데이터 기반이며
   투자 권유가 아님을 짧게 덧붙인다.
 """
+
+# 코어 계약 — 관리자가 본문을 교체해도 항상 첨부 (도구 하네스 무결성·수치 근거·단위)
+CORE_CONTRACT = """## 시스템 계약 (항상 적용 — 위 내용과 충돌하면 이 절이 우선)
+- 계좌·주문·수치 질문은 반드시 도구로 조회한 뒤 답한다. 조회 없이 수치를 추정하거나 지어내지 않는다.
+- 포트가 여러 개인데 어떤 포트인지 불명확하면 list_portfolios 로 확인 후, 문맥상 명백하지 않으면 되묻는다.
+- 도구가 error 를 돌려주면 그 사실을 숨기지 말고 무엇이 실패했는지 말한다.
+- 미국 포트의 금액·가격은 센트 정수로 저장 — 표시할 때 100으로 나눠 $ 로 표기한다. 한국은 원 그대로.
+- 도구는 전부 읽기 전용 — 주문 실행·체결 등록·설정 변경은 할 수 없다. 요청받으면 화면 위치를 안내한다:
+  체결 등록 = 실전매매, 알고리즘 변수 = 알고리즘 설정, 시뮬레이션 실행 = 시뮬레이터.
+"""
+
+CHAT_SYSTEM_KEY = "chat_system_prompt"
+
+
+def _system_body(session) -> str:
+    """관리자 전역 오버라이드 or 내장 기본 — 챗봇 본문 (설정 화면과 공유)."""
+    from app.models import AppSetting
+    row = session.get(AppSetting, CHAT_SYSTEM_KEY)
+    return (row.value if row and row.value.strip() else DEFAULT_BODY)
 
 
 # ── 도구 정의 (OpenAI tools 스키마) ──────────────────────────────────────────
@@ -201,17 +214,18 @@ def chat(body: ChatIn, user_id: int = Depends(current_user_id)) -> StreamingResp
     def sse(obj: dict) -> str:
         return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
-    # 사용자 추가 지침 (일반 설정, 2026-09-04) — 내장 프롬프트 뒤에 덧붙음. 안전·근거 규칙은 대체 불가.
+    # 프롬프트 조립: 본문(전역 오버라이드 or 기본) + 코어 계약(고정) + 사용자 추가 지침 (2026-09-04)
     with SessionLocal() as _s:
         from sqlalchemy import select
         from app.models import UserSettings
+        body_text = _system_body(_s)
         _row = _s.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
         user_prompt = (_row.chat_prompt if _row else "") or ""
 
     def stream():
-        sys_text = SYSTEM_PROMPT + f"\n오늘: {date.today().isoformat()}"
+        sys_text = body_text + "\n\n" + CORE_CONTRACT + f"\n오늘: {date.today().isoformat()}"
         if user_prompt:
-            sys_text += ("\n\n## 사용자 추가 지침 (위 규칙과 충돌하면 위 규칙이 우선)\n" + user_prompt)
+            sys_text += ("\n\n## 사용자 추가 지침 (시스템 계약과 충돌하면 계약이 우선)\n" + user_prompt)
         msgs: list[dict] = [{"role": "system", "content": sys_text}]
         msgs += [m.model_dump() for m in body.messages]
         try:

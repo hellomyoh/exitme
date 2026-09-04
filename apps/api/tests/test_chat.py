@@ -135,3 +135,42 @@ def test_chat_prompt_setting_appended(monkeypatch):
 def messages_contains(system_text: str) -> bool:
     return ("사용자 추가 지침" in system_text and "답변 끝에 [끝] 을 붙여라" in system_text
             and system_text.index("핵심만 간결하게") < system_text.index("사용자 추가 지침"))
+
+
+def test_chat_system_prompt_admin_only_and_replace(monkeypatch):
+    """전역 시스템 프롬프트 — 관리자 전용, 본문 교체 시에도 코어 계약·추가 지침은 유지 (2026-09-04)."""
+    client, headers = _authed_client()  # 일반 사용자
+    assert client.get("/settings/chat-system", headers=headers).status_code == 403
+    assert client.put("/settings/chat-system", json={"prompt": "x"}, headers=headers).status_code == 403
+
+    # 관리자 (부트스트랩 myoh)
+    admin_tok = client.post("/auth/login", json={"email": "myoh", "password": "anrndghk!"}).json()["access_token"]
+    ah = {"Authorization": f"Bearer {admin_tok}"}
+    g = client.get("/settings/chat-system", headers=ah).json()
+    assert g["prompt"] == "" and "ExitMe" in g["default"] and "시스템 계약" in g["core_contract"]
+
+    assert client.put("/settings/chat-system", json={"prompt": "너는 해적처럼 말하는 도우미다."},
+                      headers=ah).json()["using_default"] is False
+
+    from app import chat as chat_mod
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "openrouter_api_key", "test-key")
+    seen = {}
+
+    def fake_call(messages, tools):
+        seen["system"] = messages[0]["content"]
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    monkeypatch.setattr(chat_mod, "_openrouter_call", fake_call)
+    # 일반 사용자 대화에도 전역 교체본 + 코어 계약 + (개인) 추가 지침이 함께 들어간다
+    client.put("/settings/chat", json={"prompt": "존댓말로."}, headers=headers)
+    client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]}, headers=headers)
+    sys_text = seen["system"]
+    assert "해적처럼" in sys_text and "정본 요약" not in sys_text     # 본문 교체됨
+    assert "시스템 계약" in sys_text and "읽기 전용" in sys_text      # 코어 계약 유지
+    assert "존댓말로." in sys_text                                     # 추가 지침 유지
+
+    # 초기화(빈 값) → 기본 복귀
+    assert client.put("/settings/chat-system", json={"prompt": ""}, headers=ah).json()["using_default"] is True
+    client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]}, headers=headers)
+    assert "정본 요약" in seen["system"] and "해적처럼" not in seen["system"]

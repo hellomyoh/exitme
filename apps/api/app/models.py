@@ -296,6 +296,15 @@ class UserSettings(TimestampMixin, Base):
     chat_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")  # 챗봇 추가 지침 (0012)
 
 
+class AppSetting(TimestampMixin, Base):
+    """전역 앱 설정 키·값 — 관리자 전용 운영 설정 (0013). 첫 사용처: chat_system_prompt."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class PortfolioPlan(TimestampMixin, Base):
     """실전 포트의 '그날의 주문표' 스냅샷 — 일자별 매매 일지에서 계획 vs 체결 대조용 (2026-08-29 지시).
 
