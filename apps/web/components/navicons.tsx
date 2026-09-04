@@ -35,6 +35,10 @@ export function NavIcon({ kind, className = "h-[16px] w-[16px] shrink-0" }: { ki
         <circle cx="9.5" cy="8.5" r="3.2" /><path d="M4 19.5c.7-3 2.9-4.5 5.5-4.5s4.8 1.5 5.5 4.5" />
         <circle cx="17" cy="9.5" r="2.4" /><path d="M16.5 14.6c2.1.2 3.4 1.5 4 3.9" />
       </>)}
+      {kind === "journal" && (<>
+        <path d="M5 4.5A1.5 1.5 0 0 1 6.5 3h11A1.5 1.5 0 0 1 19 4.5v15a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19.5z" />
+        <path d="M8.5 3v18" /><path d="M12 8h4M12 11.5h4" />
+      </>)}
       {kind === "logout" && (<>
         <path d="M14.5 4h4a1.5 1.5 0 0 1 1.5 1.5v13a1.5 1.5 0 0 1-1.5 1.5h-4" /><path d="M10 8l-4 4 4 4M6.5 12h9" />
       </>)}
@@ -44,5 +48,5 @@ export function NavIcon({ kind, className = "h-[16px] w-[16px] shrink-0" }: { ki
 
 export const ICON_BY_LABEL: Record<string, string> = {
   "대시보드": "dashboard", "차트": "chart", "주문표": "orders", "시뮬레이터": "simulator",
-  "실전매매": "trade", "일반 설정": "settings", "알고리즘 설정": "sliders", "계정 관리": "users",
+  "실전매매": "trade", "일반 설정": "settings", "알고리즘 설정": "sliders", "계정 관리": "users", "매매일지": "journal",
 };

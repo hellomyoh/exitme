@@ -296,6 +296,33 @@ class UserSettings(TimestampMixin, Base):
     chat_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")  # 챗봇 추가 지침 (0012)
 
 
+class ManualJournal(TimestampMixin, Base):
+    """수동 주식 매매일지 — 전략 포트와 무관한 자유 기록 (0014, 2026-09-05 지시)."""
+
+    __tablename__ = "manual_journals"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    broker: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    fee_rate: Mapped[float] = mapped_column(Numeric, nullable=False, default=0.00015)
+    tax_rate: Mapped[float] = mapped_column(Numeric, nullable=False, default=0.0023)
+
+
+class ManualJournalEntry(TimestampMixin, Base):
+    __tablename__ = "manual_journal_entries"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    journal_id: Mapped[int] = mapped_column(
+        ForeignKey("manual_journals.id", ondelete="CASCADE"), nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)  # buy | sell
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    qty: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    price: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class AppSetting(TimestampMixin, Base):
     """전역 앱 설정 키·값 — 관리자 전용 운영 설정 (0013). 첫 사용처: chat_system_prompt."""
 

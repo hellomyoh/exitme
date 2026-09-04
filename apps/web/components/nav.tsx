@@ -17,15 +17,15 @@ const GROUPS: Group[] = [
     { href: "/dashboard", label: "대시보드" },
     { href: "/chart", label: "차트" },
   ]},
-  { title: "한국 주식", flag: "KR" as const, items: [
+  // 한국/미국 그룹 병합 — 항목별 시장 아이콘으로 구분 (2026-09-05 지시)
+  { title: "주식 실전 매매", items: [
     { href: "/signals", label: "주문표", market: "KR" },
     { href: "/simulator", label: "시뮬레이터", market: "KR" },
     { href: "/portfolio", label: "실전매매", market: "KR" },
-  ]},
-  { title: "미국 주식", flag: "US" as const, items: [
     { href: "/signals?market=US", label: "주문표", market: "US" },
     { href: "/simulator?market=US", label: "시뮬레이터", market: "US" },
     { href: "/portfolio?market=US", label: "실전매매", market: "US" },
+    { href: "/mjournal", label: "매매일지" },
   ]},
   { title: "⚙️ 설정", items: [
     { href: "/settings", label: "일반 설정" },
@@ -95,7 +95,8 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
                            : "border-transparent text-muted hover:bg-surface/70 hover:text-ink"
                   }`}>
                   <NavIcon kind={ICON_BY_LABEL[it.label] ?? "orders"} />
-                  {it.label}
+                  <span className="flex-1">{it.label}</span>
+                  {it.market && <MarketFlag market={it.market} />}
                 </Link>
               );
             })}
