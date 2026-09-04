@@ -389,19 +389,31 @@ def create_portfolio(body: PortfolioIn, user_id: int = Depends(current_user_id),
 
 class RenameIn(BaseModel):
     name: str = Field(min_length=1, max_length=60)
+    color: str | None = None  # "#rrggbb" = 탭 배경색 지정, "" = 해제, None = 유지 (2026-09-05 지시)
 
 
 @router.patch("/portfolios/{pid}")
 def rename_portfolio(pid: int, body: RenameIn, user_id: int = Depends(current_user_id),
                      session: Session = Depends(get_session)) -> dict:
-    """포트 이름 변경 (2026-09-05 지시) — 탭이 많아지면 이름으로 구분해야 하므로."""
+    """포트 이름·탭 배경색 변경 (2026-09-05 지시) — 탭이 많아지면 이름·색으로 구분."""
+    import re
+
     pf = _owned_portfolio(session, pid, user_id)
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="이름이 비어 있습니다")
     pf.name = name
+    if body.color is not None:
+        params = dict(pf.params or {})
+        if body.color == "":
+            params.pop("color", None)
+        elif re.fullmatch(r"#[0-9a-fA-F]{6}", body.color):
+            params["color"] = body.color
+        else:
+            raise HTTPException(status_code=422, detail="색상은 #rrggbb 형식이어야 합니다")
+        pf.params = params  # JSONB 변경 감지 — 재할당 필수
     session.commit()
-    return {"id": pf.id, "name": pf.name}
+    return {"id": pf.id, "name": pf.name, "color": (pf.params or {}).get("color")}
 
 
 @router.delete("/portfolios/{pid}")
@@ -425,7 +437,7 @@ def list_portfolios(user_id: int = Depends(current_user_id),
                     session: Session = Depends(get_session)) -> dict:
     rows = session.scalars(select(TradePortfolio).where(TradePortfolio.user_id == user_id)).all()
     return {"items": [{"id": r.id, "name": r.name, "kind": r.kind, "backtest_id": r.backtest_id,
-                       "market": r.market} for r in rows]}
+                       "market": r.market, "color": (r.params or {}).get("color")} for r in rows]}
 
 
 @router.get("/portfolio/summary")
