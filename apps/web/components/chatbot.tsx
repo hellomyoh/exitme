@@ -38,6 +38,12 @@ function BotMarkdown({ text }: { text: string }) {
 
 export default function ChatBot() {
   const [open, setOpen] = useState(false);
+  // 상단 바 챗봇 아이콘에서 열기 (2026-09-05 Zenith 상단 바)
+  useEffect(() => {
+    const h = () => setOpen((v) => !v);
+    window.addEventListener("exitme:chat", h);
+    return () => window.removeEventListener("exitme:chat", h);
+  }, []);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);

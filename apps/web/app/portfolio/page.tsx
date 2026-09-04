@@ -80,7 +80,7 @@ function PortfolioPage() {
   const [msg, setMsg] = useState("");
   const [txDays, setTxDays] = useState(15);  // 거래 내역 기본 표시 일수 — 무한 나열 방지 (2026-08-29 검토)
   const [newName, setNewName] = useState("");
-  const [showStart, setShowStart] = useState(false);
+  const [showStart, setShowStart] = useState(sp?.get("start") === "1");  // 상단 바 '새 실전매매' 진입 (2026-09-05)
   const [startMode, setStartMode] = useState<"fresh" | "holdings">("fresh");
   const [startCode200, setStartCode200] = useState("102110");  // KR 주력 조합 — 기본 TIGER (보수 연 0.05%, 2026-09-01 지시)
   const [startCash, setStartCash] = useState("");

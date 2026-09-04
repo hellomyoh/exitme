@@ -8,6 +8,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { ensureSession, fetchMe } from "../lib/api";
 import ChatBot from "./chatbot";
 import NavBar from "./nav";
+import TopBar from "./topbar";
 
 export default function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -50,6 +51,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     <>
       <NavBar />
       <div className="lg:pl-[210px]">
+        <TopBar />
         {/* overflow-x-clip: 숨은 툴팁·표 등 밖으로 뻗는 요소가 페이지 가로 스크롤을 만들지 않게 (2026-09-02) */}
         <div className="mx-auto max-w-7xl overflow-x-clip px-5 py-7">{children}</div>
         <footer className="mx-auto max-w-7xl px-5 pb-8 pt-2 text-[12.5px] leading-relaxed text-faint">
