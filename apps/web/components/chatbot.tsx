@@ -4,9 +4,37 @@
  *  플로팅 💬 버튼 → 우측 패널 열림, X 로 닫기. 닫아도 언마운트하지 않아 대화가 유지된다.
  *  백엔드 /chat 은 SSE: tool(진행) → final(답) | error. 대화 이력은 클라이언트가 보관(무상태 서버). */
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { apiFetch } from "../lib/api";
 
 type Msg = { role: "user" | "assistant"; content: string };
+
+/** 봇 답변 마크다운 렌더 (2026-09-04 지시) — raw HTML 은 렌더하지 않음(XSS 차단, react-markdown 기본).
+ *  표·굵게·목록·코드가 디자인 토큰으로 스타일링된다. */
+function BotMarkdown({ text }: { text: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{
+      p: (p) => <p className="mb-2 last:mb-0" {...p} />,
+      strong: (p) => <strong className="font-bold text-ink" {...p} />,
+      ul: (p) => <ul className="mb-2 list-disc pl-5 last:mb-0" {...p} />,
+      ol: (p) => <ol className="mb-2 list-decimal pl-5 last:mb-0" {...p} />,
+      li: (p) => <li className="mb-0.5" {...p} />,
+      h1: (p) => <div className="mb-1.5 mt-2 text-[14px] font-bold first:mt-0" {...p} />,
+      h2: (p) => <div className="mb-1.5 mt-2 text-[14px] font-bold first:mt-0" {...p} />,
+      h3: (p) => <div className="mb-1 mt-2 text-[13.5px] font-bold first:mt-0" {...p} />,
+      a: (p) => <a className="text-accent underline underline-offset-2" target="_blank" rel="noreferrer" {...p} />,
+      code: (p) => <code className="rounded bg-raised px-1 py-0.5 text-[12px]" {...p} />,
+      pre: (p) => <pre className="mb-2 overflow-x-auto rounded-lg bg-raised p-2.5 text-[12px] last:mb-0" {...p} />,
+      table: (p) => <div className="mb-2 overflow-x-auto last:mb-0"><table className="w-full whitespace-nowrap text-[12.5px]" {...p} /></div>,
+      thead: (p) => <thead className="text-left text-[11.5px] text-faint" {...p} />,
+      th: (p) => <th className="border-b border-line px-2 py-1 font-medium" {...p} />,
+      td: (p) => <td className="border-b border-line/40 px-2 py-1" {...p} />,
+      hr: () => <hr className="my-2 border-line" />,
+      blockquote: (p) => <blockquote className="mb-2 border-l-2 border-line-strong pl-3 text-muted last:mb-0" {...p} />,
+    }}>{text}</ReactMarkdown>
+  );
+}
 
 export default function ChatBot() {
   const [open, setOpen] = useState(false);
@@ -105,9 +133,9 @@ export default function ChatBot() {
           )}
           {msgs.map((m, i) => (
             <div key={i} className={`mb-3 flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-[13.5px] leading-relaxed ${
-                m.role === "user" ? "bg-accent-dim text-ink" : "border border-line bg-inset text-ink"}`}>
-                {m.content}
+              <div className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-[13.5px] leading-relaxed ${
+                m.role === "user" ? "whitespace-pre-wrap bg-accent-dim text-ink" : "border border-line bg-inset text-ink"}`}>
+                {m.role === "assistant" ? <BotMarkdown text={m.content} /> : m.content}
               </div>
             </div>
           ))}
