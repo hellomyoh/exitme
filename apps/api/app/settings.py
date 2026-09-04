@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import current_user_id
+from app.auth import current_user_id, require_admin
 from app.db import get_session
 from app.models import UserSettings
 from app.strategy.params import Params
@@ -99,6 +99,43 @@ def put_algo_settings(body: AlgoIn, user_id: int = Depends(current_user_id),
     row.algo_params = overrides
     session.commit()
     return {"saved": len(overrides), "overridden_keys": sorted(overrides)}
+
+
+# ── 챗봇 시스템 프롬프트 (전역·관리자 전용, 2026-09-04 지시) — 본문 전체 교체. 코어 계약은 코드 고정.
+class ChatSystemIn(BaseModel):
+    prompt: str = Field(max_length=8000)
+
+
+@router.get("/settings/chat-system")
+def get_chat_system(admin=Depends(require_admin),
+                    session: Session = Depends(get_session)) -> dict:
+    from app.chat import CHAT_SYSTEM_KEY, CORE_CONTRACT, DEFAULT_BODY
+    from app.models import AppSetting
+    row = session.get(AppSetting, CHAT_SYSTEM_KEY)
+    return {"prompt": (row.value if row else "") or "",  # "" = 기본 사용 중
+            "default": DEFAULT_BODY,                      # '기본값 불러오기'용
+            "core_contract": CORE_CONTRACT}               # 항상 첨부되는 고정 계약 (표시용)
+
+
+@router.put("/settings/chat-system")
+def put_chat_system(body: ChatSystemIn, admin=Depends(require_admin),
+                    session: Session = Depends(get_session)) -> dict:
+    """빈 값 저장 = 초기화(내장 기본으로 복귀). 교체 중에는 이후 전략 개정이 자동 반영되지 않는다."""
+    from app.chat import CHAT_SYSTEM_KEY
+    from app.models import AppSetting
+    row = session.get(AppSetting, CHAT_SYSTEM_KEY)
+    text = body.prompt.strip()
+    if not text:
+        if row is not None:
+            session.delete(row)
+        session.commit()
+        return {"saved": True, "using_default": True}
+    if row is None:
+        session.add(AppSetting(key=CHAT_SYSTEM_KEY, value=text))
+    else:
+        row.value = text
+    session.commit()
+    return {"saved": True, "using_default": False, "length": len(text)}
 
 
 # ── 챗봇 추가 지침 (2026-09-04 지시) — 내장 시스템 프롬프트 뒤에 덧붙음. 안전 규칙은 대체 불가.
