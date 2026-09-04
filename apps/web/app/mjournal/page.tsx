@@ -11,7 +11,7 @@ import { apiFetch, ensureSession } from "../../lib/api";
 import { Card, CardTitle, EmptyState, PageTitle, Stat } from "../../components/ui";
 
 type JournalMeta = { id: number; name: string; symbol: string; broker: string };
-type Holding = { symbol: string; qty: number; avg_price: number; cost: number };
+type Holding = { symbol: string; qty: number; avg_price: number; cost: number; realized: number; matched: number; return_pct: number | null };
 type Row = {
   id: number; symbol: string; side: "buy" | "sell"; buy_date: string | null; sell_date: string | null;
   hold_days: number | null; realized: number | null; return_pct: number | null;
@@ -19,11 +19,11 @@ type Row = {
 };
 type Detail = JournalMeta & {
   fee_rate: number; tax_rate: number; rows: Row[]; symbols: string[];
-  summary: { realized: number; sell_amount: number; buy_amount: number; cost: number };
+  summary: { realized: number; sell_amount: number; buy_amount: number; cost: number; return_pct: number | null };
   holdings: Holding[];
 };
 type OverviewItem = { id: number; name: string; symbol: string; holdings: Holding[];
-  realized: number; series: { date: string; value: number }[] };
+  realized: number; return_pct: number | null; series: { date: string; value: number }[] };
 
 const fm = (v: number) => `${v.toLocaleString()}원`;
 const OV_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
@@ -36,10 +36,11 @@ function Overview({ items }: { items: OverviewItem[] }) {
   const chartRef = useRef<HTMLDivElement>(null);
   const api = useRef<IChartApi | null>(null);
   // 종목별 보유 합산 (전 일지)
-  const bySym = new Map<string, { qty: number; cost: number }>();
+  const bySym = new Map<string, { qty: number; cost: number; realized: number; matched: number }>();
   for (const it of items) for (const h of it.holdings) {
-    const cur = bySym.get(h.symbol) ?? { qty: 0, cost: 0 };
-    bySym.set(h.symbol, { qty: cur.qty + h.qty, cost: cur.cost + h.cost });
+    const cur = bySym.get(h.symbol) ?? { qty: 0, cost: 0, realized: 0, matched: 0 };
+    bySym.set(h.symbol, { qty: cur.qty + h.qty, cost: cur.cost + h.cost,
+                          realized: cur.realized + h.realized, matched: cur.matched + h.matched });
   }
   const held = [...bySym.entries()].map(([symbol, v]) => ({ symbol, ...v })).sort((a, b) => b.cost - a.cost);
   const total = held.reduce((a, h) => a + h.cost, 0);
@@ -50,7 +51,14 @@ function Overview({ items }: { items: OverviewItem[] }) {
   useEffect(() => {
     if (!chartRef.current || withSeries.length === 0) return;
     api.current?.remove();
+    const korUnit = (v: number) => {  // 축 금액 억/만 자동 단위 (2026-09-05 지시)
+      const a = Math.abs(v);
+      if (a >= 1e8) return `${(v / 1e8).toFixed(a >= 1e9 ? 0 : 1)}억`;
+      if (a >= 1e4) return `${Math.round(v / 1e4).toLocaleString()}만`;
+      return `${Math.round(v).toLocaleString()}`;
+    };
     const chart = createChart(chartRef.current, {
+      localization: { priceFormatter: korUnit },
       layout: { background: { color: "transparent" }, textColor: "#9aa1ad", attributionLogo: false, fontSize: 11 },
       grid: { vertLines: { visible: false }, horzLines: { color: "#eef0f3" } },
       height: 190, autoSize: true, rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
@@ -93,8 +101,9 @@ function Overview({ items }: { items: OverviewItem[] }) {
                 <path key={i} d={d} fill={symColor(h.symbol)} opacity={0.85}
                   onMouseMove={(e) => {
                     const box = (e.currentTarget.ownerSVGElement!.closest(".card") as HTMLElement).getBoundingClientRect();
+                    const pct = h.matched > 0 ? h.realized / h.matched : null;  // 실현 수익률 (매도분 원가 대비)
                     setTip({ x: e.clientX - box.left + 10, y: e.clientY - box.top + 10,
-                             html: `${h.symbol}\n${h.qty.toLocaleString()}주\n원가 ${fm(h.cost)} (${(frac * 100).toFixed(1)}%)` });
+                             html: `${h.symbol}\n${h.qty.toLocaleString()}주 · 원가 ${fm(h.cost)} (${(frac * 100).toFixed(1)}%)\n실현 수익률 ${pct != null ? `${pct >= 0 ? "+" : ""}${(pct * 100).toFixed(1)}%` : "— (매도 없음)"}` });
                   }}
                   onMouseLeave={() => setTip(null)} />
               ))}
@@ -118,7 +127,8 @@ function Overview({ items }: { items: OverviewItem[] }) {
               <span key={it.id} className="inline-flex items-center gap-1.5">
                 <i className="h-2 w-2 rounded-full" style={{ background: jColor(it.id) }} />
                 {it.name} <b className={it.realized > 0 ? "text-up" : it.realized < 0 ? "text-down" : "text-ink"}>
-                  {it.realized >= 0 ? "+" : ""}{it.realized.toLocaleString()}원</b>
+                  {it.realized >= 0 ? "+" : ""}{it.realized.toLocaleString()}원
+                  {it.return_pct != null && ` (${it.return_pct >= 0 ? "+" : ""}${(it.return_pct * 100).toFixed(1)}%)`}</b>
               </span>
             ))}
             {withSeries.length === 0 && <span className="text-faint">매도(실현) 기록이 생기면 추이가 그려집니다.</span>}
@@ -255,14 +265,29 @@ function MJournalPage() {
       ) : (
         <>
           <div className="mb-4 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(160px,1fr))]">
-            <Stat label="총 실현손익" value={fm(detail.summary.realized)}
-              tone={detail.summary.realized > 0 ? "up" : detail.summary.realized < 0 ? "down" : "default"} />
+            <Stat label="총 실현손익"
+              value={<>{fm(detail.summary.realized)}{detail.summary.return_pct != null &&
+                <span className="whitespace-nowrap text-[14px]"> ({detail.summary.return_pct >= 0 ? "+" : ""}{(detail.summary.return_pct * 100).toFixed(1)}%)</span>}</>}
+              tone={detail.summary.realized > 0 ? "up" : detail.summary.realized < 0 ? "down" : "default"}
+              hint="수익률 = 실현손익 ÷ 매도분 원가" />
             <Stat label="총 매도 금액" value={fm(detail.summary.sell_amount)} />
             <Stat label="총 매수 금액" value={fm(detail.summary.buy_amount)} />
             <Stat label="총 매매 비용" value={fm(detail.summary.cost)} hint="수수료 + 제세금" />
-            <Stat label="현재 보유" value={detail.holdings.length > 0
-              ? detail.holdings.map((h) => `${h.symbol} ${h.qty.toLocaleString()}주`).join(" · ") : "없음"}
-              hint="종목별 FIFO 잔여" />
+            <div className="card px-4 py-3.5">
+              <div className="text-[13px] text-faint">현재 보유 <span className="text-[11px]">(FIFO 잔여)</span></div>
+              {detail.holdings.length === 0 ? (
+                <div className="mt-1 text-[19px] font-bold">없음</div>
+              ) : (
+                <div className="mt-1.5 grid max-h-24 content-start gap-1 overflow-y-auto text-[13.5px]">
+                  {detail.holdings.map((h) => (
+                    <div key={h.symbol} className="flex items-baseline justify-between gap-2">
+                      <span className="truncate font-semibold">{h.symbol}</span>
+                      <span className="shrink-0 text-muted">{h.qty.toLocaleString()}주 <span className="text-faint">@{h.avg_price.toLocaleString()}</span></span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* 그래프는 통계 카드 아래 (2026-09-05 지시) */}

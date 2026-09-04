@@ -77,7 +77,9 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
     fee, tax = float(j.fee_rate), float(j.tax_rate)
     lots_by: dict[str, list[dict]] = {}
     rows: list[dict] = []
-    total_buy = total_sell = total_cost = total_realized = 0
+    total_buy = total_sell = total_cost = total_realized = total_matched = 0
+    realized_by: dict[str, int] = {}
+    matched_by: dict[str, int] = {}
     for e in sorted(entries, key=lambda x: (x.trade_date, x.id)):
         sym = (e.symbol or j.symbol).strip()
         lots = lots_by.setdefault(sym, [])
@@ -118,6 +120,9 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
             total_sell += amount
             total_cost += cost
             total_realized += realized
+            total_matched += matched_cost
+            realized_by[sym] = realized_by.get(sym, 0) + realized
+            matched_by[sym] = matched_by.get(sym, 0) + matched_cost
             rows.append({"id": e.id, "symbol": sym, "side": "sell",
                          "buy_date": first_date.isoformat() if first_date else None,
                          "sell_date": e.trade_date.isoformat(),
@@ -131,13 +136,18 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
         q = sum(l["qty"] for l in lots)
         if q > 0:
             c = sum(l["qty"] * l["price"] for l in lots)
-            holdings.append({"symbol": sym, "qty": q, "avg_price": round(c / q), "cost": c})
+            m = matched_by.get(sym, 0)
+            holdings.append({"symbol": sym, "qty": q, "avg_price": round(c / q), "cost": c,
+                             "realized": realized_by.get(sym, 0), "matched": m,
+                             "return_pct": (realized_by.get(sym, 0) / m) if m > 0 else None})
     holdings.sort(key=lambda h: -h["cost"])
     symbols = sorted({(e.symbol or j.symbol).strip() for e in entries} | {j.symbol.strip()})
     return {
         "rows": list(reversed(rows)),  # 최신이 위
         "summary": {"realized": total_realized, "sell_amount": total_sell,
-                    "buy_amount": total_buy, "cost": total_cost},
+                    "buy_amount": total_buy, "cost": total_cost,
+                    "matched_cost": total_matched,
+                    "return_pct": (total_realized / total_matched) if total_matched > 0 else None},
         "holdings": holdings, "symbols": symbols,
     }
 
@@ -165,7 +175,8 @@ def journals_overview(user_id: int = Depends(current_user_id),
         series = [{"date": d, "value": v} for d, v in sorted(by_date.items())]
         items.append({"id": j.id, "name": j.name, "symbol": j.symbol,
                       "holdings": c["holdings"],
-                      "realized": c["summary"]["realized"], "series": series})
+                      "realized": c["summary"]["realized"],
+                      "return_pct": c["summary"]["return_pct"], "series": series})
     return {"items": items}
 
 
