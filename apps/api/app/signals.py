@@ -242,6 +242,13 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
 
     user_pf = Portfolio(cash=float(cash), lots=lots)
     p = plan(last, m200, mlev, regime, user_pf, params)
+    # 동결 공식 도움말 풍선용 라벨·기본값 (2026-09-05 지시)
+    algo_detail: list[dict] = []
+    if algo_source == "portfolio" and algo:
+        from app.settings import PARAM_REGISTRY
+        _labels = {k: lab for k, lab, *_rest in PARAM_REGISTRY}
+        algo_detail = [{"key": k, "label": _labels.get(k, k), "value": v,
+                        "default": getattr(Params(), k, None)} for k, v in sorted(algo.items())]
     # 표시용 병합 — 로트별 익절이 같은 가격이면 한 주문으로 (HTS 에는 하나로 넣으면 됨, 2026-08-29 검토)
     merged: dict[tuple, dict] = {}
     for o in p.orders:
@@ -255,7 +262,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
         "basis": "portfolio", "portfolio": {"id": pf_row.id, "name": pf_row.name},
         "exec_day": exec_day.isoformat(),  # 이 주문표의 실행일 — 오늘/예정 표시용 (2026-09-02)
         # 어떤 공식으로 계산했는지 표시용 (2026-09-05): portfolio = 전환 시 동결 변수, settings = 설정 추종
-        "algo_source": algo_source, "algo_overrides": algo,
+        "algo_source": algo_source, "algo_overrides": algo, "algo_detail": algo_detail,
         "code_200": codes[0], "name_200": {"069500": "KODEX 200", "102110": "TIGER 200", "QQQ": "QQQ"}.get(codes[0], codes[0]),
         "account": {"cash": cash, "qty_200": qty_200, "qty_lev": qty_lev,
                     "equity": round(user_pf.equity(m200.closes[last], mlev.closes[last]))},

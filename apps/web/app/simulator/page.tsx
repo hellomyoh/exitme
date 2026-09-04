@@ -515,7 +515,11 @@ function SimulatorPage() {
               <button className="btn" onClick={() => clone(job)}>이 조건으로 다시 설정</button>
               <button className="btn btn-primary" onClick={() => void (async () => {
                 const r = await apiFetch(`/portfolios/from-backtest/${job.id}`, { method: "POST" });
-                if (r.ok) router.push(`/portfolio${market === "US" ? "?market=US" : ""}`);
+                if (r.ok) {
+                  // 전환된 새 포트가 바로 선택되게 pid 전달 — '내 계좌'로 떨어지던 결함 (2026-09-05 지시)
+                  const { id } = (await r.json()) as { id: number };
+                  router.push(`/portfolio?${market === "US" ? "market=US&" : ""}pid=${id}`);
+                }
               })()}>실전매매로 전환 →</button>
               <span className="ml-auto flex flex-wrap items-center gap-2 text-[13px] text-muted">
                 <span className="text-faint">오버레이 = 지난 백테스트를 같은 차트에 겹쳐 비교 (최대 4개):</span>

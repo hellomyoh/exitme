@@ -34,7 +34,7 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; exec_day?: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number> };
+type Signal = { status: string; exec_day?: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[] };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -65,7 +65,11 @@ function PortfolioPage() {
   const fpx = (v: number) => fmtPriceM(market, v);
   const unit = market === "US" ? "$" : "원";
   const [portfolios, setPortfolios] = useState<PortfolioItem[]>([]);
-  const [pid, setPid] = useState<number | null>(null);
+  // 초기 선택: ?pid= 쿼리(시뮬 전환 직후 새 포트) — 없으면 서버 기본 (2026-09-05)
+  const [pid, setPid] = useState<number | null>(() => {
+    const q = sp?.get("pid");
+    return q ? Number(q) : null;
+  });
   const [sum, setSum] = useState<Summary | null>(null);
   const [includeCosts, setIncludeCosts] = useState(true);
   const [form, setForm] = useState({ kind: "buy", code: market === "US" ? "QQQ" : "069500", qty: "", price: "", amount: "", memo: "",
@@ -125,7 +129,8 @@ function PortfolioPage() {
     });
   }, [pid, load, router]);
 
-  useEffect(() => { setPid(null); }, [market]);  // 마켓 전환 시 선택 초기화
+  // (마켓 전환 시 초기화는 MarketKeyed 의 key 리마운트가 담당 — mount 시 실행되는 effect 로 두면
+  //  ?pid= 초기 선택을 덮어써서 제거, 2026-09-05)
 
   function prefillFill(o: { instrument: string; side: string; qty: number; price: number | null; kind: string }, date?: string) {
     const code200 = signal?.code_200
@@ -489,13 +494,26 @@ function PortfolioPage() {
               {signal.basis === "portfolio" && signal.account
                 ? ` · 계산 기준(${signal.trade_date} 종가 시점): 보유 ${signal.account.qty_200.toLocaleString()}주/레버 ${signal.account.qty_lev.toLocaleString()}주 · 현금 ${fm(signal.account.cash)} — 오늘 체결 등록은 내일 주문표부터 반영`
                 : " · 모델 기준"}
-              {/* 공식 출처 — 포트 동결(전환 시 변수) vs 설정 추종 (2026-09-05) */}
+              {/* 공식 출처 — 포트 동결(전환 시 변수)이면 도움말 풍선으로 변수 상세 표기 (2026-09-05 지시) */}
               {signal.algo_source === "portfolio" && (
-                <span title={Object.keys(signal.algo_overrides ?? {}).length
-                  ? `동결 변수: ${Object.entries(signal.algo_overrides!).map(([k, v]) => `${k}=${v}`).join(", ")}`
-                  : "전환 시점 기본값으로 동결"}>
-                  {" · "}<b className="text-accent">공식: 이 포트 고정</b>
-                  {Object.keys(signal.algo_overrides ?? {}).length > 0 && ` (변수 ${Object.keys(signal.algo_overrides!).length}건)`}
+                <span>{" · "}
+                  <Tip tip={(signal.algo_detail?.length ?? 0) > 0 ? (
+                    <span>
+                      <b className="text-ink">이 포트에 동결된 매매 공식 변수</b> — 시뮬레이션 전환 시점 값으로 고정되며,
+                      알고리즘 설정을 바꿔도 이 포트에는 적용되지 않습니다.<br />
+                      {signal.algo_detail!.map((d) => (
+                        <span key={d.key}>· {d.label}: <b className="text-ink">{d.value}</b>
+                          {d.default !== null && <span className="text-faint"> (기본 {d.default})</span>}<br /></span>
+                      ))}
+                    </span>
+                  ) : (
+                    <span>전환 시점의 <b className="text-ink">기본값으로 동결</b>된 공식입니다 — 이후 알고리즘 설정
+                      변경이 이 포트에는 적용되지 않습니다.</span>
+                  )}>
+                    <b className="cursor-help text-accent">공식: 이 포트 고정
+                      {(signal.algo_detail?.length ?? 0) > 0 && ` (변수 ${signal.algo_detail!.length}건)`}</b>
+                    <span className="text-faint">ⓘ</span>
+                  </Tip>
                 </span>
               )}
               {signal.algo_source === "settings" && " · 공식: 알고리즘 설정 기준"}</span>
