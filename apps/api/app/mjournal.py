@@ -42,6 +42,7 @@ class EntryIn(BaseModel):
     price: int = Field(gt=0)
     trade_date: date | None = None
     reason: str | None = Field(default=None, max_length=200)
+    symbol: str | None = Field(default=None, max_length=60)  # 생략 = 일지 기본 종목 (0015)
 
 
 @router.get("/mjournals")
@@ -72,26 +73,28 @@ def delete_journal(jid: int, user_id: int = Depends(current_user_id),
 
 
 def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
+    """종목별 FIFO (0015) — entry.symbol 이 없으면 일지 기본 종목으로 귀속."""
     fee, tax = float(j.fee_rate), float(j.tax_rate)
-    lots: list[dict] = []  # FIFO: {qty, price, date}
+    lots_by: dict[str, list[dict]] = {}
     rows: list[dict] = []
     total_buy = total_sell = total_cost = total_realized = 0
     for e in sorted(entries, key=lambda x: (x.trade_date, x.id)):
+        sym = (e.symbol or j.symbol).strip()
+        lots = lots_by.setdefault(sym, [])
         amount = e.qty * e.price
         if e.side == "buy":
             cost = round(amount * fee)
             lots.append({"qty": e.qty, "price": e.price, "date": e.trade_date})
             total_buy += amount
             total_cost += cost
-            rows.append({"id": e.id, "side": "buy", "buy_date": e.trade_date.isoformat(),
+            rows.append({"id": e.id, "symbol": sym, "side": "buy", "buy_date": e.trade_date.isoformat(),
                          "sell_date": None, "hold_days": None, "realized": None, "return_pct": None,
                          "price": e.price, "qty": e.qty, "cost": cost, "amount": amount,
                          "reason": e.reason})
         else:
             held = sum(l["qty"] for l in lots)
             if e.qty > held:
-                # 과거 오입력 정리 중에도 화면이 죽지 않게 — 행에 오류 표기
-                rows.append({"id": e.id, "side": "sell", "buy_date": None,
+                rows.append({"id": e.id, "symbol": sym, "side": "sell", "buy_date": None,
                              "sell_date": e.trade_date.isoformat(), "hold_days": None,
                              "realized": None, "return_pct": None, "price": e.price, "qty": e.qty,
                              "cost": None, "amount": amount, "reason": e.reason,
@@ -99,7 +102,7 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
                 continue
             remaining = e.qty
             matched_cost = 0
-            first_date: date | None = None
+            first_date = None
             for l in lots:
                 if remaining <= 0:
                     break
@@ -109,13 +112,13 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
                 matched_cost += take * l["price"]
                 l["qty"] -= take
                 remaining -= take
-            lots = [l for l in lots if l["qty"] > 0]
+            lots_by[sym] = [l for l in lots if l["qty"] > 0]
             cost = round(amount * (fee + tax))
             realized = amount - cost - matched_cost
             total_sell += amount
             total_cost += cost
             total_realized += realized
-            rows.append({"id": e.id, "side": "sell",
+            rows.append({"id": e.id, "symbol": sym, "side": "sell",
                          "buy_date": first_date.isoformat() if first_date else None,
                          "sell_date": e.trade_date.isoformat(),
                          "hold_days": (e.trade_date - first_date).days if first_date else None,
@@ -123,14 +126,19 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
                          "return_pct": (realized / matched_cost) if matched_cost > 0 else None,
                          "price": e.price, "qty": e.qty, "cost": cost, "amount": amount,
                          "reason": e.reason})
-    held_qty = sum(l["qty"] for l in lots)
-    held_cost = sum(l["qty"] * l["price"] for l in lots)
+    holdings = []
+    for sym, lots in lots_by.items():
+        q = sum(l["qty"] for l in lots)
+        if q > 0:
+            c = sum(l["qty"] * l["price"] for l in lots)
+            holdings.append({"symbol": sym, "qty": q, "avg_price": round(c / q), "cost": c})
+    holdings.sort(key=lambda h: -h["cost"])
+    symbols = sorted({(e.symbol or j.symbol).strip() for e in entries} | {j.symbol.strip()})
     return {
         "rows": list(reversed(rows)),  # 최신이 위
         "summary": {"realized": total_realized, "sell_amount": total_sell,
                     "buy_amount": total_buy, "cost": total_cost},
-        "holding": {"qty": held_qty,
-                    "avg_price": round(held_cost / held_qty) if held_qty else None},
+        "holdings": holdings, "symbols": symbols,
     }
 
 
@@ -156,10 +164,7 @@ def journals_overview(user_id: int = Depends(current_user_id),
                 by_date[r["sell_date"]] = cum  # 같은 날 다건은 마지막 누적값 (차트 시간축 유일성)
         series = [{"date": d, "value": v} for d, v in sorted(by_date.items())]
         items.append({"id": j.id, "name": j.name, "symbol": j.symbol,
-                      "holding_qty": c["holding"]["qty"],
-                      "holding_cost": (c["holding"]["qty"] * c["holding"]["avg_price"]
-                                       if c["holding"]["qty"] else 0),
-                      "avg_price": c["holding"]["avg_price"],
+                      "holdings": c["holdings"],
                       "realized": c["summary"]["realized"], "series": series})
     return {"items": items}
 
@@ -180,18 +185,19 @@ def add_entry(jid: int, body: EntryIn, user_id: int = Depends(current_user_id),
               session: Session = Depends(get_session)) -> dict:
     j = _owned(session, jid, user_id)
     d = body.trade_date or date.today()
+    sym = (body.symbol or j.symbol).strip()
     if body.side == "sell":
         entries = session.scalars(select(ManualJournalEntry)
                                   .where(ManualJournalEntry.journal_id == jid)).all()
         held = 0
         for e in entries:
-            if e.trade_date <= d:
+            if e.trade_date <= d and (e.symbol or j.symbol).strip() == sym:
                 held += e.qty if e.side == "buy" else -e.qty
         if body.qty > held:
             raise HTTPException(status_code=422,
-                                detail=f"매도 수량({body.qty})이 해당일 보유({max(held, 0)}주)를 초과합니다")
+                                detail=f"{sym} 매도 수량({body.qty})이 해당일 보유({max(held, 0)}주)를 초과합니다")
     session.add(ManualJournalEntry(journal_id=j.id, side=body.side, trade_date=d,
-                                   qty=body.qty, price=body.price,
+                                   qty=body.qty, price=body.price, symbol=sym,
                                    reason=(body.reason or "").strip() or None))
     session.commit()
     return {"saved": True}
