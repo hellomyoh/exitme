@@ -99,7 +99,7 @@ TOOLS = [
     _tool("list_backtests", "최근 백테스트(시뮬레이션) 목록과 KPI(총수익률·MDD·샤프 등).",
           {"limit": {"type": "integer", "description": "기본 10"}}),
     _tool("algorithm_params", "현재 알고리즘 변수 설정값(레지스트리) — 이름·현재값·기본값·범위·설명.", {}),
-    _tool("price_history", "종목 최근 일봉 시세 (원시가). code 예: 102110(TIGER 200), 069500(KODEX 200), 122630(레버), QQQ.",
+    _tool("price_history", "종목 일봉 시세(원주가) — 마지막 행이 최신 확정 종가. 장중 실시간 시세는 제공하지 않음(장 마감 후 배치로 당일 종가 적재). code 예: 102110(TIGER 200), 069500(KODEX 200), 122630(레버), QQQ.",
           {"code": {"type": "string"}, "days": {"type": "integer", "description": "기본 30"}}, ["code"]),
 ]
 
@@ -162,9 +162,11 @@ def _run_tool(name: str, args: dict, user_id: int) -> dict:
                                              OhlcvDaily.trade_date >= since)
                     .order_by(OhlcvDaily.trade_date)).scalars().all()
                 rows = rows[-int(args.get("days") or 30):]
+                # 원주가(raw) 그대로 — 실주문·주문표와 같은 기준 (수정주가는 차트 전용)
                 return {"code": inst.code, "name": inst.name, "market": inst.market,
-                        "items": [{"date": r.trade_date.isoformat(), "open": r.open, "high": r.high,
-                                   "low": r.low, "close": r.close, "volume": r.volume} for r in rows]}
+                        "note": "일봉 종가 기준 — 마지막 행이 최신 확정 종가(장중 실시간 아님)",
+                        "items": [{"date": r.trade_date.isoformat(), "open": r.open_raw, "high": r.high_raw,
+                                   "low": r.low_raw, "close": r.close_raw, "volume": r.volume} for r in rows]}
             return {"error": f"unknown tool {name}"}
         except HTTPException as e:  # 소유권·404 등 — 모델이 이해할 메시지로
             return {"error": str(e.detail)}
