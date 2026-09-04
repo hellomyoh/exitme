@@ -15,16 +15,10 @@ export function MarketFlag({ market, className = "" }: { market?: string | null;
         </>
       ) : (
         <>
+          {/* 국기 대신 태극 문양 원형 아이콘 — 소형 국기 도안이 국기로 안 읽히던 문제 (2026-09-05 지시) */}
           <rect width="16" height="11" fill="#fff" />
-          <path d="M8 2.6 A2.9 2.9 0 0 1 8 8.4 A1.45 1.45 0 0 1 8 5.5 A1.45 1.45 0 0 0 8 2.6 Z" fill="#cd2e3a" />
-          <path d="M8 8.4 A2.9 2.9 0 0 1 8 2.6 A1.45 1.45 0 0 1 8 5.5 A1.45 1.45 0 0 0 8 8.4 Z" fill="#0047a0" />
-          {/* 건곤감리 단순화 — 좌상·우하 3획 */}
-          {[0, 1, 2].map((i) => (
-            <g key={i} fill="#1a1a19">
-              <rect x={1.6} y={1.8 + i * 1.3} width="3" height="0.7" transform="rotate(-34 3 3)" />
-              <rect x={11.4} y={6.2 + i * 1.3} width="3" height="0.7" transform="rotate(-34 13 8)" />
-            </g>
-          ))}
+          <path d="M8 1 a4.5 4.5 0 0 1 0 9 a2.25 2.25 0 0 1 0 -4.5 a2.25 2.25 0 0 0 0 -4.5 Z" fill="#0047a0" />
+          <path d="M8 10 a4.5 4.5 0 0 1 0 -9 a2.25 2.25 0 0 1 0 4.5 a2.25 2.25 0 0 0 0 4.5 Z" fill="#cd2e3a" />
         </>
       )}
     </svg>
