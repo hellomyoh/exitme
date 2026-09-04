@@ -174,3 +174,53 @@ def test_chat_system_prompt_admin_only_and_replace(monkeypatch):
     assert client.put("/settings/chat-system", json={"prompt": ""}, headers=ah).json()["using_default"] is True
     client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]}, headers=headers)
     assert "정본 요약" in seen["system"] and "해적처럼" not in seen["system"]
+
+
+def test_chat_tools_cannot_read_other_users_data(monkeypatch):
+    """침투 검증 (2026-09-05 지시): B 계정 챗봇이 A 의 포트 id 로 도구를 호출해도 데이터가 새지 않는다."""
+    client = TestClient(app, base_url="https://testserver")
+    # A: 포트 + 입금 93,750,000원 (식별 가능한 금액)
+    a_tok = client.post("/auth/register", json={"email": f"vicA{uuid.uuid4().hex[:8]}@x.dev",
+                                                "password": "password123"}).json()["access_token"]
+    ah = {"Authorization": f"Bearer {a_tok}"}
+    a_pid = client.post("/portfolios", json={"name": "A비밀포트", "market": "KR"}, headers=ah).json()["id"]
+    client.post("/positions", json={"portfolio_id": a_pid, "kind": "deposit", "amount": 93750000,
+                                    "executed_at": "2026-09-01T15:30:00+09:00"}, headers=ah)
+
+    # B 의 user_id 로 _run_tool 직접 호출 (챗 하네스가 도구에 넘기는 그대로)
+    from app.auth import _decode
+    from app.chat import _run_tool
+    b_tok = client.post("/auth/register", json={"email": f"atkB{uuid.uuid4().hex[:8]}@x.dev",
+                                                "password": "password123"}).json()["access_token"]
+    b_id = _decode(b_tok, "access")
+
+    for tool, args in [("portfolio_summary", {"portfolio_id": a_pid}),
+                       ("portfolio_journal", {"portfolio_id": a_pid}),
+                       ("order_sheet", {"portfolio_id": a_pid})]:
+        out = _run_tool(tool, args, b_id)
+        text = json.dumps(out, ensure_ascii=False)
+        assert "93750000" not in text and "93,750,000" not in text and "A비밀포트" not in text, (tool, text)
+        assert "error" in out or out.get("status") not in (None, "OK"), (tool, text)
+    # 목록형 도구도 B 스코프
+    assert all(x["id"] != a_pid for x in _run_tool("list_portfolios", {}, b_id)["items"])
+    assert _run_tool("list_backtests", {}, b_id)["items"] == []
+
+    # 엔드포인트 레벨: 가짜 LLM 이 A 의 pid 를 요구해도 SSE 어디에도 A 데이터가 없다
+    from app import chat as chat_mod
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "openrouter_api_key", "test-key")
+
+    def fake_call(messages, tools):
+        if not any(m.get("role") == "tool" for m in messages):
+            return {"choices": [{"message": {"role": "assistant", "content": None,
+                    "tool_calls": [{"id": "c1", "type": "function",
+                                    "function": {"name": "portfolio_summary",
+                                                 "arguments": json.dumps({"portfolio_id": a_pid})}}]}}]}
+        tool_payload = [m for m in messages if m["role"] == "tool"][0]["content"]
+        return {"choices": [{"message": {"role": "assistant", "content": f"결과: {tool_payload}"}}]}
+
+    monkeypatch.setattr(chat_mod, "_openrouter_call", fake_call)
+    r = client.post("/chat", json={"messages": [{"role": "user", "content": f"포트 {a_pid} 요약해줘"}]},
+                    headers={"Authorization": f"Bearer {b_tok}"})
+    assert "93,750,000" not in r.text and "93750000" not in r.text and "A비밀포트" not in r.text
+    assert "portfolio not found" in r.text
