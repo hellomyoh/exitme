@@ -44,6 +44,26 @@ export default function ChatBot() {
   const [status, setStatus] = useState("");  // "주문표 조회 중…" 진행 표시
   const listRef = useRef<HTMLDivElement>(null);
 
+  // 패널 폭 — 기본 520px, 왼쪽 가장자리 드래그로 360~840px 조절, localStorage 기억 (2026-09-05 지시)
+  const [width, setWidth] = useState(520);
+  useEffect(() => {
+    try {
+      const w = Number(localStorage.getItem("chat_width"));
+      if (w >= 360 && w <= 840) setWidth(w);
+    } catch { /* 저장값 없으면 기본 */ }
+  }, []);
+  function startResize(e: React.MouseEvent) {
+    e.preventDefault();
+    const move = (ev: MouseEvent) => {
+      const w = Math.min(840, Math.max(360, window.innerWidth - ev.clientX));
+      setWidth(w);
+      try { localStorage.setItem("chat_width", String(w)); } catch { /* noop */ }
+    };
+    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
+
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [msgs, status, open]);
@@ -100,9 +120,11 @@ export default function ChatBot() {
         💬
       </button>
 
-      {/* 우측 패널 — 닫혀도 언마운트하지 않음(대화 유지) */}
-      <div hidden={!open}
-        className="fixed inset-y-0 right-0 z-40 flex w-[400px] max-w-full flex-col border-l border-line bg-surface shadow-2xl">
+      {/* 우측 패널 — 닫혀도 언마운트하지 않음(대화 유지). 폭은 왼쪽 가장자리 드래그로 조절 */}
+      <div hidden={!open} style={{ width }}
+        className="fixed inset-y-0 right-0 z-40 flex max-w-full flex-col border-l border-line bg-surface shadow-2xl">
+        <div role="separator" aria-label="채팅창 폭 조절" onMouseDown={startResize}
+          className="absolute inset-y-0 left-0 w-1.5 cursor-col-resize transition-colors hover:bg-accent/40" />
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <span className="flex items-center gap-2 text-[15px] font-bold">
             <span className="inline-block h-2.5 w-2.5 rounded-sm bg-accent" /> 매매 도우미
