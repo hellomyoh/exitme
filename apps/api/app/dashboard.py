@@ -192,6 +192,7 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
             "id": pfr.id, "name": pfr.name, "market": pfr.market,
             "equity": round(stock_v) + cash_v, "stock_value": round(stock_v), "cash": cash_v,
             "pnl": round(pnl), "pnl_pct": (pnl / cost_v) if cost_v > 0 else None,
+            "color": (pfr.params or {}).get("color"),  # 탭 배경색 — 도넛 조각과 색 언어 통일 (2026-09-05)
         })
     return {
         "total": snap.total, "stock": snap.stock, "cash": snap.cash, "other": snap.other,
