@@ -224,3 +224,24 @@ def test_chat_tools_cannot_read_other_users_data(monkeypatch):
                     headers={"Authorization": f"Bearer {b_tok}"})
     assert "93,750,000" not in r.text and "93750000" not in r.text and "A비밀포트" not in r.text
     assert "portfolio not found" in r.text
+
+
+def test_price_history_tool_success_path():
+    """price_history 성공 경로 — OhlcvDaily 컬럼명(raw) 회귀 방지 (2026-09-05 결함: AttributeError)."""
+    from datetime import date
+
+    from app.chat import _run_tool
+    from app.db import SessionLocal
+    from app.services.ingest import get_or_create_instrument, upsert_daily_bars
+
+    with SessionLocal() as s:
+        inst = get_or_create_instrument(s, "CHAT01", "챗 테스트 ETF", "KOSPI")
+        upsert_daily_bars(s, inst.id, [
+            {"trade_date": date(2026, 9, 3), "open": 100, "high": 110, "low": 95, "close": 105, "volume": 1000},
+            {"trade_date": date(2026, 9, 4), "open": 105, "high": 112, "low": 101, "close": 108, "volume": 1200},
+        ], source="pykrx")
+        s.commit()
+    out = _run_tool("price_history", {"code": "CHAT01", "days": 5}, 1)
+    assert "error" not in out, out
+    assert out["items"][-1] == {"date": "2026-09-04", "open": 105, "high": 112,
+                                "low": 101, "close": 108, "volume": 1200}
