@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import fields as dc_fields
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -99,6 +99,27 @@ def put_algo_settings(body: AlgoIn, user_id: int = Depends(current_user_id),
     row.algo_params = overrides
     session.commit()
     return {"saved": len(overrides), "overridden_keys": sorted(overrides)}
+
+
+# ── 챗봇 추가 지침 (2026-09-04 지시) — 내장 시스템 프롬프트 뒤에 덧붙음. 안전 규칙은 대체 불가.
+class ChatPromptIn(BaseModel):
+    prompt: str = Field(max_length=4000)
+
+
+@router.get("/settings/chat")
+def get_chat_settings(user_id: int = Depends(current_user_id),
+                      session: Session = Depends(get_session)) -> dict:
+    row = session.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
+    return {"prompt": (row.chat_prompt if row else "") or ""}
+
+
+@router.put("/settings/chat")
+def put_chat_settings(body: ChatPromptIn, user_id: int = Depends(current_user_id),
+                      session: Session = Depends(get_session)) -> dict:
+    row = _row(session, user_id)
+    row.chat_prompt = body.prompt.strip()
+    session.commit()
+    return {"saved": True, "length": len(row.chat_prompt)}
 
 
 @router.post("/settings/algorithm/reset")

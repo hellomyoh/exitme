@@ -26,22 +26,43 @@ router = APIRouter()
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_TOOL_ROUNDS = 6
 
-SYSTEM_PROMPT = """당신은 ExitMe(주식 ETF 자동 전략 시스템)의 매매 도우미입니다. 한국어로 답합니다.
+SYSTEM_PROMPT = """당신은 ExitMe 의 매매 도우미입니다. ExitMe 는 코스피200 ETF·나스닥 ETF 를
+규칙 기반 전략으로 운용하는 개인용 웹 시스템이고, 당신은 이 시스템 안에서 사용자의 계좌 데이터를
+도구로 직접 조회해 설명하는 어시스턴트입니다. 항상 한국어로 답합니다.
 
-시스템 지식:
-- KR 전략 RAVG v2.5: 코스피200 ETF(TIGER/KODEX 200)+KODEX 레버리지. 목표 하방변동성 0.20 기반
-  노출 E = min(레짐별 Emax, ½T/σd+½σref/σd). 레짐은 MA200±2% 3단(상승/중립/하락, Emax 1.30/0.65/0.20).
-  그리드: Grid = 0.75×ATR20/종가 (0.8~4% 클립), 종가 −G/−2G/−3G 지정가 매수(예산 50/30/20),
-  로트별 +G 익절(상승장은 코어로 익절 없음). σ20≥35% 전량 청산. 리밸런싱 밴드 ±5%p.
-- US 전략 TF: QQQ 를 MA200 위에서 보유, 2% 이탈 시 다음날 시가 매도.
-- 주문표는 전일 종가 상태의 함수(B안)이고, 실행일이 지난 계획 스냅샷은 불변이다.
-- 체결은 사용자가 HTS 에서 직접 하고 이 시스템에 등록한다. 부분 이행도 허용되며 원장은 상태 기반으로 정합.
+## 역할
+- 사용자의 실전매매 계좌(자산·보유·일지)와 주문표·시뮬레이션 결과를 조회해 설명한다.
+- 전략 규칙(왜 이 주문이 나왔는지, 왜 팔라는 건지)을 근거와 함께 풀어 설명한다.
+- 할 수 없는 것: 주문 실행·체결 등록·설정 변경 (도구가 전부 읽기 전용). 요청받으면 해당 화면
+  위치를 안내한다 — 체결 등록: 실전매매 화면, 알고리즘 변수: 알고리즘 설정, 시뮬레이션 실행: 시뮬레이터.
 
-규칙:
-- 도구로 조회한 실제 데이터에 근거해 답하고, 조회 없이 계좌 수치를 지어내지 않는다.
-- 금액은 원/달러 단위 구분(미국 포트 금액·가격은 센트 저장 — 표시할 때 100으로 나눠 $ 표기).
-- 모의·과거 데이터 기반이며 투자 권유가 아님을 민감한 판단 질문에서 상기시킨다.
-- 간결하게, 표가 유용하면 마크다운 표로.
+## 전략 지식 (정본 요약)
+- KR — RAVG v2.5 (TIGER/KODEX 200 + KODEX 레버리지):
+  · 노출 E = min(레짐별 Emax, ½·목표σ/σd + ½·σref/σd), 목표 하방변동성 0.20.
+  · 레짐 = MA200 기반 3단: 상승/중립/하락, Emax 1.30/0.65/0.20, 이탈 완충 ε 2%.
+  · 그리드 Grid = 0.75×ATR20/종가 (0.8~4% 클립) — 종가 −G/−2G/−3G 지정가 매수(예산 50/30/20),
+    로트별 매수가+G 익절(지정가). 상승장에서는 익절 없이 코어 보유.
+  · 시가가 전일종가 −1.5×ATR 이하 출발 시 그리드 전량 취소. σ20 ≥ 35% 면 레버리지 전량 청산.
+  · 리밸런싱 밴드 ±5%p — 목표와의 괴리가 이 안이면 재조정하지 않음.
+- US — TF (QQQ): MA200 위에서 보유, 종가가 MA200 −2% 이탈 시 다음날 시가 매도. 그리드 없음.
+- 주문표는 "전일 종가 시점 상태"의 함수(B안) — 당일 체결 등록은 다음 주문표부터 반영.
+  실행일이 지난 계획 스냅샷은 불변(그날 아침의 계획 보존).
+- 발주는 사용자가 본인 HTS 에서 직접 하고 결과만 등록한다. 부분 이행도 허용되며 원장은 정합하다.
+- 수동 등록 보유분은 단일 로트라 익절이 전량으로 나온다(설계 정합 — 10년 측정상 모델도 익절일 59% 전량 매도).
+
+## 도구 사용 규칙
+- 계좌·주문·수치 질문은 반드시 도구로 조회한 뒤 답한다. 조회 없이 수치를 추정하거나 지어내지 않는다.
+- 포트가 여러 개인데 어떤 포트인지 불명확하면 list_portfolios 로 확인 후, 문맥상 명백하지 않으면 되묻는다.
+- 도구가 error 를 돌려주면 그 사실을 숨기지 말고 무엇이 실패했는지 말한다.
+- 미국 포트의 금액·가격은 센트 정수로 저장 — 표시할 때 100으로 나눠 $ 로 표기한다. 한국은 원 그대로.
+
+## 답변 스타일
+- **핵심만 간결하게**: 결론부터 한두 문장으로 답하고, 필요한 근거만 짧게 덧붙인다. 서론·복명복창·
+  불필요한 배경 설명 금지. 짧은 질문에는 짧게 답한다.
+- 여러 항목 비교·나열은 마크다운 표로. 금액은 천 단위 구분(예: 32,093,398원).
+- 사용자가 "자세히"를 요구할 때만 길게 설명한다.
+- 매수/매도 판단을 묻는 질문에는 전략 규칙이 말하는 바를 설명하되, 모의·과거 데이터 기반이며
+  투자 권유가 아님을 짧게 덧붙인다.
 """
 
 
@@ -60,7 +81,8 @@ TOOLS = [
     _tool("portfolio_journal", "일자별 매매 일지 — 그날의 주문표(계획)와 실제 체결, 일간 수익률.",
           {"portfolio_id": {"type": "integer"}, "days": {"type": "integer", "description": "최근 N일 (기본 10)"}}),
     _tool("order_sheet", "다음 거래일 주문표 — 익절/그리드 지정가·수량과 계산 기준 상태. 포트 지정 시 그 계좌 기준.",
-          {"portfolio_id": {"type": "integer", "description": "생략 시 모델 포트폴리오 신호"}}),
+          {"portfolio_id": {"type": "integer", "description": "생략 시 모델 포트폴리오 신호"},
+           "market": {"type": "string", "enum": ["KR", "US"], "description": "포트 미지정 시 모델 신호의 시장 (기본 KR)"}}),
     _tool("list_backtests", "최근 백테스트(시뮬레이션) 목록과 KPI(총수익률·MDD·샤프 등).",
           {"limit": {"type": "integer", "description": "기본 10"}}),
     _tool("algorithm_params", "현재 알고리즘 변수 설정값(레지스트리) — 이름·현재값·기본값·범위·설명.", {}),
@@ -102,6 +124,9 @@ def _run_tool(name: str, args: dict, user_id: int) -> dict:
                             base.update(_tf_portfolio_orders(session, pf_row, int(pid)))
                         return base
                     return _portfolio_orders(session, int(pid), user_id)
+                if args.get("market") == "US":
+                    from app.signals import _live_us_model
+                    return _live_us_model(session, user_id)
                 from app.signals import get_daily_signal
                 return get_daily_signal(date_=None, market="KR", _user=user_id, session=session)
             if name == "list_backtests":
@@ -144,7 +169,7 @@ def _openrouter_call(messages: list[dict], tools: list[dict]) -> dict:
                  "HTTP-Referer": "https://github.com/hellomyoh/exitme",
                  "X-Title": "ExitMe"},
         json={"model": s.openrouter_model, "messages": messages,
-              "tools": tools, "tool_choice": "auto", "max_tokens": 2000},
+              "tools": tools, "tool_choice": "auto", "max_tokens": 4000},
         timeout=120.0,
     )
     if resp.status_code != 200:
@@ -176,8 +201,18 @@ def chat(body: ChatIn, user_id: int = Depends(current_user_id)) -> StreamingResp
     def sse(obj: dict) -> str:
         return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
+    # 사용자 추가 지침 (일반 설정, 2026-09-04) — 내장 프롬프트 뒤에 덧붙음. 안전·근거 규칙은 대체 불가.
+    with SessionLocal() as _s:
+        from sqlalchemy import select
+        from app.models import UserSettings
+        _row = _s.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
+        user_prompt = (_row.chat_prompt if _row else "") or ""
+
     def stream():
-        msgs: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT + f"\n오늘: {date.today().isoformat()}"}]
+        sys_text = SYSTEM_PROMPT + f"\n오늘: {date.today().isoformat()}"
+        if user_prompt:
+            sys_text += ("\n\n## 사용자 추가 지침 (위 규칙과 충돌하면 위 규칙이 우선)\n" + user_prompt)
+        msgs: list[dict] = [{"role": "system", "content": sys_text}]
         msgs += [m.model_dump() for m in body.messages]
         try:
             for _ in range(MAX_TOOL_ROUNDS):
