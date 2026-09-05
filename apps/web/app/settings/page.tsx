@@ -91,16 +91,49 @@ export default function SettingsPage() {
   }
 
   const forcePw = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("force_pw") === "1";
+  // 섹션 탭 (2026-09-05 지시) — 카드 세로 나열 대신 탭으로 분리, ?tab= 로 상태 공유
+  const TABS = [
+    { key: "account", label: "계정", desc: "비밀번호 · 세션" },
+    { key: "broker", label: "증권사 계좌", desc: "체결 자동 가져오기 연동" },
+    { key: "chat", label: "챗봇", desc: "매매 도우미 지침" },
+  ] as const;
+  type TabKey = (typeof TABS)[number]["key"];
+  const [tab, setTab] = useState<TabKey>("account");
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("tab") as TabKey | null;
+    if (q && TABS.some((t) => t.key === q)) setTab(q);
+    if (new URLSearchParams(window.location.search).get("force_pw") === "1") setTab("account");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  function goTab(k: TabKey) {
+    setTab(k);
+    const u = new URL(window.location.href);
+    u.searchParams.set("tab", k);
+    window.history.replaceState(null, "", u.toString());
+  }
+
   return (
     <main className="mx-auto max-w-4xl">
-      <PageTitle title="일반 설정" sub="계정·세션·챗봇 관리" />
+      <PageTitle title="일반 설정" sub="계정 · 증권사 연동 · 챗봇" />
       {forcePw && (
         <Callout icon="🔐">
           <b className="text-ink">첫 로그인입니다 — 비밀번호를 변경해야 다른 메뉴를 사용할 수 있습니다.</b>{" "}
           아래에서 현재(임시) 비밀번호와 새 비밀번호를 입력하세요.
         </Callout>
       )}
-      <div className="mb-4" />
+      {/* 탭 바 — 알약형, 활성은 흰 배경(사이드바·포트 탭과 동일 언어) */}
+      <div className="mb-5 flex flex-wrap gap-1.5 border-b border-line pb-3">
+        {TABS.map((t) => (
+          <button key={t.key} onClick={() => goTab(t.key)}
+            className={`rounded-lg border px-4 py-2 text-left transition-colors ${
+              tab === t.key ? "border-line bg-surface shadow-sm" : "border-transparent hover:bg-surface/60"}`}>
+            <span className={`block text-[14px] ${tab === t.key ? "font-semibold text-ink" : "text-muted"}`}>{t.label}</span>
+            <span className="block text-[11.5px] text-faint">{t.desc}</span>
+          </button>
+        ))}
+      </div>
+
+      {tab === "account" && (<>
       <Card className="mb-4">
         <CardTitle>비밀번호 변경</CardTitle>
         <div className="grid gap-3 sm:grid-cols-3">
@@ -124,6 +157,9 @@ export default function SettingsPage() {
         </p>
         <button className="btn" onClick={logout}>로그아웃</button>
       </Card>
+      </>)}
+
+      {tab === "chat" && (<>
       <Card className="mb-4">
         <CardTitle>챗봇 추가 지침</CardTitle>
         <p className="mb-2 text-[13.5px] leading-relaxed text-muted">
@@ -139,6 +175,9 @@ export default function SettingsPage() {
           {chatMsg && <span className="text-[13.5px] text-muted">{chatMsg}</span>}
         </div>
       </Card>
+      </>)}
+
+      {tab === "broker" && (
       <Card className="mb-4">
         <CardTitle right={
           <button className="text-[12.5px] font-normal normal-case text-accent"
@@ -247,7 +286,9 @@ export default function SettingsPage() {
         )}
       </Card>
 
-      {isAdmin && (
+      )}
+
+      {tab === "chat" && isAdmin && (
         <Card className="mb-4">
           <CardTitle right={<span className="text-[12px] font-normal normal-case text-faint">
             {sysUsingDefault ? "내장 기본 사용 중" : "⚠️ 교체본 사용 중 — 이후 전략 개정이 자동 반영되지 않음"}</span>}>
@@ -270,10 +311,12 @@ export default function SettingsPage() {
           </div>
         </Card>
       )}
+      {tab === "account" && (
       <Callout icon="ℹ️">
         아이디(이메일) 변경은 지원하지 않습니다 — 새 계정을 만들어 사용하세요.
         알고리즘 상수는 <Link href="/settings/algorithm" className="font-semibold text-accent">알고리즘 설정</Link>에서 변경합니다.
       </Callout>
+      )}
     </main>
   );
 }
