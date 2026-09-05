@@ -43,8 +43,31 @@ def _cred(session: Session, pid: int, user_id: int) -> BrokerCredential:
     return row
 
 
-def _mask(s: str) -> str:
-    return s[:4] + "****" + s[-2:] if len(s) > 8 else "****"
+# KIS 원문 오류 → 사용자가 바로 조치할 수 있는 안내 (2026-09-05)
+_ERROR_HINTS = [
+    ("INVALID_CHECK_ACNO", "계좌번호가 올바르지 않습니다 — 종합계좌 8자리와 상품코드(01·22 등)를 확인하세요"),
+    ("EGW00103", "앱키가 유효하지 않습니다 — KIS Developers 에서 발급한 값을 다시 확인하세요"),
+    ("EGW00133", "토큰 발급이 분당 1회로 제한됩니다 — 1분 뒤 다시 시도하세요"),
+    ("EGW00121", "앱시크릿이 올바르지 않습니다"),
+    ("모의", "모의투자 계좌는 환경을 '모의투자'로 선택해야 합니다"),
+]
+
+
+def humanize_kis_error(msg: str) -> str:
+    for key, hint in _ERROR_HINTS:
+        if key in msg:
+            return f"{hint} (원문: {msg[:80]})"
+    return msg
+
+
+def _mask(s: str, head: int = 4, tail: int = 2) -> str:
+    """중간 자릿수 마스킹 (2026-09-05 지시) — 앞뒤 일부만 남겨 어떤 값인지 식별 가능하게."""
+    if not s:
+        return ""
+    if len(s) <= head + tail:
+        return "*" * len(s)
+    hidden = min(max(len(s) - head - tail, 1), 8)  # 실제 가려진 길이(최대 8) — 원본보다 길어 보이지 않게
+    return f"{s[:head]}{'*' * hidden}{s[-tail:]}"
 
 
 def split_account(raw: str, prdt: str = "01") -> tuple[str, str]:
@@ -73,7 +96,9 @@ class AccountIn(BaseModel):
 def _acct_out(row: BrokerCredential, linked_names: list[str] | None = None) -> dict:
     return {"id": row.id, "label": row.label or f"{_mask(row.account_no)}",
             "env": row.env, "acnt_prdt_cd": row.acnt_prdt_cd,
-            "app_key": _mask(row.app_key), "account_no": _mask(row.account_no),
+            # 저장된 값은 항상 마스킹해서만 내보낸다 (수정 화면에서 현재 값 식별용)
+            "app_key": _mask(row.app_key), "app_secret": _mask(row.app_secret, 2, 2),
+            "account_no": _mask(row.account_no, 4, 2),
             "last_import_at": row.last_import_at.isoformat() if row.last_import_at else None,
             "linked_portfolios": linked_names or []}
 
@@ -157,10 +182,24 @@ def test_account(aid: int, user_id: int = Depends(current_user_id),
     if row is None or row.user_id != user_id:
         raise HTTPException(status_code=404, detail="account not found")
     auth = KisAuth(row.app_key, row.app_secret, row.env, wait_on_rate_limit=False)
+    client = KisTradingClient(auth, cano=row.account_no, acnt_prdt_cd=row.acnt_prdt_cd)
     try:
-        info = KisTradingClient(auth, cano=row.account_no, acnt_prdt_cd=row.acnt_prdt_cd).probe_balance()
+        info = client.probe_balance()
     except Exception as exc:  # noqa: BLE001 — 사유를 그대로 보여준다(잘못된 키·환경·계좌)
-        return {"ok": False, "message": str(exc)[:200]}
+        msg = humanize_kis_error(str(exc)[:200])
+        # 계좌(상품코드) 오류로 보이면 후보를 훑어 되는 코드를 제안한다 (2026-09-05)
+        suggest = None
+        if "ACNO" in msg or "계좌" in msg:
+            for cd in PRDT_CANDIDATES:
+                if cd == row.acnt_prdt_cd:
+                    continue
+                try:
+                    ok = client.probe_balance(prdt=cd)
+                except Exception:  # noqa: BLE001 — 후보 실패는 정상 흐름
+                    continue
+                suggest = {"acnt_prdt_cd": cd, "holdings": ok["holdings"], "deposit": ok["deposit"]}
+                break
+        return {"ok": False, "message": msg, "suggest": suggest}
     return {"ok": True, "holdings": info["holdings"], "deposit": info["deposit"],
             "total_eval": info["total_eval"]}
 
@@ -263,7 +302,7 @@ def probe_account(body: ProbeIn, _user: int = Depends(current_user_id)) -> dict:
                 break  # 자격 자체가 틀림 — 더 시도할 필요 없음
     if not found:
         raise HTTPException(status_code=502,
-                            detail="계좌 확인 실패 — " + (errors[0] if errors else "조회 결과 없음"))
+                            detail="계좌 확인 실패 — " + humanize_kis_error(errors[0] if errors else "조회 결과 없음"))
     return {"accounts": found, "tried": candidates, "errors": errors}
 
 
@@ -282,7 +321,7 @@ def import_fills(pid: int, days: int = 7, dry_run: bool = True,
         execs = _client(cred).fetch_executions(start, end)
     except Exception as exc:  # noqa: BLE001 — 자격 오류·유량 등 원인을 사용자에게 그대로 전달
         logger.warning("import-fills failed pid=%s: %s", pid, exc)
-        raise HTTPException(status_code=502, detail=f"증권사 조회 실패: {str(exc)[:200]}")
+        raise HTTPException(status_code=502, detail=f"증권사 조회 실패 — {humanize_kis_error(str(exc)[:200])}")
 
     known = {t.broker_ref for t in session.scalars(
         select(TradeTransaction).where(TradeTransaction.portfolio_id == pid,
