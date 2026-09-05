@@ -84,12 +84,22 @@ class KisClient:
                 params=params,
                 timeout=10,
             )
-            if resp.status_code >= 500 and attempt < _RETRIES:
-                delay = 1.0 * (2 ** attempt)
-                logger.warning("KIS %s -> %d, retrying in %.0fs (%d/%d)",
-                               path, resp.status_code, delay, attempt + 1, _RETRIES)
-                time.sleep(delay)
-                continue
+            if resp.status_code >= 500:
+                # KIS 는 자격·입력 오류도 500 으로 준다 — 본문에 유량(EGW00201) 외의 코드가 있으면
+                # 재시도해도 결과가 같으므로 즉시 사유를 알린다 (2026-09-05: EGW00304 를 15초 재시도하던 문제)
+                try:
+                    err = resp.json()
+                except ValueError:
+                    err = None
+                code = str((err or {}).get("msg_cd") or "").strip()
+                if code and code != "EGW00201":
+                    raise KisError(f"KIS error {code} {str((err or {}).get('msg1') or '').strip()}")
+                if attempt < _RETRIES:
+                    delay = 1.0 * (2 ** attempt)
+                    logger.warning("KIS %s -> %d, retrying in %.0fs (%d/%d)",
+                                   path, resp.status_code, delay, attempt + 1, _RETRIES)
+                    time.sleep(delay)
+                    continue
             resp.raise_for_status()
             body = resp.json()
             # KIS 공통: rt_cd == "0" 이 정상

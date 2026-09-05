@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
@@ -78,7 +79,13 @@ class KisAuth:
     # ── Redis 공유 토큰 캐시 — KIS는 토큰 발급을 분당 1회로 제한하므로(EGW00133/403)
     #    프로세스(api/worker/scheduler/run)간 토큰을 공유해야 한다 (NOTES.md).
     def _redis_key(self) -> str:
-        return f"kis:token:{self.env}:{self.app_key[:8]}"
+        """자격(키+시크릿) 전체를 해시해 캐시를 가른다 (2026-09-05).
+
+        앞 8자만 쓰던 이전 방식은 시크릿을 바꿔도 **옛 토큰을 계속 재사용**해,
+        헤더의 appsecret 과 토큰이 어긋난 채 EGW00304 로만 실패했다.
+        """
+        digest = hashlib.sha256(f"{self.app_key}:{self.app_secret}".encode()).hexdigest()[:16]
+        return f"kis:token:{self.env}:{digest}"
 
     def _redis(self):
         try:
