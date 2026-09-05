@@ -125,6 +125,3 @@ body {
     font-size: 16px !important;
   }
 }
-
-/* 자격 입력 (2026-09-05) — type=password 는 크롬이 로그인 비밀번호를 채워 넣어 text 로 두고 표시만 가린다 */
-.secret-text { -webkit-text-security: disc; }
