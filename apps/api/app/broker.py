@@ -112,6 +112,56 @@ def _client(cred: BrokerCredential):
     return KisTradingClient(auth, cano=cred.account_no, acnt_prdt_cd=cred.acnt_prdt_cd)
 
 
+class ProbeIn(BaseModel):
+    """계좌 확인 — 저장 전 자격·계좌 유효성 검사 (2026-09-05 지시).
+
+    KIS 는 앱키로 '계좌 목록'을 주는 API 가 없다(요청마다 CANO+상품코드 필수). 그래서 목록 대신
+    입력한 계좌를 실제 조회해 확인하고, 상품코드를 모르면 후보를 훑어 되는 것을 찾아 제시한다.
+    """
+
+    app_key: str = Field(min_length=10, max_length=200)
+    app_secret: str = Field(min_length=10, max_length=400)
+    account_no: str = Field(min_length=6, max_length=20)
+    acnt_prdt_cd: str | None = None      # None/빈값 = 후보 자동 탐색
+    env: str = Field(default="prod", pattern="^(prod|vps)$")
+
+
+# 상품코드 후보 — 01 종합위탁이 대부분, 나머지는 연금·ISA 등 (탐색 순서)
+PRDT_CANDIDATES = ["01", "22", "29", "03", "12"]
+
+
+@router.post("/broker/probe")
+def probe_account(body: ProbeIn, _user: int = Depends(current_user_id)) -> dict:
+    """입력한 자격으로 잔고를 조회해 계좌가 유효한지 확인한다(저장하지 않음).
+
+    상품코드 미지정 시 후보를 순차 시도하고, 성공한 계좌들을 목록으로 돌려준다 —
+    사용자는 그중 하나를 골라 저장하면 된다.
+    """
+    from app.services.kis_auth import KisAuth
+    from app.services.kis_client import KisTradingClient
+
+    cano, prdt = split_account(body.account_no, body.acnt_prdt_cd or "01")
+    if len(cano) != 8:
+        raise HTTPException(status_code=422, detail="계좌번호는 8자리(또는 12345678-01) 형식이어야 합니다")
+    candidates = [prdt] if body.acnt_prdt_cd else PRDT_CANDIDATES
+    auth = KisAuth(body.app_key.strip(), body.app_secret.strip(), body.env)
+    found, errors = [], []
+    for cd in candidates:
+        try:
+            info = KisTradingClient(auth, cano=cano, acnt_prdt_cd=cd).probe_balance()
+            found.append({"account_no": cano, "acnt_prdt_cd": cd,
+                          "label": f"{cano}-{cd}", "holdings": info["holdings"],
+                          "deposit": info["deposit"], "total_eval": info["total_eval"]})
+        except Exception as exc:  # noqa: BLE001 — 후보 실패는 정상 흐름(다음 후보 시도)
+            errors.append(f"{cd}: {str(exc)[:120]}")
+            if "EGW00" in str(exc) or "인증" in str(exc) or "401" in str(exc):
+                break  # 자격 자체가 틀림 — 더 시도할 필요 없음
+    if not found:
+        raise HTTPException(status_code=502,
+                            detail="계좌 확인 실패 — " + (errors[0] if errors else "조회 결과 없음"))
+    return {"accounts": found, "tried": candidates, "errors": errors}
+
+
 @router.post("/portfolio/{pid}/import-fills")
 def import_fills(pid: int, days: int = 7, dry_run: bool = True,
                  user_id: int = Depends(current_user_id),

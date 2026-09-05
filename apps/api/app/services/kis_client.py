@@ -265,6 +265,21 @@ class KisTradingClient(KisClient):
         self.cano = cano
         self.acnt_prdt_cd = acnt_prdt_cd
 
+    def probe_balance(self, prdt: str | None = None) -> dict:
+        """잔고 1회 조회 — 자격·계좌 유효성 확인용. 실패 시 KisError 를 그대로 올린다."""
+        env = self.auth.env if self.auth.env in ("prod", "vps") else "prod"
+        body = self._get(BALANCE_PATH, BALANCE_TR[env],
+                         _balance_probe_params(self.cano, prdt or self.acnt_prdt_cd))
+        holdings = [r for r in (body.get("output1") or []) if _to_int(_first(r, "hldg_qty")) > 0]
+        summary = (body.get("output2") or [{}])
+        summary = summary[0] if isinstance(summary, list) and summary else {}
+        return {
+            "ok": True,
+            "holdings": len(holdings),
+            "deposit": _to_int(_first(summary, "dnca_tot_amt", "prvs_rcdl_excc_amt")),
+            "total_eval": _to_int(_first(summary, "tot_evlu_amt", "evlu_amt_smtl_amt")),
+        }
+
     def fetch_executions(self, start: date, end: date, only_filled: bool = True) -> list[Execution]:
         """[start, end] 주문·체결 내역. 연속조회(CTX) 페이지를 끝까지 따라간다."""
         env = self.auth.env if self.auth.env in ("prod", "vps") else "prod"
@@ -291,3 +306,14 @@ class KisTradingClient(KisClient):
                 break
             fk, nk = (body.get("ctx_area_fk100") or "").strip(), nk_next
         return out
+
+
+# ── 잔고 조회 (연결 확인·계좌 탐색용, 2026-09-05) ──────────────────────────────
+BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
+BALANCE_TR = {"prod": "TTTC8434R", "vps": "VTTC8434R"}
+
+
+def _balance_probe_params(cano: str, prdt: str) -> dict[str, str]:
+    return {"CANO": cano, "ACNT_PRDT_CD": prdt, "AFHR_FLPR_YN": "N", "INQR_DVSN": "02",
+            "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
+            "PRCS_DVSN": "00", "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""}
