@@ -32,7 +32,8 @@ const OV_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#0083
  *  좌: 종목별 보유 비중 도넛(전 일지 합산, 취득원가 기준 — 시세 미연동 명시),
  *  우: 일지별 누적 실현손익 라인. */
 function Overview({ items }: { items: OverviewItem[] }) {
-  const [tip, setTip] = useState<{ x: number; y: number; html: string } | null>(null);
+  const [tip, setTip] = useState<{ x: number; y: number; title: string; color: string;
+    rows: { label: string; value: string; tone?: "up" | "down" }[] } | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
   const api = useRef<IChartApi | null>(null);
   // 종목별 보유 합산 (전 일지)
@@ -102,8 +103,14 @@ function Overview({ items }: { items: OverviewItem[] }) {
                   onMouseMove={(e) => {
                     const box = (e.currentTarget.ownerSVGElement!.closest(".card") as HTMLElement).getBoundingClientRect();
                     const pct = h.matched > 0 ? h.realized / h.matched : null;  // 실현 수익률 (매도분 원가 대비)
-                    setTip({ x: e.clientX - box.left + 10, y: e.clientY - box.top + 10,
-                             html: `${h.symbol}\n${h.qty.toLocaleString()}주 · 원가 ${fm(h.cost)} (${(frac * 100).toFixed(1)}%)\n실현 수익률 ${pct != null ? `${pct >= 0 ? "+" : ""}${(pct * 100).toFixed(1)}%` : "— (매도 없음)"}` });
+                    setTip({ x: e.clientX - box.left + 12, y: e.clientY - box.top + 12,
+                             title: h.symbol, color: symColor(h.symbol),
+                             rows: [
+                               { label: "보유", value: `${h.qty.toLocaleString()}주` },
+                               { label: "원가 · 비중", value: `${fm(h.cost)} · ${(frac * 100).toFixed(1)}%` },
+                               { label: "실현 수익률", value: pct != null ? `${pct >= 0 ? "+" : ""}${(pct * 100).toFixed(1)}%` : "— (매도 없음)",
+                                 tone: pct == null ? undefined : pct >= 0 ? "up" : "down" },
+                             ] });
                   }}
                   onMouseLeave={() => setTip(null)} />
               ))}
@@ -137,8 +144,20 @@ function Overview({ items }: { items: OverviewItem[] }) {
         </div>
       </div>
       {tip && (
-        <div className="pointer-events-none absolute z-20 whitespace-pre rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12.5px] leading-relaxed shadow-lg"
-          style={{ left: tip.x, top: tip.y }}>{tip.html}</div>
+        <div className="pointer-events-none absolute z-20 min-w-44 rounded-xl border border-line bg-surface shadow-lg"
+          style={{ left: tip.x, top: tip.y }}>
+          <div className="flex items-center gap-1.5 border-b border-line px-3 py-2 text-[13px] font-bold">
+            <i className="h-2.5 w-2.5 rounded-sm" style={{ background: tip.color }} />{tip.title}
+          </div>
+          <div className="grid gap-1 px-3 py-2 text-[12.5px]">
+            {tip.rows.map((r, i) => (
+              <div key={i} className="flex justify-between gap-4">
+                <span className="text-faint">{r.label}</span>
+                <b className={r.tone === "up" ? "text-up" : r.tone === "down" ? "text-down" : "text-ink"}>{r.value}</b>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </Card>
   );
@@ -259,8 +278,9 @@ function MJournalPage() {
         </Card>
       )}
 
-      {detail === null ? (
-        !showNew && <EmptyState icon="📒" title="매매일지가 없습니다"
+      {/* 생성 폼이 열린 동안은 기존 일지 본문을 숨김 — 새 일지 내용처럼 오해 방지 (2026-09-05 지시) */}
+      {showNew ? null : detail === null ? (
+        <EmptyState icon="📒" title="매매일지가 없습니다"
           desc="'＋ 새 매매일지'로 종목·증권사·요율을 등록하면, 이후에는 종목·수량·단가만 입력하면 됩니다." />
       ) : (
         <>
