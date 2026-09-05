@@ -7,6 +7,27 @@ import { useRouter } from "next/navigation";
 import { apiFetch, fetchMe, logout as apiLogout } from "../../lib/api";
 import { Callout, Card, CardTitle, PageTitle } from "../../components/ui";
 
+/** 증권사 자격 입력 (2026-09-05 지시) — 저장값을 중간 마스킹으로 필드 안에 보여주고 브라우저 자동완성을 막는다.
+ *
+ *  type="password" 를 쓰자 크롬이 이 사이트의 로그인 아이디/비밀번호를 앱키/시크릿에 채워 넣었고(스샷: myoh / ●●●●●●●●●),
+ *  그 9자 비밀번호가 시크릿으로 저장돼 계좌 조회가 실패했다. 그래서 text 로 두고 표시만 CSS 로 가린다(.secret-text).
+ *  비어 있고 포커스가 없을 때는 저장값(마스킹)을 회색으로 보여주고, 포커스하면 새 값을 입력받는다. */
+function CredentialInput({ name, value, onChange, stored, secret = false, placeholder = "" }: {
+  name: string; value: string; onChange: (v: string) => void; stored?: string; secret?: boolean; placeholder?: string;
+}) {
+  const [focus, setFocus] = useState(false);
+  const showStored = !focus && value === "" && !!stored;
+  return (
+    <input type="text" name={name} autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+      data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
+      className={`input w-full min-w-0 ${showStored ? "text-faint" : secret ? "secret-text" : ""}`}
+      value={showStored ? stored : value}
+      placeholder={showStored ? "" : placeholder}
+      onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
+      onChange={(e) => onChange(e.target.value)} />
+  );
+}
+
 export default function SettingsPage() {
   const router = useRouter();
   const [cur, setCur] = useState("");
@@ -264,14 +285,18 @@ export default function SettingsPage() {
               <input className="input w-full min-w-0" placeholder="예: 한투 메인" value={af.label}
                 onChange={(e) => setAf({ ...af, label: e.target.value })} /></label>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">계좌번호 (앞 8자리)
-              <input className="input w-full min-w-0" placeholder={editId === null ? "12345678" : `현재 ${curAcct?.account_no ?? ""} — 변경할 때만 입력`} value={af.account_no}
-                onChange={(e) => setAf({ ...af, account_no: e.target.value })} /></label>
+              <CredentialInput name="kis-account-no" value={af.account_no}
+                onChange={(v) => setAf({ ...af, account_no: v })}
+                stored={curAcct ? `${curAcct.account_no}-${curAcct.acnt_prdt_cd}` : undefined}
+                placeholder={editId === null ? "12345678" : "새 계좌번호 (비우면 유지)"} /></label>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱키(App Key)
-              <input className="input w-full min-w-0" placeholder={editId === null ? "" : `현재 ${curAcct?.app_key ?? ""} — 변경할 때만 입력`} value={af.app_key}
-                onChange={(e) => setAf({ ...af, app_key: e.target.value })} /></label>
+              <CredentialInput name="kis-app-key" value={af.app_key}
+                onChange={(v) => setAf({ ...af, app_key: v })} stored={curAcct?.app_key}
+                placeholder={editId === null ? "KIS Developers 앱키 36자" : "새 앱키 (비우면 유지)"} /></label>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱시크릿(App Secret)
-              <input type="password" className="input w-full min-w-0" placeholder={editId === null ? "" : `현재 ${curAcct?.app_secret ?? ""} — 변경할 때만 입력`} value={af.app_secret}
-                onChange={(e) => setAf({ ...af, app_secret: e.target.value })} /></label>
+              <CredentialInput name="kis-app-secret" secret value={af.app_secret}
+                onChange={(v) => setAf({ ...af, app_secret: v })} stored={curAcct?.app_secret}
+                placeholder={editId === null ? "KIS Developers 앱시크릿 180자" : "새 시크릿 (비우면 유지)"} /></label>
             <div className="grid grid-cols-2 gap-3">
               <label className="grid min-w-0 gap-1 text-[13px] text-faint">환경
                 <select className="input w-full min-w-0" value={af.env}
