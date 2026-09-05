@@ -166,14 +166,15 @@ def test_chat_system_prompt_admin_only_and_replace(monkeypatch):
     client.put("/settings/chat", json={"prompt": "존댓말로."}, headers=headers)
     client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]}, headers=headers)
     sys_text = seen["system"]
-    assert "해적처럼" in sys_text and "정본 요약" not in sys_text     # 본문 교체됨
-    assert "시스템 계약" in sys_text and "읽기 전용" in sys_text      # 코어 계약 유지
-    assert "존댓말로." in sys_text                                     # 추가 지침 유지
+    assert "해적처럼" in sys_text and "당신은 ExitMe" not in sys_text  # 본문 교체됨
+    assert "시스템 계약" in sys_text and "읽기 전용" in sys_text       # 코어 계약 유지
+    assert "존댓말로." in sys_text                                      # 추가 지침 유지
+    assert "공개 제한" in sys_text                                      # 일반 사용자 제한 계약 (2026-09-05)
 
-    # 초기화(빈 값) → 기본 복귀
+    # 초기화(빈 값) → 기본 복귀 — 일반 사용자는 개념 설명본(상세 수식 없음)
     assert client.put("/settings/chat-system", json={"prompt": ""}, headers=ah).json()["using_default"] is True
     client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]}, headers=headers)
-    assert "정본 요약" in seen["system"] and "해적처럼" not in seen["system"]
+    assert "핵심 개념" in seen["system"] and "해적처럼" not in seen["system"]
 
 
 def test_chat_tools_cannot_read_other_users_data(monkeypatch):
@@ -245,3 +246,35 @@ def test_price_history_tool_success_path():
     assert "error" not in out, out
     assert out["items"][-1] == {"date": "2026-09-04", "open": 105, "high": 112,
                                 "low": 101, "close": 108, "volume": 1200}
+
+
+
+def test_chat_role_split_prompts_and_param_tool(monkeypatch):
+    """권한 분리 (2026-09-05): 관리자 = 전략 상세, 일반 = 개념+제한 계약·파라미터 도구 차단."""
+    client, headers = _authed_client()  # 일반 사용자
+    from app import chat as chat_mod
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "openrouter_api_key", "test-key")
+
+    seen = {}
+
+    def fake_call(messages, tools):
+        seen["system"] = messages[0]["content"]
+        seen["tools"] = [t["function"]["name"] for t in tools]
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    monkeypatch.setattr(chat_mod, "_openrouter_call", fake_call)
+    client.post("/chat", json={"messages": [{"role": "user", "content": "공식 알려줘"}]}, headers=headers)
+    # 일반: 상세 수식·계수 없음 + 제한 계약 + 파라미터 도구 미노출
+    assert "공개 제한" in seen["system"] and "핵심 개념" in seen["system"]
+    for secret in ["0.75", "0.8~4%", "50/30/20", "정본 요약", "Emax 1.30"]:
+        assert secret not in seen["system"], secret
+    assert "algorithm_params" not in seen["tools"]
+    assert "error" in chat_mod._run_tool("algorithm_params", {}, 1, is_admin=False)
+
+    # 관리자: 상세 포함·제한 없음·도구 전체
+    admin_tok = client.post("/auth/login", json={"email": "myoh", "password": "anrndghk!"}).json()["access_token"]
+    client.post("/chat", json={"messages": [{"role": "user", "content": "공식 알려줘"}]},
+                headers={"Authorization": f"Bearer {admin_tok}"})
+    assert "정본 요약" in seen["system"] and "공개 제한" not in seen["system"]
+    assert "algorithm_params" in seen["tools"]
