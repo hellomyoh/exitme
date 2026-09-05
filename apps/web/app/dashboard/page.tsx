@@ -83,10 +83,13 @@ function AccountDonut({ row, fmt }: { row: PortRow; fmt: (v: number) => string }
 }
 type Dash = { portfolios?: PortRow[]; total_trend?: number[]; kr_trend?: number[]; us_trend?: number[]; 
   total: number; stock: number; cash: number; other: number;
+  trading_total?: number; journal?: number; journals?: JournalAsset[];   // 주식 거래 자산 / 매매일지 자산 분리 (2026-09-05)
   change_amount: number; change_pct: number | null; since_inception_pct: number | null;
   kr_stock: Breakdown; us_stock: Breakdown;  // us_stock 값 단위: 센트
   manual_assets: { id: number; name: string; category: string; value: number }[];
 };
+type JournalAsset = { id: number; name: string; symbol: string; cost: number; realized: number; return_pct: number | null;
+  holdings: { symbol: string; qty: number; cost: number }[]; entries: number; counted: boolean; note: string | null };
 type TrendSeries = { portfolio_id: number; name: string; market: string; currency: string;
   points: { date: string; equity: number }[] };
 type Signal = { status: string; regime?: string; e_target?: number; w_200?: number; w_lev?: number };
@@ -172,8 +175,13 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 자산 구성 도넛 — 주식 · 현금 · 매매일지(취득원가) · 기타 (2026-09-05: 매매일지 분리)
+  const jv = dash?.journal ?? 0;
   const donut = dash && dash.total > 0
-    ? `conic-gradient(var(--color-accent) 0 ${(dash.stock / dash.total) * 360}deg, var(--color-down) ${(dash.stock / dash.total) * 360}deg ${((dash.stock + dash.cash) / dash.total) * 360}deg, #7c3aed ${((dash.stock + dash.cash) / dash.total) * 360}deg 360deg)`
+    ? (() => {
+        const a1 = (dash.stock / dash.total) * 360, a2 = a1 + (dash.cash / dash.total) * 360, a3 = a2 + (jv / dash.total) * 360;
+        return `conic-gradient(var(--color-accent) 0 ${a1}deg, var(--color-down) ${a1}deg ${a2}deg, #0891b2 ${a2}deg ${a3}deg, #7c3aed ${a3}deg 360deg)`;
+      })()
     : "var(--color-raised)";
   const ct = pnlTone(dash?.change_amount ?? 0);
 
@@ -192,6 +200,14 @@ export default function DashboardPage() {
                 {dash.change_amount >= 0 ? "▲" : "▼"} 전일 {fmtWon(Math.abs(dash.change_amount))} ({fmtPct(dash.change_pct, 2)})
               </span>
               <span className="text-faint">전체 {fmtPct(dash.since_inception_pct, 2)}</span>
+            </div>
+          )}
+          {dash && (
+            <div className="mt-1 flex flex-wrap gap-x-3 text-[12.5px] text-muted">
+              {/* 주식 거래 자산과 매매일지 자산 분리 표기 (2026-09-05 지시) */}
+              <span>실전매매 <b className="text-ink">{fmtWon(dash.trading_total ?? dash.stock + dash.cash)}</b></span>
+              <span>매매일지 <b className="text-ink">{fmtWon(dash.journal ?? 0)}</b></span>
+              {dash.other > 0 && <span>기타 <b className="text-ink">{fmtWon(dash.other)}</b></span>}
             </div>
           )}
           <Spark data={dash?.total_trend} />
@@ -271,6 +287,7 @@ export default function DashboardPage() {
             <div className="grid gap-2 text-[14.5px]">
               <span><i className="mr-2 inline-block h-2 w-2 rounded-full bg-accent" />주식 <b>{dash ? fmtWon(dash.stock) : "—"}</b></span>
               <span><i className="mr-2 inline-block h-2 w-2 rounded-full bg-down" />현금 <b>{dash ? fmtWon(dash.cash) : "—"}</b></span>
+              <span><i className="mr-2 inline-block h-2 w-2 rounded-full" style={{ background: "#0891b2" }} />매매일지 <b>{dash ? fmtWon(dash.journal ?? 0) : "—"}</b> <span className="text-[11.5px] text-faint">취득원가</span></span>
               <span><i className="mr-2 inline-block h-2 w-2 rounded-full" style={{ background: "#7c3aed" }} />기타 <b>{dash ? fmtWon(dash.other) : "—"}</b></span>
             </div>
           </div>
@@ -325,6 +342,45 @@ export default function DashboardPage() {
                         </tr>
                       );
                     })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
+
+        {/* 매매일지 자산 — 진행 중 일지만, 취득원가 기준. 청산 일지는 표시하지 않음 (2026-09-05 지시) */}
+        {(dash?.journals?.length ?? 0) > 0 && (
+          <Card className="md:col-span-6">
+            <CardTitle>매매일지 자산 <span className="normal-case text-faint">· 진행 중 일지 — 보유는 취득원가(시세 미연동), 이름 클릭 시 해당 일지로</span></CardTitle>
+            <div className="overflow-x-auto">
+              <table className="w-full whitespace-nowrap text-[14px]">
+                <thead><tr className="border-b border-line text-left text-[12px] text-faint">
+                  <th className="pb-2 pr-2 font-medium">#</th>
+                  <th className="pb-2 font-medium">일지</th>
+                  <th className="pb-2 text-right font-medium">보유 원가</th>
+                  <th className="pb-2 text-right font-medium">실현손익</th>
+                  <th className="pb-2 pl-6 font-medium">총자산 포함</th>
+                </tr></thead>
+                <tbody>
+                  {(dash!.journals ?? []).slice().sort((a, b) => b.cost - a.cost).map((j, i) => (
+                    <tr key={j.id} className="border-b border-line/50 last:border-0">
+                      <td className="py-2.5 pr-2 text-faint">{i + 1}</td>
+                      <td className="py-2.5">
+                        <Link href={`/mjournal?jid=${j.id}`} className="font-semibold underline-offset-2 hover:text-accent hover:underline">{j.name}</Link>
+                        <div className="text-[12px] text-faint">
+                          {j.holdings.length > 0 ? j.holdings.map((h) => `${h.symbol} ${h.qty.toLocaleString()}주`).join(" · ") : `보유 없음 · 기록 ${j.entries}건`}
+                        </div>
+                      </td>
+                      <td className="table-num py-2.5 font-bold">{fmtWon(j.cost)}</td>
+                      <td className={`table-num py-2.5 font-semibold ${j.realized > 0 ? "text-up" : j.realized < 0 ? "text-down" : "text-faint"}`}>
+                        {j.realized !== 0 ? `${j.realized >= 0 ? "+" : ""}${fmtWon(j.realized)}` : "—"}
+                        {j.return_pct != null && j.realized !== 0 && ` (${(j.return_pct * 100).toFixed(1)}%)`}
+                      </td>
+                      <td className="py-2.5 pl-6 text-[12.5px]">
+                        {j.counted ? <span className="text-ok">포함</span> : <span className="text-faint" title={j.note ?? ""}>제외 — {j.note}</span>}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>

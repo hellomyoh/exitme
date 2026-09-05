@@ -118,13 +118,17 @@ def compute_user_snapshot(session: Session, user_id: int, snap_date: date) -> As
 
     other = sum(m.value for m in session.scalars(
         select(ManualAsset).where(ManualAsset.user_id == user_id)).all())
+    # 매매일지 자산 (0020, 2026-09-05 지시) — 진행 중 일지의 보유 취득원가 합. 실전매매와 같은 계좌면 제외(중복 방지)
+    from app.mjournal import journal_assets
+
+    journal = sum(ja["cost"] for ja in journal_assets(session, user_id) if ja["counted"])
     snap = session.scalar(select(AssetSnapshot).where(
         AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date == snap_date))
     if snap is None:
         snap = AssetSnapshot(user_id=user_id, snap_date=snap_date, total=0, stock=0, cash=0, other=0)
         session.add(snap)
-    snap.stock, snap.cash, snap.other = kr_stock, kr_cash, other
-    snap.total = kr_stock + kr_cash + other  # 불변식: Σ(KRW 포트 equity) + other == total
+    snap.stock, snap.cash, snap.other, snap.journal = kr_stock, kr_cash, other, journal
+    snap.total = kr_stock + kr_cash + other + journal  # 불변식: Σ(KRW 포트 equity) + other + journal == total
     session.flush()
     return snap
 
@@ -247,8 +251,15 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
         AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date >= since)
         .order_by(AssetSnapshot.snap_date)).all()
     total_by_date = [s_.total for s_ in totals]
+    from app.mjournal import journal_assets
+
+    journals = journal_assets(session, user_id)
     return {
         "total": snap.total, "stock": snap.stock, "cash": snap.cash, "other": snap.other,
+        # 주식 거래 자산(실전매매 KRW 주식+현금)과 매매일지 종합 자산을 분리 표기 (2026-09-05 지시)
+        "trading_total": snap.stock + snap.cash,
+        "journal": snap.journal or 0,
+        "journals": journals,
         "portfolios": port_rows,
         "total_trend": total_by_date,
         "kr_trend": [v for _d, v in sorted(kr_by_date.items())],

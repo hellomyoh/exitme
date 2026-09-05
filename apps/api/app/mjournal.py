@@ -60,7 +60,8 @@ def list_journals(user_id: int = Depends(current_user_id),
                   session: Session = Depends(get_session)) -> dict:
     rows = session.scalars(select(ManualJournal).where(ManualJournal.user_id == user_id)
                            .order_by(ManualJournal.id)).all()
-    return {"items": [{"id": r.id, "name": r.name, "symbol": r.symbol, "broker": r.broker} for r in rows]}
+    return {"items": [{"id": r.id, "name": r.name, "symbol": r.symbol, "broker": r.broker,
+                       "closed_at": r.closed_at.isoformat() if r.closed_at else None} for r in rows]}
 
 
 @router.post("/mjournals", status_code=201)
@@ -177,6 +178,7 @@ def get_journal(jid: int, user_id: int = Depends(current_user_id),
     return {"id": j.id, "name": j.name, "symbol": j.symbol, "broker": j.broker,
             "fee_rate": float(j.fee_rate), "tax_rate": float(j.tax_rate),
             "linked_account": _linked_out(session, j),
+            "closed_at": j.closed_at.isoformat() if j.closed_at else None,
             **_compute(j, entries)}
 
 
@@ -184,6 +186,8 @@ def get_journal(jid: int, user_id: int = Depends(current_user_id),
 def add_entry(jid: int, body: EntryIn, user_id: int = Depends(current_user_id),
               session: Session = Depends(get_session)) -> dict:
     j = _owned(session, jid, user_id)
+    if j.closed_at is not None:
+        raise HTTPException(status_code=409, detail="청산된 일지입니다 — 기록을 추가하려면 먼저 '다시 열기'를 하세요")
     d = body.trade_date or date.today()
     sym = (body.symbol or j.symbol).strip()
     if body.side == "sell":
@@ -360,3 +364,56 @@ def import_journal_fills_for(session: Session, j: ManualJournal, cred: BrokerCre
     return {"range": [start.isoformat(), end.isoformat()], "dry_run": dry_run,
             "fetched": len(execs), "added": added, "skipped": skipped,
             "new_symbols": sorted(new_syms), "items": items}
+
+
+# ── 청산 (0020, 2026-09-05 지시) ───────────────────────────────────────────────────
+# 전량 매도했거나 더 이상 거래하지 않는 일지는 청산으로 표시한다. 기록은 보존되고 조회 가능하지만
+# 새 기록을 받지 않으며 대시보드(매매일지 자산·총자산)에서 빠진다. 되돌리기 = 다시 열기.
+
+
+@router.post("/mjournals/{jid}/close")
+def close_journal(jid: int, user_id: int = Depends(current_user_id),
+                  session: Session = Depends(get_session)) -> dict:
+    j = _owned(session, jid, user_id)
+    entries = session.scalars(select(ManualJournalEntry).where(ManualJournalEntry.journal_id == jid)).all()
+    held = _compute(j, entries)["holdings"]
+    j.closed_at = datetime.now(KST)
+    session.commit()
+    return {"closed_at": j.closed_at.isoformat(),
+            "warning": (f"보유 잔여 {len(held)}종목이 남아 있습니다 — 실제로 전량 매도했다면 매도 기록을 먼저 넣는 것이 정확합니다"
+                        if held else None)}
+
+
+@router.post("/mjournals/{jid}/reopen")
+def reopen_journal(jid: int, user_id: int = Depends(current_user_id),
+                   session: Session = Depends(get_session)) -> dict:
+    j = _owned(session, jid, user_id)
+    j.closed_at = None
+    session.commit()
+    return {"closed_at": None}
+
+
+def journal_assets(session: Session, user_id: int) -> list[dict]:
+    """대시보드용 매매일지 자산 (2026-09-05 지시 ②) — 진행 중 일지만, 보유는 **취득원가** 평가(시세 미연동).
+
+    같은 증권사 계좌가 실전매매 포트에도 연결돼 있으면 두 번 세지 않도록 counted=False 로 표시만 한다.
+    """
+    from app.models import TradePortfolio
+
+    linked_by_ports = {p.broker_credential_id for p in session.scalars(
+        select(TradePortfolio).where(TradePortfolio.user_id == user_id,
+                                     TradePortfolio.broker_credential_id.is_not(None))).all()}
+    out = []
+    for j in session.scalars(select(ManualJournal).where(ManualJournal.user_id == user_id,
+                                                         ManualJournal.closed_at.is_(None))
+                             .order_by(ManualJournal.id)).all():
+        entries = session.scalars(select(ManualJournalEntry).where(ManualJournalEntry.journal_id == j.id)).all()
+        c = _compute(j, entries)
+        cost = sum(h["cost"] for h in c["holdings"])
+        dup = j.broker_credential_id is not None and j.broker_credential_id in linked_by_ports
+        out.append({"id": j.id, "name": j.name, "symbol": j.symbol, "cost": cost,
+                    "realized": c["summary"]["realized"], "return_pct": c["summary"]["return_pct"],
+                    "holdings": [{"symbol": h["symbol"], "qty": h["qty"], "cost": h["cost"]} for h in c["holdings"]],
+                    "entries": len(entries), "counted": not dup,
+                    "note": "실전매매 포트와 같은 증권사 계좌 — 총자산에는 실전매매 쪽만 포함" if dup else None})
+    return out

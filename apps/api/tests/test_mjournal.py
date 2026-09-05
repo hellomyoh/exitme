@@ -171,3 +171,88 @@ def test_journal_broker_link_and_import(monkeypatch):
     c.put(f"/mjournals/{jid}/broker", json={"credential_id": None}, headers=h)   # 해제
     assert c.get(f"/mjournals/{jid}/broker", headers=h).json()["linked"] is False
     assert c.post(f"/mjournals/{jid}/import-fills", headers=h).status_code == 409
+
+
+
+def test_journal_close_reopen_and_dashboard_assets():
+    """청산(0020): 청산 일지는 기록 추가 409·대시보드 매매일지 자산·총자산에서 제외, 다시 열기로 복구.
+    대시보드는 주식 거래 자산(trading_total)과 매매일지 자산(journal)을 분리해 내려준다."""
+    c, h = _client()
+    a = c.post("/mjournals", json={"name": "연금", "symbol": "kodex 200", "fee_rate": 0.0, "tax_rate": 0.0}, headers=h).json()["id"]
+    b = c.post("/mjournals", json={"name": "정리끝", "symbol": "tiger 200", "fee_rate": 0.0, "tax_rate": 0.0}, headers=h).json()["id"]
+    c.post(f"/mjournals/{a}/entries", json={"side": "buy", "qty": 10, "price": 100000, "trade_date": "2026-01-02"}, headers=h)
+    c.post(f"/mjournals/{b}/entries", json={"side": "buy", "qty": 5, "price": 50000, "trade_date": "2026-01-02"}, headers=h)
+    c.post(f"/mjournals/{b}/entries", json={"side": "sell", "qty": 5, "price": 60000, "trade_date": "2026-01-03"}, headers=h)
+
+    d = c.get("/dashboard", headers=h).json()
+    assert d["journal"] == 1_000_000 and d["trading_total"] == d["stock"] + d["cash"]
+    assert d["total"] == d["stock"] + d["cash"] + d["other"] + d["journal"]
+    assert {j["name"] for j in d["journals"]} == {"연금", "정리끝"}
+    done = next(j for j in d["journals"] if j["name"] == "정리끝")
+    assert done["cost"] == 0 and done["realized"] == 50_000 and done["counted"] is True
+
+    # 청산 → 대시보드에서 사라짐, 기록 추가 거절, 목록/상세에 closed_at
+    r = c.post(f"/mjournals/{b}/close", headers=h).json()
+    assert r["closed_at"] and r["warning"] is None            # 보유 없음 → 경고 없음
+    assert c.post(f"/mjournals/{b}/entries", json={"side": "buy", "qty": 1, "price": 1}, headers=h).status_code == 409
+    d2 = c.get("/dashboard", headers=h).json()
+    assert {j["name"] for j in d2["journals"]} == {"연금"} and d2["journal"] == 1_000_000
+    assert next(i for i in c.get("/mjournals", headers=h).json()["items"] if i["id"] == b)["closed_at"]
+    assert c.get(f"/mjournals/{b}", headers=h).json()["closed_at"]
+    # 보유가 남은 일지를 청산하면 경고 문구
+    assert "보유 잔여" in (c.post(f"/mjournals/{a}/close", headers=h).json()["warning"] or "")
+    assert c.get("/dashboard", headers=h).json()["journal"] == 0
+    # 다시 열기
+    assert c.post(f"/mjournals/{a}/reopen", headers=h).json()["closed_at"] is None
+    assert c.get("/dashboard", headers=h).json()["journal"] == 1_000_000
+    assert c.post(f"/mjournals/{a}/entries", json={"side": "buy", "qty": 1, "price": 1000}, headers=h).status_code == 201
+
+
+def test_journal_same_account_as_portfolio_not_double_counted():
+    """같은 증권사 계좌가 실전매매 포트에도 연결돼 있으면 매매일지 자산은 총자산에 넣지 않는다(counted=False)."""
+    c, h = _client()
+    acct = c.post("/broker/accounts", json={"label": "연금", "app_key": "PS" + "k" * 34, "app_secret": "S" * 180,
+                                            "account_no": "10040029-22"}, headers=h).json()
+    pid = c.post("/portfolios", json={"name": "연금 포트"}, headers=h).json()["id"]
+    c.put(f"/portfolio/{pid}/broker", json={"credential_id": acct["id"]}, headers=h)
+    jid = c.post("/mjournals", json={"name": "연금 일지", "symbol": "kodex 200", "fee_rate": 0.0, "tax_rate": 0.0}, headers=h).json()["id"]
+    c.put(f"/mjournals/{jid}/broker", json={"credential_id": acct["id"]}, headers=h)
+    c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 2, "price": 100000, "trade_date": "2026-01-02"}, headers=h)
+    d = c.get("/dashboard", headers=h).json()
+    j = next(x for x in d["journals"] if x["id"] == jid)
+    assert j["counted"] is False and "같은 증권사 계좌" in j["note"] and j["cost"] == 200_000
+    assert d["journal"] == 0  # 표시는 하되 총자산에는 미포함
+
+
+def test_reset_assets_wipes_everything_but_account():
+    """계정 자산 전체 초기화 (2026-09-05 지시): 포트·일지·기타 자산·스냅샷 삭제, 아이디 확인 불일치는 400, 계좌·자격은 유지."""
+    import uuid as _u
+
+    c = TestClient(app, base_url="https://testserver")
+    email = f"rs{_u.uuid4().hex[:8]}@x.dev"
+    tok = c.post("/auth/register", json={"email": email, "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    pid = c.post("/portfolios", json={"name": "포트"}, headers=h).json()["id"]
+    c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 1_000_000,
+                               "executed_at": "2026-01-02T10:00:00+09:00"}, headers=h)
+    jid = c.post("/mjournals", json={"name": "일지", "symbol": "x"}, headers=h).json()["id"]
+    c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 1, "price": 1000}, headers=h)
+    acct = c.post("/broker/accounts", json={"label": "계좌", "app_key": "PS" + "k" * 34, "app_secret": "S" * 180,
+                                            "account_no": "12345678-01"}, headers=h).json()
+    c.put(f"/portfolio/{pid}/broker", json={"credential_id": acct["id"]}, headers=h)
+    assert c.get("/dashboard", headers=h).status_code == 200  # 스냅샷 생성
+
+    assert c.post("/account/reset-assets", json={"confirm": "wrong"}, headers=h).status_code == 400
+    assert c.post("/account/reset-assets", json={"confirm": email, "scopes": []}, headers=h).status_code == 422
+    out = c.post("/account/reset-assets", json={"confirm": email}, headers=h).json()
+    assert out["reset"] is True and out["deleted"]["portfolios"] >= 1 and out["deleted"]["journals"] == 1
+    assert out["deleted"]["snapshots"] >= 1
+    assert c.get("/portfolios", headers=h).json()["items"] == []
+    assert c.get("/mjournals", headers=h).json()["items"] == []
+    assert c.get(f"/portfolio/summary?portfolio_id={pid}", headers=h).status_code == 404
+    # 계정·증권사 계좌 자격은 남는다
+    assert c.get("/auth/me", headers=h).status_code == 200
+    assert len(c.get("/broker/accounts", headers=h).json()["items"]) == 1
+    # 이후 대시보드는 빈 상태로 다시 시작
+    d = c.get("/dashboard", headers=h).json()
+    assert d["total"] == 0 and d["journals"] == [] and (d.get("portfolios") or []) == []
