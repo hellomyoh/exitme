@@ -54,6 +54,7 @@ export default function SettingsPage() {
   const [af, setAf] = useState({ label: "", app_key: "", app_secret: "", account_no: "", acnt_prdt_cd: "01", env: "prod" });
   const [acctOpen, setAcctOpen] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);   // null = 신규 등록
+  const [testRes, setTestRes] = useState<Record<number, { ok: boolean; message?: string; holdings?: number; deposit?: number }>>({});
   const [probe, setProbe] = useState<ProbeAcct[] | null>(null);
   const [acctMsg, setAcctMsg] = useState("");
   const loadAccts = useCallback(() => {
@@ -206,7 +207,21 @@ export default function SettingsPage() {
                 <span className="text-faint">
                   {a.linked_portfolios.length > 0 ? `연결: ${a.linked_portfolios.join(", ")}` : "연결된 포트 없음"}
                 </span>
-                <button className="ml-auto text-[12.5px] text-accent transition-colors hover:underline"
+                {testRes[a.id] && (
+                  <span className={`text-[12.5px] ${testRes[a.id].ok ? "text-ok" : "text-up"}`}>
+                    {testRes[a.id].ok
+                      ? `✓ 정상 (보유 ${testRes[a.id].holdings}종목 · 예수금 ${(testRes[a.id].deposit ?? 0).toLocaleString()}원)`
+                      : `✗ ${testRes[a.id].message}`}
+                  </span>
+                )}
+                <button className="ml-auto text-[12.5px] text-muted transition-colors hover:text-ink"
+                  onClick={() => void (async () => {
+                    setTestRes({ ...testRes, [a.id]: { ok: false, message: "확인 중…" } });
+                    const r = await apiFetch(`/broker/accounts/${a.id}/test`, { method: "POST" });
+                    const j = r.ok ? await r.json() : { ok: false, message: `요청 실패 (${r.status})` };
+                    setTestRes((prev) => ({ ...prev, [a.id]: j }));
+                  })()}>연결 확인</button>
+                <button className="text-[12.5px] text-accent transition-colors hover:underline"
                   onClick={() => {
                     setEditId(a.id); setAcctOpen(true); setProbe(null); setAcctMsg("");
                     // 키는 비워 둔다 — 저장 시 비어 있으면 기존 키 유지
