@@ -41,6 +41,19 @@ docker compose run --rm api python -m scripts.seed --years 10
 `docker compose restart` 는 **이미지를 다시 만들지 않습니다.** 운영 구성(`-f docker-compose.prod.yml`)은 소스를 이미지에
 넣어 실행하므로 `git pull` 뒤 반드시 `--build` 로 다시 만들고, 그다음 마이그레이션을 적용합니다.
 
+**권장: 배포 스크립트** — 태그(버전)를 인자로 받아 체크아웃 → 재빌드 → 마이그레이션 → 헬스 검증까지 한 번에 합니다.
+
+```bash
+scripts/deploy.sh v0.1.1            # 태그 v0.1.1 로 패치 배포
+scripts/deploy.sh v0.1.1 --prune    # 배포 후 안 쓰는 이미지 정리
+scripts/deploy.sh main              # main 최신으로 (검증용)
+```
+
+마지막에 `✓ version v0.1.1 · ✓ build_time … · ✓ db 0019` 가 나오면 반영 완료이고, ✗ 가 있으면 사유와 함께 실패로 끝납니다.
+추적 파일에 로컬 변경이 있으면 덮어쓰지 않고 중단합니다(`.env` 같은 미추적 파일은 무관).
+
+수동으로 할 때는 아래 순서입니다.
+
 ```bash
 git pull origin main
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build   # api/worker/scheduler/web 재빌드
