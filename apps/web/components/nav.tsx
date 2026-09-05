@@ -19,7 +19,6 @@ const GROUPS: Group[] = [
   ]},
   // 시장은 메뉴가 아니라 본문 스위치로 — 서브메뉴는 기능 3종만 (2026-09-05 지시)
   { title: "주식 실전 매매", items: [
-    { href: "/signals", label: "주문표", reset: true },
     { href: "/simulator", label: "시뮬레이터", reset: true },
     { href: "/portfolio", label: "실전매매", reset: true },
   ]},

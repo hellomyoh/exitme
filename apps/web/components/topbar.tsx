@@ -12,7 +12,6 @@ type Target = { label: string; href: string; market?: "KR" | "US"; kind: "메뉴
 const MENU_TARGETS: Target[] = [
   { label: "대시보드", href: "/dashboard", kind: "메뉴" },
   { label: "차트", href: "/chart", kind: "메뉴" },
-  { label: "주문표", href: "/signals", kind: "메뉴" },
   { label: "시뮬레이터", href: "/simulator", kind: "메뉴" },
   { label: "실전매매", href: "/portfolio", kind: "메뉴" },
   { label: "일반 설정", href: "/settings", kind: "메뉴" },
