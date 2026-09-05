@@ -24,7 +24,7 @@ const GROUPS: Group[] = [
   ]},
   { title: "⚙️ 설정", items: [
     { href: "/settings", label: "일반 설정" },
-    { href: "/settings/algorithm", label: "알고리즘 설정" },
+    { href: "/settings/algorithm", label: "알고리즘 설정", adminOnly: true },  // 일반 계정에서는 삭제 (2026-09-05 지시)
     { href: "/settings/accounts", label: "계정 관리", adminOnly: true },
   ]},
 ];

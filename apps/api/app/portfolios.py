@@ -651,11 +651,14 @@ def portfolio_equity(portfolio_id: int | None = None,
     items = []
     index = 100.0
     prev_v = 0.0
+    cum_flow = 0.0  # 누적 순입금 — 손익 추이(평가액 − 납입 원금) 용 (2026-09-05 지시: 순손익 카드 미니 그래프)
     for d, v, f in daily:
         denom = prev_v + f  # 기시흐름 규약 — twr() 와 동일 (검증 H-1)
         if denom > 0:
             index *= v / denom
-        items.append({"date": d.isoformat(), "equity": round(v), "index": round(index, 4)})
+        cum_flow += f
+        items.append({"date": d.isoformat(), "equity": round(v), "index": round(index, 4),
+                      "pnl": round(v - cum_flow)})
         prev_v = v
     return {"portfolio_id": pf.id, "items": items}
 

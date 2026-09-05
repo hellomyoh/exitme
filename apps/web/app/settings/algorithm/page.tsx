@@ -3,7 +3,7 @@
 /** 알고리즘 설정 — 전략 상수 오버라이드: 롤오버 도움말 + 기본값(수정 불가 표시) + 초기화 (2026-08-31 지시). */
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiFetch, ensureSession } from "../../../lib/api";
+import { apiFetch, ensureSession, fetchMe } from "../../../lib/api";
 import { Callout, Card, CardTitle, PageTitle, Tip } from "../../../components/ui";
 
 type Item = {
@@ -28,7 +28,13 @@ export default function AlgoSettingsPage() {
   }
 
   useEffect(() => {
-    void ensureSession().then((ok) => { if (!ok) { router.push("/login"); return; } void load(); });
+    // 관리자 전용 (2026-09-05 지시: 일반 계정에서 알고리즘 설정 삭제) — 직접 URL 진입도 일반 설정으로 돌려보낸다
+    void ensureSession().then(async (ok) => {
+      if (!ok) { router.push("/login"); return; }
+      const me = await fetchMe();
+      if (!me?.is_admin) { router.replace("/settings"); return; }
+      void load();
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 

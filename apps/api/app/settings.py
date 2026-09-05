@@ -82,7 +82,7 @@ class AlgoIn(BaseModel):
 
 
 @router.put("/settings/algorithm")
-def put_algo_settings(body: AlgoIn, user_id: int = Depends(current_user_id),
+def put_algo_settings(body: AlgoIn, _admin=Depends(require_admin), user_id: int = Depends(current_user_id),
                       session: Session = Depends(get_session)) -> dict:
     bounds = {k: (lo, hi) for k, _l, _h, lo, hi, ed, _g in PARAM_REGISTRY if ed}
     overrides: dict = {}
@@ -160,7 +160,7 @@ def put_chat_settings(body: ChatPromptIn, user_id: int = Depends(current_user_id
 
 
 @router.post("/settings/algorithm/reset")
-def reset_algo_settings(user_id: int = Depends(current_user_id),
+def reset_algo_settings(_admin=Depends(require_admin), user_id: int = Depends(current_user_id),
                         session: Session = Depends(get_session)) -> dict:
     row = _row(session, user_id)
     row.algo_params = {}

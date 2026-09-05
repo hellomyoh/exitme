@@ -432,13 +432,33 @@ def test_us_portfolio_market_separation():
     assert r.status_code == 409
 
 
+
+
+def _promote_admin(email: str) -> None:
+    """테스트용: 방금 가입한 계정을 관리자로 (알고리즘 설정 쓰기는 관리자 전용, 2026-09-05 지시)."""
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import User
+
+    with SessionLocal() as s:
+        u = s.scalar(select(User).where(User.email == email))
+        u.is_admin = True
+        s.commit()
+
+
 def test_algo_settings_roundtrip():
-    """알고리즘 설정: 조회·저장(범위 검증)·초기화 + 잡 파라미터 스냅샷."""
+    """알고리즘 설정: 조회·저장(범위 검증)·초기화 + 잡 파라미터 스냅샷. 쓰기는 관리자 전용(일반 계정 403)."""
     client = TestClient(app, base_url="https://testserver")
     import uuid as _u
-    token = client.post("/auth/register", json={"email": f"st{_u.uuid4().hex[:8]}@stocklab.dev",
-                                                "password": "password123"}).json()["access_token"]
+    email = f"st{_u.uuid4().hex[:8]}@stocklab.dev"
+    token = client.post("/auth/register", json={"email": email, "password": "password123"}).json()["access_token"]
     h = {"Authorization": f"Bearer {token}"}
+    # 일반 계정: 조회는 되지만 저장·초기화는 403 (2026-09-05 지시: 일반 계정에서 알고리즘 설정 삭제)
+    assert client.get("/settings/algorithm", headers=h).status_code == 200
+    assert client.put("/settings/algorithm", json={"values": {"emax_neutral": 0.7}}, headers=h).status_code == 403
+    assert client.post("/settings/algorithm/reset", headers=h).status_code == 403
+    _promote_admin(email)
     body = client.get("/settings/algorithm", headers=h).json()
     assert any(i["key"] == "regime_buffer" and i["editable"] for i in body["items"])
     assert any(i["key"] == "tick" and not i["editable"] for i in body["items"])

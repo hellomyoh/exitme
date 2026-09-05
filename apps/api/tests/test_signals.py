@@ -240,9 +240,11 @@ def test_per_portfolio_frozen_formula_isolation():
             pytest.skip("synthetic data insufficient")
 
     client = TestClient(app, base_url="https://testserver")
-    token = client.post("/auth/register", json={"email": f"iso{uuid.uuid4().hex[:8]}@x.dev",
-                                                "password": "password123"}).json()["access_token"]
+    email = f"iso{uuid.uuid4().hex[:8]}@x.dev"
+    token = client.post("/auth/register", json={"email": email, "password": "password123"}).json()["access_token"]
     h = {"Authorization": f"Bearer {token}"}
+    from tests.test_portfolios import _promote_admin
+    _promote_admin(email)  # 알고리즘 설정 변경은 관리자 전용 (2026-09-05)
     now = "2025-07-01T10:00:00+09:00"
 
     def mk_port(name):
