@@ -62,6 +62,36 @@ function BrokerImport({ detail, accts, onChanged }: { detail: Detail; accts: Acc
   }
   const pending = res?.dry_run ? res.items.filter((i) => i.status === "등록 예정").length : 0;
   const linked = detail.linked_account;
+  // 잔고 기준 기초 보유 등록 (2026-09-05) — 체결 기간 이전에 산 보유분(예: 삼성전자 11주)을 잔고로 대조해 부족분만 넣는다
+  type Hold = { code: string; name: string; qty: number; avg_price: number; buy_amount: number; price: number; eval_amount: number;
+    symbol: string; match: string; journal_qty: number; diff: number };
+  const [hold, setHold] = useState<{ date: string; items: Hold[]; note: string } | null>(null);
+  const [holdSel, setHoldSel] = useState<Set<string>>(new Set());
+  const [holdDate, setHoldDate] = useState(new Date().toISOString().slice(0, 10));
+  const [holdMsg, setHoldMsg] = useState("");
+  useEffect(() => { setHold(null); setHoldMsg(""); }, [detail.id]);
+  async function loadHoldings() {
+    setBusy(true); setErr(""); setHoldMsg("");
+    const r = await apiFetch(`/mjournals/${detail.id}/broker-holdings`);
+    const body = (await r.json().catch(() => ({}))) as { date: string; items: Hold[]; note: string; detail?: string };
+    setBusy(false);
+    if (!r.ok) { setErr(body.detail ?? `잔고 조회 실패 (${r.status})`); return; }
+    setHold(body);
+    setHoldSel(new Set(body.items.filter((i) => i.diff > 0).map((i) => i.code)));
+  }
+  const holdPending = (hold?.items ?? []).filter((i) => i.diff > 0 && holdSel.has(i.code));
+  async function importHoldings() {
+    if (holdPending.length === 0) return;
+    setBusy(true); setErr("");
+    const r = await apiFetch(`/mjournals/${detail.id}/import-holdings`, { method: "POST", body: JSON.stringify({
+      trade_date: holdDate, items: holdPending.map((i) => ({ code: i.code, name: i.name, qty: i.diff, price: i.avg_price })) }) });
+    const body = (await r.json().catch(() => ({}))) as { added?: number; skipped?: number; detail?: string };
+    setBusy(false);
+    if (!r.ok) { setErr(body.detail ?? `등록 실패 (${r.status})`); return; }
+    setHoldMsg(`기초 보유 ${body.added ?? 0}건 등록${(body.skipped ?? 0) > 0 ? ` · ${body.skipped}건은 같은 날 이미 등록` : ""}`);
+    onChanged();
+    void loadHoldings();
+  }
   return (
     <Card className="mb-4">
       <CardTitle>증권사 체결 가져오기 <span className="normal-case text-faint">
@@ -97,7 +127,7 @@ function BrokerImport({ detail, accts, onChanged }: { detail: Detail; accts: Acc
             {res.new_symbols.length > 0 && <> · 새 종목: <b className="text-ink">{res.new_symbols.join(", ")}</b></>}
           </p>
           {res.items.length === 0 ? (
-            <p className="mt-1 text-[13.5px] text-faint">이 기간에 체결이 없습니다.</p>
+            <p className="mt-1 text-[13.5px] text-faint">이 기간에 체결이 없습니다 — 그 전에 산 보유분은 아래 &quot;현재 잔고로 기초 보유 등록&quot;을 쓰세요.</p>
           ) : (
             <div className="mt-2 overflow-x-auto">
               <table className="w-full whitespace-nowrap text-[13px]">
@@ -122,6 +152,68 @@ function BrokerImport({ detail, accts, onChanged }: { detail: Detail; accts: Acc
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+        </div>
+      )}
+      {linked && (
+        <div className="mt-4 border-t border-line pt-3">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="mr-2">
+              <div className="text-[13px] font-semibold text-muted">현재 잔고로 기초 보유 등록</div>
+              <div className="text-[12px] text-faint">체결 가져오기 기간 <b className="text-ink">이전에 산 보유분</b>은 여기서 잔고 기준으로 넣습니다 — 계좌 평단·등록일 기준 매수 1건(근사)</div>
+            </div>
+            <label className="grid gap-1 text-[12.5px] text-faint">등록일
+              <input type="date" className="input !py-2" value={holdDate} onChange={(e) => setHoldDate(e.target.value)} /></label>
+            <button className="btn !py-2" disabled={busy} onClick={() => void loadHoldings()}>{busy ? "조회 중…" : "잔고 조회"}</button>
+            <button className="btn btn-primary !py-2" disabled={busy || holdPending.length === 0}
+              title={!hold ? "먼저 잔고를 조회하세요" : holdPending.length === 0 ? "등록할 부족분이 없습니다" : ""}
+              onClick={() => void importHoldings()}>선택 등록{holdPending.length > 0 ? ` (${holdPending.length}건)` : ""}</button>
+            {holdMsg && <span className="text-[13px] text-muted">{holdMsg}</span>}
+          </div>
+          {hold && (
+            <div className="mt-2 overflow-x-auto">
+              {hold.items.length === 0 ? (
+                <p className="text-[13.5px] text-faint">이 계좌에 보유 종목이 없습니다.</p>
+              ) : (
+                <table className="w-full whitespace-nowrap text-[13px]">
+                  <thead><tr className="border-b border-line text-left text-[12px] text-faint">
+                    <th className="pb-1.5 pr-1 font-medium">
+                      <input type="checkbox" className="h-4 w-4" disabled={!hold.items.some((i) => i.diff > 0)}
+                        checked={hold.items.filter((i) => i.diff > 0).every((i) => holdSel.has(i.code)) && hold.items.some((i) => i.diff > 0)}
+                        onChange={(e) => setHoldSel(e.target.checked ? new Set(hold.items.filter((i) => i.diff > 0).map((i) => i.code)) : new Set())} />
+                    </th>
+                    <th className="pb-1.5 font-medium">종목 (일지 기준)</th>
+                    <th className="pb-1.5 text-right font-medium">계좌 보유</th>
+                    <th className="pb-1.5 text-right font-medium">일지 보유</th>
+                    <th className="pb-1.5 text-right font-medium">등록 수량</th>
+                    <th className="pb-1.5 text-right font-medium">계좌 평단</th>
+                    <th className="pb-1.5 text-right font-medium">현재가</th>
+                    <th className="pb-1.5 pl-3 font-medium">상태</th>
+                  </tr></thead>
+                  <tbody>
+                    {hold.items.map((i) => (
+                      <tr key={i.code} className={`border-b border-line/50 last:border-0 ${i.diff === 0 ? "text-faint" : ""}`}>
+                        <td className="py-1.5 pr-1">
+                          {i.diff > 0 ? (
+                            <input type="checkbox" className="h-4 w-4" checked={holdSel.has(i.code)}
+                              onChange={() => setHoldSel((prev) => { const n = new Set(prev); if (n.has(i.code)) n.delete(i.code); else n.add(i.code); return n; })} />
+                          ) : <span className="inline-block h-4 w-4 text-center text-[12px]">✓</span>}
+                        </td>
+                        <td className="py-1.5 font-semibold">{i.symbol}
+                          {i.match !== "코드" && <span className="ml-1 text-[11.5px] font-normal text-faint">← {i.name} ({i.code}){i.match === "새 종목" ? " · 새 종목" : ""}</span>}</td>
+                        <td className="table-num py-1.5">{i.qty.toLocaleString()}주</td>
+                        <td className="table-num py-1.5">{i.journal_qty.toLocaleString()}주</td>
+                        <td className="table-num py-1.5 font-bold">{i.diff > 0 ? `+${i.diff.toLocaleString()}주` : "—"}</td>
+                        <td className="table-num py-1.5">{i.avg_price.toLocaleString()}</td>
+                        <td className="table-num py-1.5">{i.price.toLocaleString()}</td>
+                        <td className="py-1.5 pl-3 text-[12.5px]">{i.diff > 0 ? "일지에 부족 — 등록 대상" : i.journal_qty > i.qty ? `일지가 ${(i.journal_qty - i.qty).toLocaleString()}주 더 많음` : "일치"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <p className="mt-1.5 text-[12px] text-faint">{hold.note}</p>
             </div>
           )}
         </div>
