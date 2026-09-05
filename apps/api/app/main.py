@@ -94,8 +94,19 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 @app.get("/health")
 def health(session: Session = Depends(get_session)) -> dict:
+    """상태 + **배포 확인용 버전 정보** (2026-09-05 지시: 원격 반영 여부를 바로 판별).
+
+    version = 빌드 시 넘긴 APP_VERSION(`git describe --tags`), db_revision = 현재 alembic 리비전.
+    """
+    import os
+
     session.execute(text("SELECT 1"))
-    return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
+    try:
+        rev = session.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    except Exception:  # noqa: BLE001 — 마이그레이션 전이면 테이블이 없다
+        rev = None
+    return {"status": "ok", "time": datetime.now(timezone.utc).isoformat(),
+            "version": os.environ.get("APP_VERSION") or "dev", "db_revision": rev}
 
 
 @app.get("/instruments")

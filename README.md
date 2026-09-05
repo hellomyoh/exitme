@@ -36,6 +36,23 @@ docker compose up -d   # 전체 기동 (7서비스, healthcheck 순서 기동)
 docker compose run --rm api python -m scripts.seed --years 10
 ```
 
+## 업데이트 (원격 서버에 새 버전 반영)
+
+`docker compose restart` 는 **이미지를 다시 만들지 않습니다.** 운영 구성(`-f docker-compose.prod.yml`)은 소스를 이미지에
+넣어 실행하므로 `git pull` 뒤 반드시 `--build` 로 다시 만들고, 그다음 마이그레이션을 적용합니다.
+
+```bash
+git pull origin main
+APP_VERSION=$(git describe --tags --always) \
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build   # api/worker/scheduler/web 재빌드
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api alembic upgrade head   # 새 이미지 안에서 마이그레이션
+curl -s http://localhost:12010/api/health   # {"status":"ok","version":"v0.1.0","db_revision":"0019"} 이면 반영 완료
+```
+
+개발 구성(override 기본 적용, 소스 bind mount)에서는 `git pull` 후 `docker compose exec api alembic upgrade head` 와
+`docker compose restart api worker scheduler web` 만으로 반영됩니다. 반영 여부는 화면 왼쪽 아래의 버전 표시
+(`v0.1.0 · db 0019`)와 `/health` 응답으로 확인합니다. 버전 규칙은 [AGENTS.md](AGENTS.md) "버저닝과 태그" 참조.
+
 KIS 앱키는 [KIS Developers 포털](https://apiportal.koreainvestment.com)에서 발급합니다.
 구현은 [공식 예제 저장소](https://github.com/koreainvestment/open-trading-api)의 인증·시세 패턴을 따릅니다.
 
