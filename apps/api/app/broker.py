@@ -109,6 +109,43 @@ def create_account(body: AccountIn, user_id: int = Depends(current_user_id),
     return _acct_out(row)
 
 
+class AccountUpdate(BaseModel):
+    """계좌 수정 (2026-09-05 지시) — 키는 비워두면 기존 값을 유지(회전 시에만 입력)."""
+
+    label: str | None = Field(default=None, max_length=40)
+    account_no: str | None = Field(default=None, max_length=20)
+    acnt_prdt_cd: str | None = Field(default=None, pattern=r"^\d{2}$")
+    env: str | None = Field(default=None, pattern="^(prod|vps)$")
+    app_key: str | None = Field(default=None, max_length=200)
+    app_secret: str | None = Field(default=None, max_length=400)
+
+
+@router.put("/broker/accounts/{aid}")
+def update_account(aid: int, body: AccountUpdate, user_id: int = Depends(current_user_id),
+                   session: Session = Depends(get_session)) -> dict:
+    row = session.get(BrokerCredential, aid)
+    if row is None or row.user_id != user_id:
+        raise HTTPException(status_code=404, detail="account not found")
+    if body.account_no is not None:
+        cano, prdt = split_account(body.account_no, body.acnt_prdt_cd or row.acnt_prdt_cd)
+        if len(cano) != 8:
+            raise HTTPException(status_code=422,
+                                detail="계좌번호는 종합계좌 8자리(예: 12345678) 또는 12345678-01 형식이어야 합니다")
+        row.account_no, row.acnt_prdt_cd = cano, prdt
+    elif body.acnt_prdt_cd:
+        row.acnt_prdt_cd = body.acnt_prdt_cd
+    if body.label is not None:
+        row.label = body.label.strip() or row.label
+    if body.env:
+        row.env = body.env
+    if body.app_key and body.app_key.strip():          # 비우면 기존 키 유지
+        row.app_key = body.app_key.strip()
+    if body.app_secret and body.app_secret.strip():
+        row.app_secret = body.app_secret.strip()
+    session.commit()
+    return _acct_out(row)
+
+
 @router.delete("/broker/accounts/{aid}")
 def delete_account(aid: int, user_id: int = Depends(current_user_id),
                    session: Session = Depends(get_session)) -> dict:
