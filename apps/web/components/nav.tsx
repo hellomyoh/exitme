@@ -37,7 +37,12 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
   const [me, setMe] = useState<Me | null>(null);
   const [journals, setJournals] = useState<{ id: number; name: string }[]>([]);
   // 배포 확인용 버전 표시 (2026-09-05 지시) — /health 의 version(git describe)·db_revision(alembic)
-  const [ver, setVer] = useState<{ version: string; db_revision: string | null } | null>(null);
+  const [ver, setVer] = useState<{ version: string; db_revision: string | null; build_time?: string | null } | null>(null);
+  const fmtBuild = (iso: string) => {  // UTC → 브라우저 로컬(KST) "MM-DD HH:mm"
+    const d = new Date(iso);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
   useEffect(() => {
     void ensureSession().then(async (ok) => {
       setLoggedIn(ok);
@@ -47,7 +52,7 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
         if (r.ok) setJournals(((await r.json()) as { items: { id: number; name: string }[] }).items);
       }
       const h = await apiFetch("/health").catch(() => null);
-      if (h?.ok) setVer((await h.json()) as { version: string; db_revision: string | null });
+      if (h?.ok) setVer((await h.json()) as { version: string; db_revision: string | null; build_time?: string | null });
     });
   }, [pathname]);
   // 등록된 매매일지가 서브메뉴로 (2026-09-05 지시) — 설정 그룹 앞에 주입
@@ -119,7 +124,8 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
       ))}
       <div className="mt-auto pt-4">
         <span className="block px-2 pb-2 text-[11px] leading-relaxed text-faint">모의·지연 시세 · 투자 권유 아님
-          {ver && <span className="block" title="배포 버전(git describe) · DB 마이그레이션 리비전">{ver.version}{ver.db_revision ? ` · db ${ver.db_revision}` : ""}</span>}</span>
+          {ver && <span className="block" title="배포 버전(app/VERSION) · DB 마이그레이션 리비전 · 이미지 빌드 시각">
+            {ver.version}{ver.db_revision ? ` · db ${ver.db_revision}` : ""}{ver.build_time ? ` · 빌드 ${fmtBuild(ver.build_time)}` : " · 개발(bind mount)"}</span>}</span>
         <div className="border-t border-line px-1 pt-3">
           {loggedIn && me ? (
             <div className="flex items-center gap-2.5 rounded-lg px-1.5 py-1">

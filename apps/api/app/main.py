@@ -22,7 +22,34 @@ from app.mjournal import router as mjournal_router
 from app.settings import router as settings_router
 from app.signals import router as signals_router
 
-app = FastAPI(title="ExitMe API", version="0.1.0")
+_APP_DIR = __import__("pathlib").Path(__file__).resolve().parent
+
+
+def app_version() -> str:
+    """배포 버전 — `app/VERSION` 파일(태그 시 함께 갱신, AGENTS.md "버저닝과 태그")을 읽는다.
+
+    APP_VERSION 환경변수가 비어 있지 않으면 그것으로 덮어쓴다(선택). 파일도 없으면 "dev".
+    """
+    import os
+
+    env = (os.environ.get("APP_VERSION") or "").strip()
+    if env:
+        return env
+    try:
+        return "v" + (_APP_DIR / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "dev"
+
+
+def build_time() -> str | None:
+    """이미지 빌드 시각(UTC ISO) — Dockerfile 이 /srv/app/BUILD_TIME 에 기록. 개발 bind mount 에서는 없음."""
+    try:
+        return (_APP_DIR.parent / "BUILD_TIME").read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+app = FastAPI(title="ExitMe API", version=app_version().lstrip("v"))
 
 
 @app.on_event("startup")
@@ -94,19 +121,18 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 @app.get("/health")
 def health(session: Session = Depends(get_session)) -> dict:
-    """상태 + **배포 확인용 버전 정보** (2026-09-05 지시: 원격 반영 여부를 바로 판별).
+    """상태 + **배포 확인용 정보** (2026-09-05 지시: 원격 반영 여부를 바로 판별).
 
-    version = 빌드 시 넘긴 APP_VERSION(`git describe --tags`), db_revision = 현재 alembic 리비전.
+    version = app/VERSION(태그와 함께 갱신), build_time = 이미지 빌드 시각(UTC), db_revision = alembic 리비전.
+    운영자가 환경변수를 넘길 필요가 없다 — 새로 빌드하면 build_time 이 바뀌고, 마이그레이션이 돌면 db_revision 이 바뀐다.
     """
-    import os
-
     session.execute(text("SELECT 1"))
     try:
         rev = session.execute(text("SELECT version_num FROM alembic_version")).scalar()
     except Exception:  # noqa: BLE001 — 마이그레이션 전이면 테이블이 없다
         rev = None
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat(),
-            "version": os.environ.get("APP_VERSION") or "dev", "db_revision": rev}
+            "version": app_version(), "build_time": build_time(), "db_revision": rev}
 
 
 @app.get("/instruments")
