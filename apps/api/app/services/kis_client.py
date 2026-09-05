@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import requests
 
@@ -191,3 +191,103 @@ class KisClient:
             if cursor < "090000":
                 break
         return [bars[k] for k in sorted(bars)]
+
+
+# ── 주문·체결 조회 (조회 전용 연동, 2026-09-05 지시) ────────────────────────────
+# 공식 샘플: examples_llm/domestic_stock/inquire_daily_ccld
+DAILY_CCLD_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+# TR: 실전 3개월 이내/이전, 모의 3개월 이내/이전
+CCLD_TR = {("prod", "recent"): "TTTC0081R", ("prod", "old"): "CTSC9215R",
+           ("vps", "recent"): "VTTC0081R", ("vps", "old"): "VTSC9215R"}
+
+
+@dataclass
+class Execution:
+    """증권사 체결 1건 — 필드명은 응답 스키마 변형에 견디도록 후보 키로 파싱한다."""
+
+    order_no: str
+    trade_date: date
+    code: str
+    side: str          # buy | sell
+    filled_qty: int
+    avg_price: int
+    order_qty: int
+    remain_qty: int
+    name: str = ""
+
+
+def _first(row: dict, *keys: str, default: str = "") -> str:
+    for k in keys:
+        v = row.get(k)
+        if v not in (None, ""):
+            return str(v).strip()
+    return default
+
+
+def _to_int(v: str) -> int:
+    try:
+        return int(float(v.replace(",", ""))) if v else 0
+    except ValueError:
+        return 0
+
+
+def parse_execution(row: dict) -> Execution | None:
+    """KIS 일별주문체결 output1 행 → Execution.
+
+    필드명이 문서 버전마다 다를 수 있어 후보 키를 순서대로 시도한다(방어적 파싱).
+    체결수량 0(미체결)은 호출부에서 걸러 쓴다.
+    """
+    d = _first(row, "ord_dt", "ord_dt1", "trad_dt")
+    code = _first(row, "pdno", "PDNO", "stck_shrn_iscd")
+    if not d or len(d) != 8 or not code:
+        return None
+    sll_buy = _first(row, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
+    side = "sell" if sll_buy == "01" else "buy"
+    return Execution(
+        order_no=_first(row, "odno", "ODNO", "ord_no"),
+        trade_date=date(int(d[:4]), int(d[4:6]), int(d[6:8])),
+        code=code,
+        side=side,
+        filled_qty=_to_int(_first(row, "tot_ccld_qty", "ccld_qty", "TOT_CCLD_QTY")),
+        avg_price=_to_int(_first(row, "avg_prvs", "ccld_prvs", "AVG_PRVS")),
+        order_qty=_to_int(_first(row, "ord_qty", "ORD_QTY")),
+        remain_qty=_to_int(_first(row, "rmn_qty", "RMN_QTY")),
+        name=_first(row, "prdt_name", "PRDT_NAME"),
+    )
+
+
+class KisTradingClient(KisClient):
+    """계좌 조회 전용 클라이언트 — 주문 TR 은 구현하지 않는다(설계상 자동 발주 미도입)."""
+
+    def __init__(self, auth: KisAuth, cano: str, acnt_prdt_cd: str = "01",
+                 session: requests.Session | None = None) -> None:
+        super().__init__(auth, session)
+        self.cano = cano
+        self.acnt_prdt_cd = acnt_prdt_cd
+
+    def fetch_executions(self, start: date, end: date, only_filled: bool = True) -> list[Execution]:
+        """[start, end] 주문·체결 내역. 연속조회(CTX) 페이지를 끝까지 따라간다."""
+        env = self.auth.env if self.auth.env in ("prod", "vps") else "prod"
+        recent = (date.today() - start).days <= 89
+        tr = CCLD_TR[(env, "recent" if recent else "old")]
+        out: list[Execution] = []
+        fk = nk = ""
+        for _page in range(20):  # 안전 상한
+            body = self._get(DAILY_CCLD_PATH, tr, {
+                "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd,
+                "INQR_STRT_DT": start.strftime("%Y%m%d"), "INQR_END_DT": end.strftime("%Y%m%d"),
+                "SLL_BUY_DVSN_CD": "00",                    # 전체
+                "CCLD_DVSN": "01" if only_filled else "00",  # 01=체결
+                "INQR_DVSN": "01",                           # 정순
+                "INQR_DVSN_3": "00", "PDNO": "",
+                "CTX_AREA_FK100": fk, "CTX_AREA_NK100": nk,
+            })
+            for row in (body.get("output1") or []):
+                ex = parse_execution(row)
+                if ex and (ex.filled_qty > 0 or not only_filled):
+                    out.append(ex)
+            nk_next = (body.get("ctx_area_nk100") or "").strip()
+            if not nk_next or nk_next == nk:
+                break
+            fk, nk = (body.get("ctx_area_fk100") or "").strip(), nk_next
+        return out

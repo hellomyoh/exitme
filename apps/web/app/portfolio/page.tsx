@@ -38,7 +38,7 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; exec_day?: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number> };
+type Signal = { status: string; exec_day?: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; text: string }[] } | null };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -121,6 +121,14 @@ function PortfolioPage() {
   const [journal, setJournal] = useState<JournalItem[]>([]);
   // 포트 이름·탭 배경색 편집 패널 (2026-09-05 지시)
   const [editOpen, setEditOpen] = useState(false);
+  // 증권사 조회 연동 (2026-09-05 지시) — 체결 자동 가져오기 · 주문표 대조
+  type BrokerInfo = { linked: boolean; env?: string; app_key?: string; account_no?: string; last_import_at?: string | null };
+  type ImportRow = { date: string; code: string; name: string; side: string; qty: number; price: number; amount: number; status: string };
+  const [broker, setBroker] = useState<BrokerInfo | null>(null);
+  const [brokerOpen, setBrokerOpen] = useState(false);
+  const [bf, setBf] = useState({ app_key: "", app_secret: "", account_no: "", acnt_prdt_cd: "01", env: "prod" });
+  const [imp, setImp] = useState<{ items: ImportRow[]; added: number; skipped: number; unknown_codes: string[] } | null>(null);
+  const [impMsg, setImpMsg] = useState("");
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("");
   const [entryOpen, setEntryOpen] = useState(false);  // 체결 입력 폼 펼침 (2026-08-29 일지 개편)
@@ -155,6 +163,10 @@ function PortfolioPage() {
     if (sg.ok) setSignal((await sg.json()) as Signal);
     const jr = await apiFetch(`/portfolio/journal${sid ? `?portfolio_id=${sid}` : ""}`);
     if (jr.ok) setJournal(((await jr.json()) as { items: JournalItem[] }).items);
+    if (sid) {
+      const bk = await apiFetch(`/portfolio/${sid}/broker`);
+      if (bk.ok) setBroker((await bk.json()) as BrokerInfo);
+    }
     const eq = await apiFetch(`/portfolio/equity${sid ? `?portfolio_id=${sid}` : ""}`);
     if (eq.ok) setCurve(((await eq.json()) as { items: { date: string; equity: number; index: number }[] }).items);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -372,6 +384,109 @@ function PortfolioPage() {
             onClick={() => void deletePortfolio()}>🗑 이 포트 삭제</button>
         </span>
       </div>
+
+      {sum && (
+        <Card className="mb-4">
+          <CardTitle right={
+            <button className="text-[12.5px] font-normal normal-case text-accent"
+              onClick={() => setBrokerOpen(!brokerOpen)}>{broker?.linked ? "연동 설정" : "연동하기"}</button>
+          }>
+            증권사 연동 <span className="normal-case text-faint">
+              · 체결 내역을 자동으로 가져옵니다 (조회 전용 — 주문은 하지 않습니다)</span>
+          </CardTitle>
+          {broker?.linked ? (
+            <div className="flex flex-wrap items-center gap-3 text-[13.5px]">
+              <span className="rounded-lg bg-ok/10 px-2.5 py-1 font-semibold text-ok">연결됨</span>
+              <span className="text-muted">계좌 {broker.account_no} · {broker.env === "vps" ? "모의투자" : "실전"}</span>
+              {broker.last_import_at && <span className="text-faint">마지막 가져오기 {broker.last_import_at.slice(0, 16).replace("T", " ")}</span>}
+              <button className="btn !py-1.5 text-[13px]" onClick={() => void (async () => {
+                setImpMsg("조회 중…"); setImp(null);
+                const r = await apiFetch(`/portfolio/${sum.portfolio.id}/import-fills?days=7&dry_run=true`, { method: "POST" });
+                if (r.ok) { setImp(await r.json()); setImpMsg(""); }
+                else setImpMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `실패 (${r.status})`);
+              })()}>최근 7일 체결 조회</button>
+              {imp && imp.items.length > 0 && (
+                <button className="btn btn-primary !py-1.5 text-[13px]" onClick={() => void (async () => {
+                  const r = await apiFetch(`/portfolio/${sum.portfolio.id}/import-fills?days=7&dry_run=false`, { method: "POST" });
+                  if (r.ok) { const j = await r.json(); setImp(j); setImpMsg(`${j.added}건 등록됨`); void load(pid); }
+                  else setImpMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `실패 (${r.status})`);
+                })()}>가져오기 실행</button>
+              )}
+              {impMsg && <span className="text-[13px] text-muted">{impMsg}</span>}
+            </div>
+          ) : (
+            <p className="text-[13.5px] text-muted">
+              한국투자증권 앱키·시크릿·계좌번호를 등록하면 체결 내역을 자동으로 불러옵니다.
+              <b className="text-ink"> 조회 TR 만 사용</b>하며 주문·이체는 하지 않습니다.
+            </p>
+          )}
+
+          {brokerOpen && (
+            <div className="mt-3 grid gap-3 border-t border-line pt-3 sm:grid-cols-2">
+              <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱키(App Key)
+                <input className="input w-full min-w-0" value={bf.app_key} onChange={(e) => setBf({ ...bf, app_key: e.target.value })} /></label>
+              <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱시크릿(App Secret)
+                <input type="password" className="input w-full min-w-0" value={bf.app_secret} onChange={(e) => setBf({ ...bf, app_secret: e.target.value })} /></label>
+              <label className="grid min-w-0 gap-1 text-[13px] text-faint">종합계좌번호 (앞 8자리)
+                <input className="input w-full min-w-0" value={bf.account_no} onChange={(e) => setBf({ ...bf, account_no: e.target.value })} /></label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="grid min-w-0 gap-1 text-[13px] text-faint">상품코드
+                  <input className="input w-full min-w-0" value={bf.acnt_prdt_cd} onChange={(e) => setBf({ ...bf, acnt_prdt_cd: e.target.value })} /></label>
+                <label className="grid min-w-0 gap-1 text-[13px] text-faint">환경
+                  <select className="input w-full min-w-0" value={bf.env} onChange={(e) => setBf({ ...bf, env: e.target.value })}>
+                    <option value="prod">실전</option><option value="vps">모의투자</option>
+                  </select></label>
+              </div>
+              <div className="flex items-center gap-3 sm:col-span-2">
+                <button className="btn btn-primary" onClick={() => void (async () => {
+                  const r = await apiFetch(`/portfolio/${sum.portfolio.id}/broker`, { method: "PUT", body: JSON.stringify(bf) });
+                  if (r.ok) { setBrokerOpen(false); setBf({ ...bf, app_key: "", app_secret: "", account_no: "" }); void load(pid); }
+                  else setImpMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `저장 실패 (${r.status})`);
+                })()}>저장</button>
+                <button className="btn" onClick={() => setBrokerOpen(false)}>취소</button>
+                {broker?.linked && (
+                  <button className="btn-ghost btn !text-up" onClick={() => void (async () => {
+                    if (!window.confirm("연동을 해제할까요? 저장된 키가 삭제됩니다.")) return;
+                    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/broker`, { method: "DELETE" });
+                    if (r.ok) { setBrokerOpen(false); void load(pid); }
+                  })()}>연동 해제</button>
+                )}
+                <span className="text-[12px] text-faint">키는 서버에 암호화 저장되며 화면에는 마스킹만 표시됩니다.</span>
+              </div>
+            </div>
+          )}
+
+          {imp && (
+            <div className="mt-3 overflow-x-auto border-t border-line pt-3">
+              <div className="mb-1.5 text-[13px] text-muted">
+                조회 {imp.items.length}건 · 등록 {imp.added} · 중복 {imp.skipped}
+                {imp.unknown_codes.length > 0 && <span className="text-warn"> · 미시딩 {imp.unknown_codes.join(", ")}</span>}
+              </div>
+              <table className="w-full whitespace-nowrap text-[13px]">
+                <thead><tr className="border-b border-line text-left text-[12px] text-faint">
+                  <th className="pb-1 font-medium">일자</th><th className="pb-1 font-medium">종목</th>
+                  <th className="pb-1 font-medium">구분</th>
+                  <th className="pb-1 text-right font-medium">수량</th>
+                  <th className="pb-1 text-right font-medium">체결가</th>
+                  <th className="pb-1 pl-3 font-medium">상태</th>
+                </tr></thead>
+                <tbody>
+                  {imp.items.map((r, i) => (
+                    <tr key={i} className="border-b border-line/50 last:border-0">
+                      <td className="py-1.5">{r.date}</td>
+                      <td className="py-1.5">{r.name || r.code}</td>
+                      <td className={`py-1.5 font-semibold ${r.side === "buy" ? "text-up" : "text-down"}`}>{r.side === "buy" ? "매수" : "매도"}</td>
+                      <td className="table-num py-1.5">{r.qty.toLocaleString()}</td>
+                      <td className="table-num py-1.5">{r.price.toLocaleString()}</td>
+                      <td className="py-1.5 pl-3 text-faint">{r.status}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
 
       {editOpen && sum && (
         <Card className="mb-4 max-w-xl border-accent">
@@ -607,6 +722,20 @@ function PortfolioPage() {
               {signal.algo_source === "settings" && " · 공식: 알고리즘 설정 기준"}</span>
           )}
         </CardTitle>
+        {/* 계획 vs 등록 체결 대조 경고 — 표시만, 자동 수정 없음 (2026-09-05 지시) */}
+        {(signal?.reconcile?.items?.length ?? 0) > 0 && (
+          <div className="mb-3 rounded-lg border border-warn/40 bg-warn/5 px-3.5 py-2.5">
+            <div className="mb-1 text-[13px] font-bold text-warn">
+              ⚠️ {signal!.reconcile!.date} 계획과 등록된 거래가 다릅니다 — 확인해 주세요
+            </div>
+            <ul className="grid gap-0.5 text-[13px] text-muted">
+              {signal!.reconcile!.items.map((it, i) => (
+                <li key={i}>{it.level === "warn" ? "•" : "·"} {it.text}</li>
+              ))}
+            </ul>
+            <div className="mt-1 text-[11.5px] text-faint">자동으로 고치지 않습니다 — 일지에서 직접 수정하거나 증권사 내역을 가져오세요.</div>
+          </div>
+        )}
         {signal?.status === "OK" && signal.orders && signal.orders.length > 0 ? (
           <div className="overflow-x-auto">
             {/* 모바일: 줄바꿈 금지 + 축약(종목 짧게·작은 글씨)으로 한 화면에 — 넘치면 가로 스크롤 (2026-09-02 지시) */}

@@ -43,3 +43,27 @@ class EncryptedBigInt(TypeDecorator):
 
     def process_result_value(self, value, dialect):
         return None if value is None else decrypt_int(value)
+
+
+def encrypt_text(value: str) -> str:
+    nonce = os.urandom(12)
+    ct = AESGCM(_key()).encrypt(nonce, value.encode(), None)
+    return base64.b64encode(nonce + ct).decode()
+
+
+def decrypt_text(token: str) -> str:
+    raw = base64.b64decode(token)
+    return AESGCM(_key()).decrypt(raw[:12], raw[12:], None).decode()
+
+
+class EncryptedText(TypeDecorator):
+    """문자열 필드 암호화 컬럼 — 증권사 앱키·시크릿·계좌번호 저장용 (2026-09-05)."""
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return None if value is None else encrypt_text(value)
+
+    def process_result_value(self, value, dialect):
+        return None if value is None else decrypt_text(value)

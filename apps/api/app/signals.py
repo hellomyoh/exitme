@@ -242,6 +242,12 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
 
     user_pf = Portfolio(cash=float(cash), lots=lots)
     p = plan(last, m200, mlev, regime, user_pf, params)
+    # 계획 vs 등록 체결 대조 (2026-09-05 지시) — 실패해도 주문표는 떠야 하므로 방어적으로
+    from app.broker import reconcile_for_portfolio
+    try:
+        reconcile = reconcile_for_portfolio(session, pid)
+    except Exception:  # noqa: BLE001
+        reconcile = None
     # 동결 공식 도움말 풍선용 라벨·기본값 (2026-09-05 지시)
     algo_detail: list[dict] = []
     if algo_source == "portfolio" and algo:
@@ -263,6 +269,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
         "exec_day": exec_day.isoformat(),  # 이 주문표의 실행일 — 오늘/예정 표시용 (2026-09-02)
         # 어떤 공식으로 계산했는지 표시용 (2026-09-05): portfolio = 전환 시 동결 변수, settings = 설정 추종
         "algo_source": algo_source, "algo_overrides": algo, "algo_detail": algo_detail,
+        "reconcile": reconcile,  # 계획 vs 등록 체결 대조 경고 (2026-09-05 지시) — 표시만
         "code_200": codes[0], "name_200": {"069500": "KODEX 200", "102110": "TIGER 200", "QQQ": "QQQ"}.get(codes[0], codes[0]),
         "account": {"cash": cash, "qty_200": qty_200, "qty_lev": qty_lev,
                     "equity": round(user_pf.equity(m200.closes[last], mlev.closes[last]))},
