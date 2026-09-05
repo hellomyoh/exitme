@@ -13,6 +13,14 @@ def _client():
     return c, {"Authorization": f"Bearer {tok}"}
 
 
+_CORE = ("symbol", "qty", "avg_price", "cost", "realized", "matched", "return_pct")
+
+
+def _core(holdings):
+    """보유 항목의 FIFO 핵심 키만 — 현재가 평가 필드(code·price·eval…)는 별도 테스트에서 검증 (2026-09-06)."""
+    return [{k: h[k] for k in _CORE} for h in holdings]
+
+
 def test_journal_fifo_and_summary():
     c, h = _client()
     jid = c.post("/mjournals", json={"name": "대원제약 스윙", "symbol": "대원제약",
@@ -35,7 +43,7 @@ def test_journal_fifo_and_summary():
     assert s["buy_amount"] == 220000 and s["sell_amount"] == 195000
     assert s["cost"] == round(100000 * 0.001) + round(120000 * 0.001) + 585
     assert s["realized"] == sell["realized"]
-    assert d["holdings"] == [{"symbol": "대원제약", "qty": 5, "avg_price": 12000, "cost": 60000,
+    assert _core(d["holdings"]) == [{"symbol": "대원제약", "qty": 5, "avg_price": 12000, "cost": 60000,
                               "realized": 34415, "matched": 160000, "return_pct": 34415 / 160000}]
     assert s["return_pct"] == 34415 / 160000  # 요약 수익률 = 실현손익 ÷ 매도분 원가 (2026-09-05)
 
@@ -72,7 +80,7 @@ def test_multi_symbol_fifo_isolation():
     d = c.get(f"/mjournals/{jid}", headers=h).json()
     sell = next(r for r in d["rows"] if r["side"] == "sell")
     assert sell["symbol"] == "휴메딕스" and sell["realized"] == 5 * (2100 - 2000)  # 대원제약 로트와 안 섞임
-    assert d["holdings"] == [{"symbol": "대원제약", "qty": 10, "avg_price": 1000, "cost": 10000,
+    assert _core(d["holdings"]) == [{"symbol": "대원제약", "qty": 10, "avg_price": 1000, "cost": 10000,
                               "realized": 0, "matched": 0, "return_pct": None}]
     assert set(d["symbols"]) == {"대원제약", "휴메딕스"}
     assert d["series"] == {"휴메딕스": [{"date": "2026-01-03", "value": 500}]}  # 매도 없는 종목은 라인 없음
@@ -294,7 +302,7 @@ def test_journal_import_holdings_from_balance(monkeypatch):
         {"code": "005930", "name": "삼성전자", "qty": 8, "price": 72150}], "trade_date": "2026-09-05"}, headers=h)
     assert r.status_code == 201 and r.json()["added"] == 1
     d = c.get(f"/mjournals/{jid}", headers=h).json()
-    assert d["holdings"] == [{"symbol": "삼성전자", "qty": 11, "avg_price": round((3 * 70000 + 8 * 72150) / 11),
+    assert _core(d["holdings"]) == [{"symbol": "삼성전자", "qty": 11, "avg_price": round((3 * 70000 + 8 * 72150) / 11),
                               "cost": 3 * 70000 + 8 * 72150, "realized": 0, "matched": 0, "return_pct": None}]
     added = next(x for x in d["rows"] if x["qty"] == 8)
     assert added["source"] == "broker" and added["code"] == "005930" and added["reason"] == "증권사 잔고 기초 보유"
@@ -307,3 +315,51 @@ def test_journal_import_holdings_from_balance(monkeypatch):
     c.post(f"/mjournals/{jid}/close", headers=h)
     assert c.post(f"/mjournals/{jid}/import-holdings", json={"items": [{"code": "069500", "qty": 4, "price": 108555}]},
                   headers=h).status_code == 409
+
+
+
+def test_journal_valuation_from_broker_prices(monkeypatch):
+    """평가손익 (2026-09-06): 연결 계좌 잔고의 현재가로 보유를 평가 — 종목별 평가액·평가손익·수익률, 합계·총손익,
+    대시보드 매매일지 자산은 평가액. 시세가 없는 일지는 None/취득원가 유지."""
+    import app.mjournal as mj
+    from app.services import kis_client
+
+    mj._PRICE_CACHE.clear()
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "한투-삼성", "symbol": "삼성전자", "fee_rate": 0.0, "tax_rate": 0.0},
+                 headers=h).json()["id"]
+    acct = c.post("/broker/accounts", json={"label": "위탁", "app_key": "PS" + "q" * 34, "app_secret": "S" * 180,
+                                            "account_no": "68800037-01"}, headers=h).json()
+    c.put(f"/mjournals/{jid}/broker", json={"credential_id": acct["id"]}, headers=h)
+
+    class _Fake:
+        def __init__(self, *a, **kw):
+            pass
+
+        def fetch_holdings(self):
+            return [{"code": "005930", "name": "삼성전자", "qty": 11, "avg_price": 138200, "buy_amount": 1520200,
+                     "price": 255500, "eval_amount": 2810500}]
+
+    monkeypatch.setattr(kis_client, "KisTradingClient", _Fake)
+    # 잔고 기초 보유 11주 @138,200 (코드 있음) + 코드 없는 수동 종목 1건(시세 없음 → None)
+    c.post(f"/mjournals/{jid}/import-holdings", json={"items": [{"code": "005930", "name": "삼성전자", "qty": 11, "price": 138200}],
+                                                    "trade_date": "2026-09-05"}, headers=h)
+    d = c.get(f"/mjournals/{jid}", headers=h).json()
+    s1 = next(x for x in d["holdings"] if x["symbol"] == "삼성전자")
+    assert s1["price"] == 255500 and s1["price_source"] == "증권사 잔고" and s1["code"] == "005930"
+    assert s1["eval"] == 11 * 255500 and s1["unrealized"] == 11 * (255500 - 138200) == 1_290_300
+    assert abs(s1["unrealized_pct"] - 1_290_300 / 1_520_200) < 1e-9
+    assert d["summary"]["priced"] is True and d["summary"]["eval_total"] == 2_810_500
+    assert d["summary"]["unrealized_total"] == 1_290_300 and d["summary"]["total_pnl"] == 1_290_300
+
+    dash = c.get("/dashboard", headers=h).json()
+    ja = next(x for x in dash["journals"] if x["id"] == jid)
+    assert ja["priced"] is True and ja["value"] == 2_810_500 and ja["unrealized"] == 1_290_300 and ja["cost"] == 1_520_200
+    assert dash["journal"] == 2_810_500  # 총자산에는 평가액
+
+    # 시세 없는 종목이 섞이면 priced=False, 그 종목은 None, 총자산 합산은 취득원가로 보호
+    c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 2, "price": 50000, "symbol": "미상장주", "trade_date": "2026-09-01"}, headers=h)
+    d2 = c.get(f"/mjournals/{jid}", headers=h).json()
+    unk = next(x for x in d2["holdings"] if x["symbol"] == "미상장주")
+    assert unk["price"] is None and unk["eval"] is None and d2["summary"]["priced"] is False and d2["summary"]["priced_count"] == 1
+    assert c.get("/dashboard", headers=h).json()["journal"] == 1_520_200 + 100_000
