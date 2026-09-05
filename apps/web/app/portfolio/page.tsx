@@ -122,16 +122,12 @@ function PortfolioPage() {
   // 포트 이름·탭 배경색 편집 패널 (2026-09-05 지시)
   const [editOpen, setEditOpen] = useState(false);
   // 증권사 조회 연동 (2026-09-05 지시) — 체결 자동 가져오기 · 주문표 대조
-  type BrokerInfo = { linked: boolean; env?: string; app_key?: string; account_no?: string; last_import_at?: string | null };
+  type BrokerInfo = { linked: boolean; id?: number; label?: string; env?: string; app_key?: string; account_no?: string; acnt_prdt_cd?: string; last_import_at?: string | null };
   type ImportRow = { date: string; code: string; name: string; side: string; qty: number; price: number; amount: number; status: string };
   const [broker, setBroker] = useState<BrokerInfo | null>(null);
-  const [brokerOpen, setBrokerOpen] = useState(false);
-  const [bf, setBf] = useState({ app_key: "", app_secret: "", account_no: "", acnt_prdt_cd: "01", env: "prod" });
+  const [acctList, setAcctList] = useState<{ id: number; label: string; account_no: string; acnt_prdt_cd: string; env: string }[]>([]);
   const [imp, setImp] = useState<{ items: ImportRow[]; added: number; skipped: number; unknown_codes: string[] } | null>(null);
   const [impMsg, setImpMsg] = useState("");
-  type ProbeAcct = { account_no: string; acnt_prdt_cd: string; label: string; holdings: number; deposit: number; total_eval: number };
-  const [probe, setProbe] = useState<ProbeAcct[] | null>(null);
-  const [probeMsg, setProbeMsg] = useState("");
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("");
   const [entryOpen, setEntryOpen] = useState(false);  // 체결 입력 폼 펼침 (2026-08-29 일지 개편)
@@ -169,6 +165,8 @@ function PortfolioPage() {
     if (sid) {
       const bk = await apiFetch(`/portfolio/${sid}/broker`);
       if (bk.ok) setBroker((await bk.json()) as BrokerInfo);
+      const al = await apiFetch("/broker/accounts");
+      if (al.ok) setAcctList(((await al.json()) as { items: typeof acctList }).items);
     }
     const eq = await apiFetch(`/portfolio/equity${sid ? `?portfolio_id=${sid}` : ""}`);
     if (eq.ok) setCurve(((await eq.json()) as { items: { date: string; equity: number; index: number }[] }).items);
@@ -391,108 +389,49 @@ function PortfolioPage() {
       {sum && (
         <Card className="mb-4">
           <CardTitle right={
-            <button className="text-[12.5px] font-normal normal-case text-accent"
-              onClick={() => setBrokerOpen(!brokerOpen)}>{broker?.linked ? "연동 설정" : "연동하기"}</button>
+            <Link href="/settings" className="text-[12.5px] font-normal normal-case text-accent">
+              계좌 등록·관리 →</Link>
           }>
             증권사 연동 <span className="normal-case text-faint">
-              · 체결 내역을 자동으로 가져옵니다 (조회 전용 — 주문은 하지 않습니다)</span>
+              · 설정에 등록한 계좌를 선택하면 체결을 자동으로 가져옵니다 (조회 전용)</span>
           </CardTitle>
-          {broker?.linked ? (
-            <div className="flex flex-wrap items-center gap-3 text-[13.5px]">
-              <span className="rounded-lg bg-ok/10 px-2.5 py-1 font-semibold text-ok">연결됨</span>
-              <span className="text-muted">계좌 {broker.account_no} · {broker.env === "vps" ? "모의투자" : "실전"}</span>
-              {broker.last_import_at && <span className="text-faint">마지막 가져오기 {broker.last_import_at.slice(0, 16).replace("T", " ")}</span>}
-              <button className="btn !py-1.5 text-[13px]" onClick={() => void (async () => {
-                setImpMsg("조회 중…"); setImp(null);
-                const r = await apiFetch(`/portfolio/${sum.portfolio.id}/import-fills?days=7&dry_run=true`, { method: "POST" });
-                if (r.ok) { setImp(await r.json()); setImpMsg(""); }
-                else setImpMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `실패 (${r.status})`);
-              })()}>최근 7일 체결 조회</button>
-              {imp && imp.items.length > 0 && (
-                <button className="btn btn-primary !py-1.5 text-[13px]" onClick={() => void (async () => {
-                  const r = await apiFetch(`/portfolio/${sum.portfolio.id}/import-fills?days=7&dry_run=false`, { method: "POST" });
-                  if (r.ok) { const j = await r.json(); setImp(j); setImpMsg(`${j.added}건 등록됨`); void load(pid); }
+          <div className="flex flex-wrap items-center gap-3 text-[13.5px]">
+            <select className="input !py-2" value={broker?.linked ? String(broker.id ?? "") : ""}
+              onChange={(e) => void (async () => {
+                const v = e.target.value;
+                const r = await apiFetch(`/portfolio/${sum.portfolio.id}/broker`, {
+                  method: "PUT", body: JSON.stringify({ credential_id: v ? Number(v) : null }) });
+                if (r.ok) { setImp(null); setImpMsg(""); void load(pid); }
+              })()}>
+              <option value="">연결 안 함</option>
+              {acctList.map((a) => (
+                <option key={a.id} value={a.id}>{a.label} ({a.account_no}-{a.acnt_prdt_cd}{a.env === "vps" ? " · 모의" : ""})</option>
+              ))}
+            </select>
+            {acctList.length === 0 && (
+              <span className="text-faint">등록된 계좌가 없습니다 — <Link href="/settings" className="text-accent underline underline-offset-2">일반 설정</Link>에서 먼저 등록하세요.</span>
+            )}
+            {broker?.linked && (
+              <>
+                <span className="rounded-lg bg-ok/10 px-2.5 py-1 font-semibold text-ok">연결됨</span>
+                {broker.last_import_at && <span className="text-faint">마지막 가져오기 {broker.last_import_at.slice(0, 16).replace("T", " ")}</span>}
+                <button className="btn !py-1.5 text-[13px]" onClick={() => void (async () => {
+                  setImpMsg("조회 중…"); setImp(null);
+                  const r = await apiFetch(`/portfolio/${sum.portfolio.id}/import-fills?days=7&dry_run=true`, { method: "POST" });
+                  if (r.ok) { setImp(await r.json()); setImpMsg(""); }
                   else setImpMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `실패 (${r.status})`);
-                })()}>가져오기 실행</button>
-              )}
-              {impMsg && <span className="text-[13px] text-muted">{impMsg}</span>}
-            </div>
-          ) : (
-            <p className="text-[13.5px] text-muted">
-              한국투자증권 앱키·시크릿·계좌번호를 등록하면 <b className="text-ink">그 계좌의</b> 체결 내역을 자동으로 불러옵니다.
-              계좌가 여러 개면 <b className="text-ink">포트별로 각각 등록</b>하세요(포트 1개 = 계좌 1개).
-              <b className="text-ink"> 조회 TR 만 사용</b>하며 주문·이체는 하지 않습니다.
-            </p>
-          )}
-
-          {brokerOpen && (
-            <div className="mt-3 grid gap-3 border-t border-line pt-3 sm:grid-cols-2">
-              <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱키(App Key)
-                <input className="input w-full min-w-0" value={bf.app_key} onChange={(e) => setBf({ ...bf, app_key: e.target.value })} /></label>
-              <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱시크릿(App Secret)
-                <input type="password" className="input w-full min-w-0" value={bf.app_secret} onChange={(e) => setBf({ ...bf, app_secret: e.target.value })} /></label>
-              <label className="grid min-w-0 gap-1 text-[13px] text-faint">계좌번호 (앞 8자리 · 상품코드는 조회로 확인)
-                <input className="input w-full min-w-0" placeholder="12345678" value={bf.account_no}
-                  onChange={(e) => setBf({ ...bf, account_no: e.target.value })} /></label>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="grid min-w-0 gap-1 text-[13px] text-faint">환경
-                  <select className="input w-full min-w-0" value={bf.env} onChange={(e) => setBf({ ...bf, env: e.target.value })}>
-                    <option value="prod">실전</option><option value="vps">모의투자</option>
-                  </select></label>
-                <div className="grid content-end">
-                  {/* KIS 는 '계좌 목록' API 가 없어(요청마다 계좌번호 필수) 입력한 계좌를 실제 조회해 확인한다 */}
-                  <button className="btn !py-2" disabled={!(bf.app_key && bf.app_secret && bf.account_no)}
-                    onClick={() => void (async () => {
-                      setProbeMsg("조회 중…"); setProbe(null);
-                      const r = await apiFetch("/broker/probe", { method: "POST", body: JSON.stringify({
-                        app_key: bf.app_key, app_secret: bf.app_secret, account_no: bf.account_no, env: bf.env }) });
-                      if (r.ok) { const j = await r.json(); setProbe(j.accounts); setProbeMsg(""); }
-                      else { setProbe(null); setProbeMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `조회 실패 (${r.status})`); }
-                    })()}>계좌 조회</button>
-                </div>
-              </div>
-              {(probe || probeMsg) && (
-                <div className="sm:col-span-2">
-                  {probeMsg && <p className="text-[13px] text-up">{probeMsg}</p>}
-                  {probe && probe.length > 0 && (
-                    <>
-                      <div className="mb-1 text-[12.5px] text-faint">확인된 계좌 — 하나를 선택하면 그 계좌로 저장됩니다</div>
-                      <div className="grid gap-1.5">
-                        {probe.map((a) => (
-                          <button key={a.label}
-                            onClick={() => setBf({ ...bf, account_no: a.account_no, acnt_prdt_cd: a.acnt_prdt_cd })}
-                            className={`flex flex-wrap items-center gap-x-4 rounded-lg border px-3 py-2 text-left text-[13.5px] transition-colors ${
-                              bf.acnt_prdt_cd === a.acnt_prdt_cd && bf.account_no === a.account_no
-                                ? "border-accent bg-accent-dim font-semibold" : "border-line bg-inset hover:border-line-strong"}`}>
-                            <span className="font-semibold">{a.label}</span>
-                            <span className="text-muted">보유 {a.holdings}종목</span>
-                            <span className="text-muted">예수금 {a.deposit.toLocaleString()}원</span>
-                            <span className="text-muted">평가 {a.total_eval.toLocaleString()}원</span>
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-              <div className="flex items-center gap-3 sm:col-span-2">
-                <button className="btn btn-primary" onClick={() => void (async () => {
-                  const r = await apiFetch(`/portfolio/${sum.portfolio.id}/broker`, { method: "PUT", body: JSON.stringify(bf) });
-                  if (r.ok) { setBrokerOpen(false); setBf({ ...bf, app_key: "", app_secret: "", account_no: "" }); void load(pid); }
-                  else setImpMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `저장 실패 (${r.status})`);
-                })()}>저장</button>
-                <button className="btn" onClick={() => setBrokerOpen(false)}>취소</button>
-                {broker?.linked && (
-                  <button className="btn-ghost btn !text-up" onClick={() => void (async () => {
-                    if (!window.confirm("연동을 해제할까요? 저장된 키가 삭제됩니다.")) return;
-                    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/broker`, { method: "DELETE" });
-                    if (r.ok) { setBrokerOpen(false); void load(pid); }
-                  })()}>연동 해제</button>
+                })()}>최근 7일 체결 조회</button>
+                {imp && imp.items.length > 0 && (
+                  <button className="btn btn-primary !py-1.5 text-[13px]" onClick={() => void (async () => {
+                    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/import-fills?days=7&dry_run=false`, { method: "POST" });
+                    if (r.ok) { const j = await r.json(); setImp(j); setImpMsg(`${j.added}건 등록됨`); void load(pid); }
+                    else setImpMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `실패 (${r.status})`);
+                  })()}>가져오기 실행</button>
                 )}
-                <span className="text-[12px] text-faint">키는 서버에 암호화 저장되며 화면에는 마스킹만 표시됩니다.</span>
-              </div>
-            </div>
-          )}
+              </>
+            )}
+            {impMsg && <span className="text-[13px] text-muted">{impMsg}</span>}
+          </div>
 
           {imp && (
             <div className="mt-3 overflow-x-auto border-t border-line pt-3">
