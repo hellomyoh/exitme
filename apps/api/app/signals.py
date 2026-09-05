@@ -267,6 +267,9 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
     out = {
         "basis": "portfolio", "portfolio": {"id": pf_row.id, "name": pf_row.name},
         "exec_day": exec_day.isoformat(),  # 이 주문표의 실행일 — 오늘/예정 표시용 (2026-09-02)
+        # 배치 스냅샷이 없어도 화면이 그릴 수 있게 레짐·노출·기준일·지표를 함께 준다 (2026-09-05: 챗봇과 화면 불일치)
+        "signal_date": base_day.isoformat(), "regime": regime.value, "e_target": p.e_target,
+        "indicators": {k: v for k, v in (p.indicators or {}).items() if v is not None},
         # 어떤 공식으로 계산했는지 표시용 (2026-09-05): portfolio = 전환 시 동결 변수, settings = 설정 추종
         "algo_source": algo_source, "algo_overrides": algo, "algo_detail": algo_detail,
         "reconcile": reconcile,  # 계획 vs 등록 체결 대조 경고 (2026-09-05 지시) — 표시만
@@ -445,44 +448,49 @@ def get_daily_signal(date_: date | None = Query(default=None, alias="date"),
                      market: str = "KR",
                      _user: int = Depends(current_user_id),
                      session: Session = Depends(get_session)) -> dict:
-    if portfolio_id is not None:
-        pass  # 포트 기준이면 포트의 market 을 따름 (아래 분기)
-    elif market == "US":
+    if portfolio_id is None and market == "US":
         return _live_us_model(session, _user)
     q = select(SignalSnapshot).where(SignalSnapshot.is_current)
     if date_ is not None:
         q = q.where(SignalSnapshot.trade_date == date_)
     snap = session.scalars(q.order_by(SignalSnapshot.trade_date.desc()).limit(1)).first()
-    if snap is None:
-        return {"status": "MISSING", "reason": "시그널 배치가 아직 실행되지 않았습니다 — 시세 시딩 후 배치를 실행하세요"}
-    orders = session.scalars(
-        select(OrderSheetRow).where(OrderSheetRow.signal_id == snap.id).order_by(OrderSheetRow.id)
-    ).all()
-    extra: dict = {"basis": "model"}
     if portfolio_id is not None:
         pf_row = session.get(TradePortfolio, portfolio_id)
-        if pf_row is not None and pf_row.market == "US":
+        if pf_row is None or pf_row.user_id != _user:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="portfolio not found")
+        if pf_row.market == "US":
             # 미국 포트 — TF 전략 기준 (2026-08-31 시장별 분리)
-            if pf_row.user_id != _user:
-                from fastapi import HTTPException
-                raise HTTPException(status_code=404, detail="portfolio not found")
             base = _live_us_model(session, _user)
             if base["status"] != "OK":
                 return base
             base.update(_tf_portfolio_orders(session, pf_row, portfolio_id))
             return base
-    if portfolio_id is not None and snap.status == "OK":
-        # 내 실전 포트 기준 주문표 (2026-08-28 검토 반영) — 주문·계좌 현황을 내 포트 기준으로 교체
+        # 내 실전 포트 기준 주문표 (2026-08-28 검토 반영) — 주문·계좌 현황을 내 포트 기준으로 교체.
+        # 배치 스냅샷이 없거나 실패 상태여도 포트 기준 주문표는 시세로 직접 계산해 준다 (2026-09-05):
+        # 챗봇 도구는 같은 계산을 바로 쓰는데 화면만 "시그널 없음"으로 나오던 불일치 해소.
         extra = _portfolio_orders(session, portfolio_id, _user)
+        if snap is not None and snap.status == "OK":
+            return {
+                "status": snap.status, "trade_date": snap.trade_date.isoformat(), "version": snap.version,
+                "regime": snap.regime, "e_target": float(snap.e_target) if snap.e_target is not None else None,
+                "w_200": float(snap.w_200) if snap.w_200 is not None else None,
+                "w_lev": float(snap.w_lev) if snap.w_lev is not None else None,
+                "gap_cancel_below": extra["gap_cancel_below"] or snap.gap_cancel_below,
+                "indicators": snap.indicators, "detail": snap.detail,
+                **extra,
+            }
         return {
-            "status": snap.status, "trade_date": snap.trade_date.isoformat(), "version": snap.version,
-            "regime": snap.regime, "e_target": float(snap.e_target) if snap.e_target is not None else None,
-            "w_200": float(snap.w_200) if snap.w_200 is not None else None,
-            "w_lev": float(snap.w_lev) if snap.w_lev is not None else None,
-            "gap_cancel_below": extra["gap_cancel_below"] or snap.gap_cancel_below,
-            "indicators": snap.indicators, "detail": snap.detail,
+            "status": "OK", "trade_date": extra["signal_date"], "version": None,
+            "w_200": None, "w_lev": None, "detail": None,
+            "snapshot_missing": True,   # 화면 안내용 — 배치 후 확정 표기로 바뀐다
             **extra,
         }
+    if snap is None:
+        return {"status": "MISSING", "reason": "시그널 배치가 아직 실행되지 않았습니다 — 시세 시딩 후 배치를 실행하세요"}
+    orders = session.scalars(
+        select(OrderSheetRow).where(OrderSheetRow.signal_id == snap.id).order_by(OrderSheetRow.id)
+    ).all()
     return {
         "status": snap.status, "trade_date": snap.trade_date.isoformat(), "version": snap.version,
         "regime": snap.regime, "e_target": float(snap.e_target) if snap.e_target is not None else None,
@@ -494,7 +502,7 @@ def get_daily_signal(date_: date | None = Query(default=None, alias="date"),
             {"instrument": o.instrument, "side": o.side, "otype": o.otype,
              "qty": o.qty, "price": o.price, "kind": o.kind} for o in orders
         ],
-        **extra,
+        "basis": "model",
     }
 
 
