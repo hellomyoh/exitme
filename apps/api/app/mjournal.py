@@ -417,3 +417,112 @@ def journal_assets(session: Session, user_id: int) -> list[dict]:
                     "entries": len(entries), "counted": not dup,
                     "note": "실전매매 포트와 같은 증권사 계좌 — 총자산에는 실전매매 쪽만 포함" if dup else None})
     return out
+
+
+# ── 잔고 기준 기초 보유 등록 (2026-09-05 지시) ─────────────────────────────────────
+# "체결 가져오기"는 기간 안의 체결만 가져오므로 그 전에 산 보유분(예: 삼성전자 11주)은 나오지 않는다.
+# 검토 문서 2-3 의 권고대로 잔고 API 로 현재 보유를 읽어 부족분만 '기초 보유' 매수 행으로 넣는다.
+# 잔고 평단은 이동평균이라 FIFO 로트로는 근사 — 실제 매수일·가격이 필요하면 체결 기간을 늘려 체결로 넣는 것이 정확.
+
+
+def _symbol_matcher(j: ManualJournal, entries: list[ManualJournalEntry]):
+    """종목 매칭 3단계(코드 → 정규화 이름 → 새 종목) — 체결 가져오기와 같은 규칙."""
+    def sym_of(e: ManualJournalEntry) -> str:
+        return (e.symbol or j.symbol).strip()
+
+    by_code = {e.code: sym_of(e) for e in entries if e.code}
+    by_norm = {_norm(x): x for x in ({sym_of(e) for e in entries} | {j.symbol.strip()})}
+
+    def match(code: str, name: str) -> tuple[str, str]:
+        if code in by_code:
+            return by_code[code], "코드"
+        if _norm(name) in by_norm:
+            return by_norm[_norm(name)], "이름"
+        return (name.strip() or code), "새 종목"
+    return match
+
+
+def _position_by_symbol(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict[str, int]:
+    pos: dict[str, int] = {}
+    for e in entries:
+        sym = (e.symbol or j.symbol).strip()
+        pos[sym] = pos.get(sym, 0) + (e.qty if e.side == "buy" else -e.qty)
+    return pos
+
+
+def _cred_for_journal(session: Session, j: ManualJournal, user_id: int) -> BrokerCredential:
+    cred = session.get(BrokerCredential, j.broker_credential_id) if j.broker_credential_id else None
+    if cred is None or cred.user_id != user_id:
+        raise HTTPException(status_code=409, detail="이 일지에 연결된 증권사 계좌가 없습니다 — 아래에서 계좌를 연결하세요")
+    return cred
+
+
+@router.get("/mjournals/{jid}/broker-holdings")
+def journal_broker_holdings(jid: int, user_id: int = Depends(current_user_id),
+                            session: Session = Depends(get_session)) -> dict:
+    """연결 계좌의 현재 잔고와 일지 보유를 종목별로 대조 — 부족분(diff)이 등록 제안 수량."""
+    from app.services.kis_auth import KisAuth
+    from app.services.kis_client import KisTradingClient
+
+    j = _owned(session, jid, user_id)
+    cred = _cred_for_journal(session, j, user_id)
+    try:
+        auth = KisAuth(cred.app_key, cred.app_secret, cred.env, wait_on_rate_limit=False)
+        rows = KisTradingClient(auth, cano=cred.account_no, acnt_prdt_cd=cred.acnt_prdt_cd).fetch_holdings()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("journal broker-holdings failed jid=%s: %s", jid, exc)
+        raise HTTPException(status_code=502, detail=f"증권사 조회 실패 — {humanize_kis_error(str(exc)[:200])}")
+    entries = session.scalars(select(ManualJournalEntry).where(ManualJournalEntry.journal_id == jid)).all()
+    match = _symbol_matcher(j, entries)
+    pos = _position_by_symbol(j, entries)
+    items = []
+    for r in rows:
+        sym, how = match(r["code"], r["name"])
+        jq = pos.get(sym, 0)
+        items.append({**r, "symbol": sym, "match": how, "journal_qty": jq, "diff": max(r["qty"] - jq, 0)})
+    items.sort(key=lambda x: -x["eval_amount"])
+    return {"date": datetime.now(KST).date().isoformat(), "items": items,
+            "note": "계좌 평단(이동평균)·등록일 기준 매수 1건으로 넣는 근사입니다. 실제 매수일·가격이 필요하면 "
+                    "'체결 가져오기' 기간을 늘려 체결로 넣는 것이 정확합니다."}
+
+
+class HoldingIn(BaseModel):
+    code: str = Field(min_length=1, max_length=12)
+    name: str = Field(default="", max_length=60)
+    qty: int = Field(gt=0)
+    price: int = Field(gt=0)
+
+
+class ImportHoldingsIn(BaseModel):
+    items: list[HoldingIn] = Field(min_length=1, max_length=100)
+    trade_date: date | None = None   # 생략 = 오늘
+
+
+@router.post("/mjournals/{jid}/import-holdings", status_code=201)
+def import_journal_holdings(jid: int, body: ImportHoldingsIn, user_id: int = Depends(current_user_id),
+                            session: Session = Depends(get_session)) -> dict:
+    """선택한 잔고를 '기초 보유' 매수 행으로 등록. 같은 날 같은 종목은 한 번만(broker_ref=bal:코드:일자)."""
+    j = _owned(session, jid, user_id)
+    if j.closed_at is not None:
+        raise HTTPException(status_code=409, detail="청산된 일지입니다 — 먼저 '다시 열기'를 하세요")
+    d = body.trade_date or datetime.now(KST).date()
+    entries = session.scalars(select(ManualJournalEntry).where(ManualJournalEntry.journal_id == jid)).all()
+    match = _symbol_matcher(j, entries)
+    known = {e.broker_ref for e in entries if e.broker_ref}
+    added = skipped = 0
+    items = []
+    for it in body.items:
+        ref = f"bal:{it.code}:{d.isoformat()}"
+        sym, how = match(it.code, it.name)
+        row = {"code": it.code, "symbol": sym, "match": how, "qty": it.qty, "price": it.price, "date": d.isoformat()}
+        if ref in known:
+            skipped += 1
+            items.append({**row, "status": "이미 등록됨"})
+            continue
+        session.add(ManualJournalEntry(journal_id=j.id, side="buy", trade_date=d, qty=it.qty, price=it.price,
+                                       symbol=sym, code=it.code, broker_ref=ref, reason="증권사 잔고 기초 보유"))
+        known.add(ref)
+        added += 1
+        items.append({**row, "status": "등록됨"})
+    session.commit()
+    return {"added": added, "skipped": skipped, "date": d.isoformat(), "items": items}

@@ -256,3 +256,54 @@ def test_reset_assets_wipes_everything_but_account():
     # 이후 대시보드는 빈 상태로 다시 시작
     d = c.get("/dashboard", headers=h).json()
     assert d["total"] == 0 and d["journals"] == [] and (d.get("portfolios") or []) == []
+
+
+
+def test_journal_import_holdings_from_balance(monkeypatch):
+    """잔고 기초 보유 등록 (2026-09-05): 체결 기간 이전에 산 보유분을 잔고로 대조해 부족분만 등록, 같은 날 재실행은 멱등."""
+    from app.services import kis_client
+
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "한투-삼성", "symbol": "삼성전자", "fee_rate": 0.0, "tax_rate": 0.0},
+                 headers=h).json()["id"]
+    # 일지에는 삼성전자 3주만 기록돼 있고, 계좌 잔고는 11주 + KODEX 200 4주
+    c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 3, "price": 70000, "trade_date": "2026-01-02"}, headers=h)
+    acct = c.post("/broker/accounts", json={"label": "위탁", "app_key": "PS" + "k" * 34, "app_secret": "S" * 180,
+                                            "account_no": "68800037-01"}, headers=h).json()
+    assert c.get(f"/mjournals/{jid}/broker-holdings", headers=h).status_code == 409   # 연결 전
+    c.put(f"/mjournals/{jid}/broker", json={"credential_id": acct["id"]}, headers=h)
+
+    class _Fake:
+        def __init__(self, *a, **kw):
+            pass
+
+        def fetch_holdings(self):
+            return [{"code": "005930", "name": "삼성전자", "qty": 11, "avg_price": 72150, "buy_amount": 793650,
+                     "price": 75000, "eval_amount": 825000},
+                    {"code": "069500", "name": "KODEX 200", "qty": 4, "avg_price": 108555, "buy_amount": 434220,
+                     "price": 105720, "eval_amount": 422880}]
+
+    monkeypatch.setattr(kis_client, "KisTradingClient", _Fake)
+    hv = c.get(f"/mjournals/{jid}/broker-holdings", headers=h).json()
+    by = {i["code"]: i for i in hv["items"]}
+    assert by["005930"]["symbol"] == "삼성전자" and by["005930"]["match"] == "이름"
+    assert by["005930"]["journal_qty"] == 3 and by["005930"]["diff"] == 8          # 11 − 3
+    assert by["069500"]["match"] == "새 종목" and by["069500"]["diff"] == 4
+
+    r = c.post(f"/mjournals/{jid}/import-holdings", json={"items": [
+        {"code": "005930", "name": "삼성전자", "qty": 8, "price": 72150}], "trade_date": "2026-09-05"}, headers=h)
+    assert r.status_code == 201 and r.json()["added"] == 1
+    d = c.get(f"/mjournals/{jid}", headers=h).json()
+    assert d["holdings"] == [{"symbol": "삼성전자", "qty": 11, "avg_price": round((3 * 70000 + 8 * 72150) / 11),
+                              "cost": 3 * 70000 + 8 * 72150, "realized": 0, "matched": 0, "return_pct": None}]
+    added = next(x for x in d["rows"] if x["qty"] == 8)
+    assert added["source"] == "broker" and added["code"] == "005930" and added["reason"] == "증권사 잔고 기초 보유"
+    # 다시 대조하면 부족분 0, 같은 날 재등록은 건너뜀
+    assert {i["code"]: i["diff"] for i in c.get(f"/mjournals/{jid}/broker-holdings", headers=h).json()["items"]}["005930"] == 0
+    again = c.post(f"/mjournals/{jid}/import-holdings", json={"items": [
+        {"code": "005930", "name": "삼성전자", "qty": 8, "price": 72150}], "trade_date": "2026-09-05"}, headers=h).json()
+    assert again["added"] == 0 and again["skipped"] == 1
+    # 청산 일지는 거절
+    c.post(f"/mjournals/{jid}/close", headers=h)
+    assert c.post(f"/mjournals/{jid}/import-holdings", json={"items": [{"code": "069500", "qty": 4, "price": 108555}]},
+                  headers=h).status_code == 409

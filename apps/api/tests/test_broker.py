@@ -470,3 +470,52 @@ def test_reserve_orders_guards(monkeypatch):
     assert c.post(f"/portfolio/{pid}/orders/reserve", json={"date": exec_day, "lines": line}, headers=h).status_code == 404  # 스냅샷 없음
     past = (datetime.now(broker.KST).date() - timedelta(days=1)).isoformat()
     assert c.post(f"/portfolio/{pid}/orders/reserve", json={"date": past, "lines": line}, headers=h).status_code == 409
+
+
+def test_fetch_executions_spans_both_kis_trs():
+    """체결 조회 TR 분할 (2026-09-05): 365일 조회가 '3개월 이전' TR 만 타서 최근 체결이 빠지던 결함.
+    3개월 경계에 걸치면 recent(TTTC0081R)·old(CTSC9215R) 둘 다 조회하고 합친다."""
+    from datetime import date as _d, timedelta
+
+    from app.services.kis_client import KisTradingClient
+
+    class _Auth:
+        env = "prod"
+        base_url = "https://example.invalid"
+
+        def headers(self, tr_id, session=None):
+            return {}
+
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_get(self, path, tr_id, params):
+        calls.append((tr_id, params["INQR_STRT_DT"], params["INQR_END_DT"]))
+        if tr_id == "TTTC0081R":   # 최근 3개월: 두 달 전 매수 (기존 코드에선 365일 조회에서 빠지던 건)
+            d = (_d.today() - timedelta(days=60)).strftime("%Y%m%d")
+            return {"output1": [{"ord_dt": d, "pdno": "005930", "sll_buy_dvsn_cd": "02", "odno": "A1",
+                                 "tot_ccld_qty": "11", "avg_prvs": "72150", "ord_qty": "11", "rmn_qty": "0",
+                                 "prdt_name": "삼성전자"}], "ctx_area_nk100": ""}
+        d = (_d.today() - timedelta(days=200)).strftime("%Y%m%d")
+        return {"output1": [{"ord_dt": d, "pdno": "069500", "sll_buy_dvsn_cd": "02", "odno": "B1",
+                             "tot_ccld_qty": "4", "avg_prvs": "108555", "ord_qty": "4", "rmn_qty": "0",
+                             "prdt_name": "KODEX 200"}], "ctx_area_nk100": ""}
+
+    c = KisTradingClient(_Auth(), cano="12345678", acnt_prdt_cd="01")
+    c._get = fake_get.__get__(c)  # type: ignore[method-assign]
+    c._throttle = lambda: None      # type: ignore[method-assign]
+
+    today = _d.today()
+    # 365일: 두 TR 모두, 구간이 3개월 경계에서 나뉜다
+    ex = c.fetch_executions(today - timedelta(days=364), today)
+    assert [t for t, *_ in calls] == ["TTTC0081R", "CTSC9215R"]
+    boundary = (today - timedelta(days=89)).strftime("%Y%m%d")
+    assert calls[0][1] == boundary and calls[1][2] == (today - timedelta(days=90)).strftime("%Y%m%d")
+    assert [(e.code, e.filled_qty) for e in ex] == [("069500", 4), ("005930", 11)]  # 날짜순, 두 구간 합침
+    # 30일: recent 만
+    calls.clear()
+    c.fetch_executions(today - timedelta(days=29), today)
+    assert [t for t, *_ in calls] == ["TTTC0081R"]
+    # 200일 전 하루: old 만
+    calls.clear()
+    c.fetch_executions(today - timedelta(days=200), today - timedelta(days=199))
+    assert [t for t, *_ in calls] == ["CTSC9215R"]

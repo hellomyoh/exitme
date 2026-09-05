@@ -294,31 +294,74 @@ class KisTradingClient(KisClient):
             "total_eval": _to_int(_first(summary, "tot_evlu_amt", "evlu_amt_smtl_amt")),
         }
 
+    RECENT_DAYS = 89  # KIS: 이 안은 '3개월 이내' TR, 밖은 '3개월 이전' TR — 한 TR 은 자기 구간만 돌려준다
+
+    def _ccld_spans(self, start: date, end: date, today: date | None = None) -> list[tuple[str, date, date]]:
+        """조회 범위를 TR 구간으로 나눈다. 365일 조회가 '3개월 이전' TR 만 타서 최근 체결이 빠지던 결함
+        (2026-09-05: 몇 달 전 매수한 삼성전자가 30일·365일 어느 조회에도 안 나옴) 수정."""
+        today = today or date.today()
+        boundary = today - timedelta(days=self.RECENT_DAYS)
+        spans: list[tuple[str, date, date]] = []
+        if end >= boundary:
+            spans.append(("recent", max(start, boundary), end))
+        if start < boundary:
+            spans.append(("old", start, min(end, boundary - timedelta(days=1))))
+        return spans
+
     def fetch_executions(self, start: date, end: date, only_filled: bool = True) -> list[Execution]:
-        """[start, end] 주문·체결 내역. 연속조회(CTX) 페이지를 끝까지 따라간다."""
+        """[start, end] 주문·체결 내역. 3개월 경계에 걸치면 두 TR 을 모두 조회해 합친다. 연속조회(CTX) 끝까지."""
         env = self.auth.env if self.auth.env in ("prod", "vps") else "prod"
-        recent = (date.today() - start).days <= 89
-        tr = CCLD_TR[(env, "recent" if recent else "old")]
         out: list[Execution] = []
-        fk = nk = ""
-        for _page in range(20):  # 안전 상한
-            body = self._get(DAILY_CCLD_PATH, tr, {
-                "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd,
-                "INQR_STRT_DT": start.strftime("%Y%m%d"), "INQR_END_DT": end.strftime("%Y%m%d"),
-                "SLL_BUY_DVSN_CD": "00",                    # 전체
-                "CCLD_DVSN": "01" if only_filled else "00",  # 01=체결
-                "INQR_DVSN": "01",                           # 정순
-                "INQR_DVSN_3": "00", "PDNO": "",
-                "CTX_AREA_FK100": fk, "CTX_AREA_NK100": nk,
-            })
-            for row in (body.get("output1") or []):
-                ex = parse_execution(row)
-                if ex and (ex.filled_qty > 0 or not only_filled):
-                    out.append(ex)
-            nk_next = (body.get("ctx_area_nk100") or "").strip()
-            if not nk_next or nk_next == nk:
+        seen: set[tuple[str, date]] = set()
+        for kind, s0, e0 in self._ccld_spans(start, end):
+            tr = CCLD_TR[(env, kind)]
+            fk = nk = ""
+            for _page in range(20):  # 안전 상한
+                body = self._get(DAILY_CCLD_PATH, tr, {
+                    "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd,
+                    "INQR_STRT_DT": s0.strftime("%Y%m%d"), "INQR_END_DT": e0.strftime("%Y%m%d"),
+                    "SLL_BUY_DVSN_CD": "00",                    # 전체
+                    "CCLD_DVSN": "01" if only_filled else "00",  # 01=체결
+                    "INQR_DVSN": "01",                           # 정순
+                    "INQR_DVSN_3": "00", "PDNO": "",
+                    "CTX_AREA_FK100": fk, "CTX_AREA_NK100": nk,
+                })
+                for row in (body.get("output1") or []):
+                    ex = parse_execution(row)
+                    if ex and (ex.filled_qty > 0 or not only_filled) and (ex.order_no, ex.trade_date) not in seen:
+                        seen.add((ex.order_no, ex.trade_date))
+                        out.append(ex)
+                nk_next = (body.get("ctx_area_nk100") or "").strip()
+                if not nk_next or nk_next == nk:
+                    break
+                fk, nk = (body.get("ctx_area_fk100") or "").strip(), nk_next
+        out.sort(key=lambda x: (x.trade_date, x.order_no))
+        return out
+
+    def fetch_holdings(self) -> list[dict]:
+        """현재 잔고(보유 종목) — inquire-balance output1. 매매일지 '기초 보유 등록'용 (2026-09-05).
+
+        반환 [{code, name, qty, avg_price, buy_amount, price, eval_amount}] — 보유 수량 > 0 만.
+        평단(pchs_avg_pric)은 이동평균이라 FIFO 로트로는 근사다. 연속조회(CTX)를 끝까지 따라간다.
+        """
+        env = self.auth.env if self.auth.env in ("prod", "vps") else "prod"
+        params = _balance_probe_params(self.cano, self.acnt_prdt_cd)
+        out: list[dict] = []
+        for _page in range(10):  # 안전 상한
+            body = self._get(BALANCE_PATH, BALANCE_TR[env], params)
+            for r in (body.get("output1") or []):
+                qty = _to_int(_first(r, "hldg_qty", "HLDG_QTY"))
+                if qty <= 0:
+                    continue
+                out.append({"code": _first(r, "pdno", "PDNO"), "name": _first(r, "prdt_name", "PRDT_NAME"),
+                            "qty": qty, "avg_price": _to_int(_first(r, "pchs_avg_pric", "PCHS_AVG_PRIC")),
+                            "buy_amount": _to_int(_first(r, "pchs_amt", "PCHS_AMT")),
+                            "price": _to_int(_first(r, "prpr", "PRPR")),
+                            "eval_amount": _to_int(_first(r, "evlu_amt", "EVLU_AMT"))})
+            nk = (body.get("ctx_area_nk100") or "").strip()
+            if not nk:
                 break
-            fk, nk = (body.get("ctx_area_fk100") or "").strip(), nk_next
+            params = {**params, "CTX_AREA_FK100": (body.get("ctx_area_fk100") or "").strip(), "CTX_AREA_NK100": nk}
         return out
 
     # ── 예약주문 (2026-09-05 지시) — 접수 15:40~다음 영업일 07:30, 장 시작 시 자동 주문 ──
