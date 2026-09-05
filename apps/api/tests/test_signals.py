@@ -311,3 +311,44 @@ def test_conversion_freezes_algo_key():
         assert pf.params.get("algo", {}).get("grid_coef") == 1.25
     sig = client.get(f"/signals/daily?portfolio_id={pid}", headers=h).json()
     assert sig["algo_source"] == "portfolio" and sig["algo_overrides"].get("grid_coef") == 1.25
+
+
+def test_portfolio_order_sheet_without_batch_snapshot():
+    """배치 스냅샷이 없어도 포트 기준 주문표는 계산된다 (2026-09-05: 챗봇 도구와 화면 불일치 수정).
+    포트 지정 → status OK + snapshot_missing + 주문 있음. 포트 미지정(모델 기준) → MISSING 그대로."""
+    from sqlalchemy import select, update
+
+    from app.models import SignalSnapshot
+    from tests.test_backtest_api import seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+        from app.signals import run_signal_batch
+        if run_signal_batch(s).status != "OK":
+            pytest.skip("synthetic data insufficient")
+        current_ids = [r.id for r in s.scalars(select(SignalSnapshot).where(SignalSnapshot.is_current)).all()]
+
+    client = TestClient(app, base_url="https://testserver")
+    token = client.post("/auth/register", json={"email": f"nosnap{uuid.uuid4().hex[:8]}@x.dev",
+                                                "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "스냅샷없음"}, headers=h).json()["id"]
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 100_000_000,
+                                    "executed_at": "2025-07-01T10:00:00+09:00"}, headers=h)
+    with_snap = client.get(f"/signals/daily?portfolio_id={pid}", headers=h).json()
+    assert with_snap["status"] == "OK" and with_snap["orders"] and "snapshot_missing" not in with_snap
+
+    with SessionLocal() as s:
+        s.execute(update(SignalSnapshot).where(SignalSnapshot.id.in_(current_ids)).values(is_current=False))
+        s.commit()
+    try:
+        assert client.get("/signals/daily", headers=h).json()["status"] == "MISSING"
+        d = client.get(f"/signals/daily?portfolio_id={pid}", headers=h).json()
+        assert d["status"] == "OK" and d["snapshot_missing"] is True and d["basis"] == "portfolio"
+        assert d["orders"] == with_snap["orders"] and d["exec_day"] == with_snap["exec_day"]
+        assert d["regime"] in ("BULL", "NEUTRAL", "BEAR") and d["e_target"] is not None and d["trade_date"]
+    finally:
+        with SessionLocal() as s:
+            s.execute(update(SignalSnapshot).where(SignalSnapshot.id.in_(current_ids)).values(is_current=True))
+            s.commit()
