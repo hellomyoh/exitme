@@ -114,3 +114,14 @@ body {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* iOS Safari 는 16px 미만 입력에 포커스 시 자동 확대(줌)하고 그 상태가 유지되어
+ * 고정 요소·콘텐츠가 좌우로 어긋나 보인다 — 모바일에서 입력 글꼴을 16px 로 강제 (2026-09-05 검토) */
+@media (max-width: 1023px) {
+  .input,
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
