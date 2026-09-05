@@ -14,7 +14,11 @@ import { apiFetch, ensureSession } from "../../lib/api";
 import { Card, CardTitle, EmptyState, PageTitle, Stat } from "../../components/ui";
 
 type JournalMeta = { id: number; name: string; symbol: string; broker: string; closed_at?: string | null };
-type Holding = { symbol: string; qty: number; avg_price: number; cost: number; realized: number; matched: number; return_pct: number | null };
+type Holding = { symbol: string; qty: number; avg_price: number; cost: number; realized: number; matched: number; return_pct: number | null;
+  // 현재가 평가 (2026-09-06) — 연결 계좌 잔고 현재가 → DB 종가 → 없으면 null
+  code?: string | null; price?: number | null; price_source?: string | null; eval?: number | null; unrealized?: number | null; unrealized_pct?: number | null };
+const pct = (v: number | null | undefined, d = 1) => v == null ? "" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(d)}%`;
+const signed = (v: number) => `${v >= 0 ? "+" : ""}${v.toLocaleString()}원`;
 type Row = {
   id: number; symbol: string; side: "buy" | "sell"; buy_date: string | null; sell_date: string | null;
   hold_days: number | null; realized: number | null; return_pct: number | null;
@@ -28,7 +32,8 @@ type ImportResult = { range: [string, string]; dry_run: boolean; fetched: number
   new_symbols: string[]; items: ImportItem[] };
 type Detail = JournalMeta & {
   fee_rate: number; tax_rate: number; rows: Row[]; symbols: string[];
-  summary: { realized: number; sell_amount: number; buy_amount: number; cost: number; return_pct: number | null };
+  summary: { realized: number; sell_amount: number; buy_amount: number; cost: number; return_pct: number | null;
+    eval_total?: number; unrealized_total?: number; unrealized_pct?: number | null; total_pnl?: number; priced?: boolean; priced_count?: number };
   holdings: Holding[];
   series: Record<string, { date: string; value: number }[]>;   // 종목별 누적 실현손익 (이 일지만)
   linked_account: { id: number; label: string; account_no: string; env: string } | null;   // 연결 계좌 (0018)
@@ -233,7 +238,9 @@ function Overview({ detail }: { detail: Detail }) {
   const chartRef = useRef<HTMLDivElement>(null);
   const api = useRef<IChartApi | null>(null);
   const held = detail.holdings;                    // 서버가 원가 내림차순으로 준다
-  const total = held.reduce((a, h) => a + h.cost, 0);
+  const useEval = detail.summary.priced === true;  // 전 종목 현재가가 있으면 평가액 비중 (2026-09-06)
+  const weightOf = (h: Holding) => (useEval ? (h.eval ?? 0) : h.cost);
+  const total = held.reduce((a, h) => a + weightOf(h), 0);
   // 색은 일지의 종목 목록 순서로 고정 — 도넛과 라인이 같은 종목에 같은 색 (필터에 따라 바뀌지 않음)
   const symColor = (sym: string) => OV_COLORS[Math.max(detail.symbols.indexOf(sym), 0) % OV_COLORS.length];
   const withSeries = Object.entries(detail.series)
@@ -274,7 +281,7 @@ function Overview({ detail }: { detail: Detail }) {
   const R = 52, r0 = 30, C = 64;
   let angle = -Math.PI / 2;
   const paths = held.map((h) => {
-    const frac = h.cost / total;
+    const frac = weightOf(h) / total;
     const gap = 2 / R;
     const a0 = angle + gap / 2, a1 = angle + Math.max(frac * Math.PI * 2 - gap / 2, 0.006);
     angle += frac * Math.PI * 2;
@@ -284,7 +291,7 @@ function Overview({ detail }: { detail: Detail }) {
   });
   return (
     <Card className="relative mb-4">
-      <CardTitle>{detail.name} 현황 <span className="normal-case text-faint">· 이 일지만 · 보유 비중은 취득원가, 수익 라인은 종목별 누적 실현손익 (시세 미연동)</span></CardTitle>
+      <CardTitle>{detail.name} 현황 <span className="normal-case text-faint">· 이 일지만 · 보유 비중은 {detail.summary.priced ? "평가액(현재가)" : "취득원가"}, 수익 라인은 종목별 누적 실현손익{detail.summary.priced_count ? "" : " (시세 미연동)"}</span></CardTitle>
       <div className="grid gap-6 lg:grid-cols-[auto_1fr]">
         <div className="flex items-center gap-4">
           {held.length > 0 && (
@@ -312,7 +319,7 @@ function Overview({ detail }: { detail: Detail }) {
               <span key={h.symbol} className="inline-flex items-center gap-1.5 text-muted"
                 title={`${h.qty.toLocaleString()}주 · 원가 ${fm(h.cost)}`}>
                 <i className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: symColor(h.symbol) }} />
-                {h.symbol} <b className="text-ink">{total > 0 ? ((h.cost / total) * 100).toFixed(0) : 0}%</b>
+                {h.symbol} <b className="text-ink">{total > 0 ? ((weightOf(h) / total) * 100).toFixed(0) : 0}%</b>
               </span>
             ))}
             {held.length === 0 && <span className="text-faint">현재 보유 없음</span>}
@@ -483,14 +490,30 @@ function MJournalPage() {
           {/* 카드 2줄(좌 2×2) + 우측 보유 패널(2줄 높이) — 보유 종목이 많아도 가독성 유지 (2026-09-05 지시) */}
           <div className="mb-4 grid gap-3 lg:grid-cols-3">
           <div className="grid gap-3 sm:grid-cols-2 lg:col-span-2">
-            <Stat label="총 실현손익"
+            {/* 평가손익·총 손익 카드 추가 (2026-09-06 지시: 매수가 vs 현재가 수익률). 매수·매도 금액은 보조 줄로 */}
+            <Stat label="실현손익"
               value={<>{fm(detail.summary.realized)}{detail.summary.return_pct != null &&
-                <span className="whitespace-nowrap text-[14px]"> ({detail.summary.return_pct >= 0 ? "+" : ""}{(detail.summary.return_pct * 100).toFixed(1)}%)</span>}</>}
+                <span className="whitespace-nowrap text-[14px]"> ({pct(detail.summary.return_pct)})</span>}</>}
               tone={detail.summary.realized > 0 ? "up" : detail.summary.realized < 0 ? "down" : "default"}
-              hint="수익률 = 실현손익 ÷ 매도분 원가" />
-            <Stat label="총 매도 금액" value={fm(detail.summary.sell_amount)} />
-            <Stat label="총 매수 금액" value={fm(detail.summary.buy_amount)} />
-            <Stat label="총 매매 비용" value={fm(detail.summary.cost)} hint="수수료 + 제세금" />
+              sub={<>매도 금액 <b className="text-ink">{fm(detail.summary.sell_amount)}</b> · 수익률 = 실현손익 ÷ 매도분 원가</>} />
+            <Stat label="평가손익"
+              value={detail.summary.priced_count
+                ? <>{fm(detail.summary.unrealized_total ?? 0)}{detail.summary.unrealized_pct != null &&
+                    <span className="whitespace-nowrap text-[14px]"> ({pct(detail.summary.unrealized_pct)})</span>}</>
+                : <span className="text-faint">—</span>}
+              tone={(detail.summary.unrealized_total ?? 0) > 0 ? "up" : (detail.summary.unrealized_total ?? 0) < 0 ? "down" : "default"}
+              tip={detail.summary.priced_count
+                ? "(현재가 − 평균단가) × 보유 수량. 현재가는 연결 계좌 잔고(장중 시세) 또는 일봉 종가. %는 보유 원가 대비"
+                : "보유 종목의 현재가를 알 수 없습니다 — 증권사 계좌를 연결하면 잔고의 현재가로 평가합니다"}
+              sub={detail.summary.priced_count
+                ? <>보유 원가 <b className="text-ink">{fm(detail.holdings.reduce((a, h) => a + h.cost, 0))}</b> → 평가 <b className="text-ink">{fm(detail.summary.eval_total ?? 0)}</b>
+                    {!detail.summary.priced && <span className="text-faint"> · 시세 없는 종목 {detail.holdings.length - (detail.summary.priced_count ?? 0)}개는 원가</span>}</>
+                : <>보유 원가 <b className="text-ink">{fm(detail.holdings.reduce((a, h) => a + h.cost, 0))}</b> · 시세 미연동</>} />
+            <Stat label="총 손익 (실현 + 평가)"
+              value={fm(detail.summary.total_pnl ?? detail.summary.realized)}
+              tone={(detail.summary.total_pnl ?? detail.summary.realized) > 0 ? "up" : (detail.summary.total_pnl ?? detail.summary.realized) < 0 ? "down" : "default"}
+              sub={<>매수 금액 <b className="text-ink">{fm(detail.summary.buy_amount)}</b></>} />
+            <Stat label="매매 비용" value={fm(detail.summary.cost)} hint="수수료 + 제세금 (실현손익에 이미 반영)" />
           </div>
           {(() => {
             const total = detail.holdings.reduce((a, h) => a + h.cost, 0);
@@ -498,9 +521,15 @@ function MJournalPage() {
             return (
               <div className="card flex flex-col px-4 py-3.5">
                 <div className="mb-1.5 flex items-baseline justify-between gap-2">
-                  <span className="text-[13px] text-faint">현재 보유 <span className="text-[11px]">(FIFO 잔여 · 취득원가 비중)</span></span>
+                  <span className="text-[13px] text-faint">현재 보유 <span className="text-[11px]">(FIFO 잔여 · {detail.summary.priced_count ? "평가액" : "취득원가"} 비중)</span></span>
                   {detail.holdings.length > 0 && (
-                    <span className="shrink-0 text-[12px] text-faint">{detail.holdings.length}종목 · {fm(total)}</span>
+                    <span className="shrink-0 text-right text-[12px] text-faint">
+                      {detail.holdings.length}종목 · {detail.summary.priced_count ? `평가 ${fm(detail.summary.eval_total ?? 0)}` : fm(total)}
+                      {detail.summary.priced_count ? (
+                        <b className={`ml-1.5 ${(detail.summary.unrealized_total ?? 0) > 0 ? "text-up" : (detail.summary.unrealized_total ?? 0) < 0 ? "text-down" : "text-ink"}`}>
+                          {signed(detail.summary.unrealized_total ?? 0)}{detail.summary.unrealized_pct != null && ` (${pct(detail.summary.unrealized_pct)})`}</b>
+                      ) : null}
+                    </span>
                   )}
                 </div>
                 {detail.holdings.length === 0 ? (
@@ -508,17 +537,28 @@ function MJournalPage() {
                 ) : (
                   <div className="grid max-h-60 content-start overflow-y-auto">
                     {detail.holdings.map((h, i) => {
-                      const w = total > 0 ? h.cost / total : 0;
+                      // 비중: 전 종목 평가 가능하면 평가액, 아니면 취득원가
+                      const base = detail.summary.priced ? (detail.summary.eval_total ?? 0) : total;
+                      const w = base > 0 ? (detail.summary.priced ? (h.eval ?? 0) : h.cost) / base : 0;
+                      const t = (h.unrealized ?? 0) > 0 ? "text-up" : (h.unrealized ?? 0) < 0 ? "text-down" : "text-ink";
                       return (
                         <div key={h.symbol}
                           className="grid grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-x-2 border-b border-line/50 py-1.5 text-[13px] last:border-0">
                           <span className="text-[12px] text-faint">{i + 1}</span>
                           <span className="min-w-0">
                             <b className="block truncate text-ink" title={h.symbol}>{h.symbol}</b>
-                            <span className="block text-[11.5px] text-faint">{h.qty.toLocaleString()}주 @{h.avg_price.toLocaleString()}</span>
+                            <span className="block text-[11.5px] text-faint">{h.qty.toLocaleString()}주 @{h.avg_price.toLocaleString()}
+                              {h.price != null && <> → 현재 <b className="text-ink">{h.price.toLocaleString()}</b><span title={h.price_source ?? ""}> ({h.price_source})</span></>}</span>
                           </span>
                           <span className="text-right">
-                            <b className="table-num block text-ink">{fm(h.cost)}</b>
+                            {h.eval != null ? (
+                              <>
+                                <b className="table-num block text-ink">{fm(h.eval)}</b>
+                                <b className={`table-num block text-[12px] ${t}`}>{signed(h.unrealized ?? 0)}{h.unrealized_pct != null && ` (${pct(h.unrealized_pct)})`}</b>
+                              </>
+                            ) : (
+                              <b className="table-num block text-ink" title="현재가 없음 — 취득원가">{fm(h.cost)}</b>
+                            )}
                             <span className="inline-flex items-center gap-1.5 text-[11.5px] text-faint">
                               <i className="inline-block h-1.5 w-12 overflow-hidden rounded-full bg-inset">
                                 <i className="block h-full rounded-full" style={{ width: `${Math.max(w * 100, 2)}%`, background: color(h.symbol) }} />

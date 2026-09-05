@@ -175,11 +175,12 @@ def get_journal(jid: int, user_id: int = Depends(current_user_id),
     j = _owned(session, jid, user_id)
     entries = session.scalars(select(ManualJournalEntry)
                               .where(ManualJournalEntry.journal_id == jid)).all()
+    c = enrich_valuation(session, j, entries, _compute(j, entries))  # 현재가 평가 (2026-09-06)
     return {"id": j.id, "name": j.name, "symbol": j.symbol, "broker": j.broker,
             "fee_rate": float(j.fee_rate), "tax_rate": float(j.tax_rate),
             "linked_account": _linked_out(session, j),
             "closed_at": j.closed_at.isoformat() if j.closed_at else None,
-            **_compute(j, entries)}
+            **c}
 
 
 @router.post("/mjournals/{jid}/entries", status_code=201)
@@ -408,12 +409,19 @@ def journal_assets(session: Session, user_id: int) -> list[dict]:
                                                          ManualJournal.closed_at.is_(None))
                              .order_by(ManualJournal.id)).all():
         entries = session.scalars(select(ManualJournalEntry).where(ManualJournalEntry.journal_id == j.id)).all()
-        c = _compute(j, entries)
+        c = enrich_valuation(session, j, entries, _compute(j, entries))  # 현재가 평가 (2026-09-06)
         cost = sum(h["cost"] for h in c["holdings"])
+        s = c["summary"]
+        # value = 총자산 합산에 쓰는 값: 전 종목 현재가가 있으면 평가액, 아니면 취득원가(시세 미연동 종목 보호)
+        value = s["eval_total"] if s["priced"] else cost
         dup = j.broker_credential_id is not None and j.broker_credential_id in linked_by_ports
         out.append({"id": j.id, "name": j.name, "symbol": j.symbol, "cost": cost,
-                    "realized": c["summary"]["realized"], "return_pct": c["summary"]["return_pct"],
-                    "holdings": [{"symbol": h["symbol"], "qty": h["qty"], "cost": h["cost"]} for h in c["holdings"]],
+                    "value": value, "priced": s["priced"],
+                    "unrealized": s["unrealized_total"] if s["priced"] else None,
+                    "unrealized_pct": s["unrealized_pct"] if s["priced"] else None,
+                    "realized": s["realized"], "return_pct": s["return_pct"],
+                    "holdings": [{"symbol": h["symbol"], "qty": h["qty"], "cost": h["cost"],
+                                  "price": h.get("price"), "eval": h.get("eval")} for h in c["holdings"]],
                     "entries": len(entries), "counted": not dup,
                     "note": "실전매매 포트와 같은 증권사 계좌 — 총자산에는 실전매매 쪽만 포함" if dup else None})
     return out
@@ -526,3 +534,95 @@ def import_journal_holdings(jid: int, body: ImportHoldingsIn, user_id: int = Dep
         items.append({**row, "status": "등록됨"})
     session.commit()
     return {"added": added, "skipped": skipped, "date": d.isoformat(), "items": items}
+
+
+# ── 현재가 평가 (2026-09-06 지시: 매수가 vs 현재가 수익률) ────────────────────────────
+# 시세 출처 우선순위: ① 연결 계좌 잔고의 현재가(prpr, 종목코드 → 이름 순 매칭) ② 우리 DB 일봉 종가(코드가 있는 종목)
+# ③ 없으면 None(취득원가로만 표시). 잔고 조회는 자격별 120초 캐시 — 화면·대시보드·배치가 KIS 를 반복 호출하지 않게.
+_PRICE_CACHE: dict[int, tuple[float, dict]] = {}
+PRICE_TTL_SEC = 120.0
+
+
+def _broker_price_map(session: Session, j: ManualJournal) -> dict:
+    import time
+
+    if not j.broker_credential_id:
+        return {}
+    cred = session.get(BrokerCredential, j.broker_credential_id)
+    if cred is None or cred.user_id != j.user_id:
+        return {}
+    now = time.monotonic()
+    hit = _PRICE_CACHE.get(cred.id)
+    if hit and now - hit[0] < PRICE_TTL_SEC:
+        return hit[1]
+    try:
+        from app.services.kis_auth import KisAuth
+        from app.services.kis_client import KisTradingClient
+
+        rows = KisTradingClient(KisAuth(cred.app_key, cred.app_secret, cred.env, wait_on_rate_limit=False),
+                                cano=cred.account_no, acnt_prdt_cd=cred.acnt_prdt_cd).fetch_holdings()
+    except Exception as exc:  # noqa: BLE001 — 시세는 보조 정보, 실패해도 일지는 떠야 한다
+        logger.warning("journal price lookup failed cred=%s: %s", cred.id, exc)
+        return hit[1] if hit else {}
+    m: dict = {}
+    for r in rows:
+        m[r["code"]] = r
+        m["name:" + _norm(r["name"])] = r
+    _PRICE_CACHE[cred.id] = (now, m)
+    return m
+
+
+def _close_price_map(session: Session, codes: set[str]) -> dict[str, int]:
+    from app.models import Instrument, OhlcvDaily
+
+    out: dict[str, int] = {}
+    for code in codes:
+        inst = session.scalar(select(Instrument).where(Instrument.code == code))
+        if inst is None:
+            continue
+        row = session.scalar(select(OhlcvDaily).where(OhlcvDaily.instrument_id == inst.id)
+                             .order_by(OhlcvDaily.trade_date.desc()).limit(1))
+        if row is not None:
+            out[code] = int(row.close_raw)
+    return out
+
+
+def enrich_valuation(session: Session, j: ManualJournal, entries: list[ManualJournalEntry], computed: dict) -> dict:
+    """holdings 에 code·price·price_source·eval·unrealized·unrealized_pct, summary 에
+    eval_total·unrealized_total·unrealized_pct(가격 있는 종목 원가 대비)·total_pnl(실현+평가)·priced·priced_count."""
+    code_of: dict[str, str] = {}
+    for e in entries:
+        if e.code:
+            code_of.setdefault((e.symbol or j.symbol).strip(), e.code)
+    broker = _broker_price_map(session, j) if computed["holdings"] else {}
+    need = {code_of[s] for s in code_of if code_of[s] not in broker}
+    closes = _close_price_map(session, need) if need else {}
+    eval_total = unreal_total = cost_priced = 0
+    for h in computed["holdings"]:
+        code = code_of.get(h["symbol"])
+        r = broker.get(code) if code else None
+        if r is None:
+            r = broker.get("name:" + _norm(h["symbol"]))
+        px, src = (int(r["price"]), "증권사 잔고") if r and r.get("price") else (None, None)
+        if px is None and code and code in closes:
+            px, src = closes[code], "종가"
+        h["code"], h["price"], h["price_source"] = code, px, src
+        if px is None:
+            h["eval"] = h["unrealized"] = h["unrealized_pct"] = None
+            continue
+        ev = px * h["qty"]
+        un = ev - h["cost"]
+        h["eval"], h["unrealized"] = ev, un
+        h["unrealized_pct"] = (un / h["cost"]) if h["cost"] > 0 else None
+        eval_total += ev
+        unreal_total += un
+        cost_priced += h["cost"]
+    s = computed["summary"]
+    priced_count = sum(1 for h in computed["holdings"] if h["price"] is not None)
+    s["eval_total"] = eval_total
+    s["unrealized_total"] = unreal_total
+    s["unrealized_pct"] = (unreal_total / cost_priced) if cost_priced > 0 else None
+    s["total_pnl"] = s["realized"] + unreal_total
+    s["priced"] = bool(computed["holdings"]) and priced_count == len(computed["holdings"])
+    s["priced_count"] = priced_count
+    return computed

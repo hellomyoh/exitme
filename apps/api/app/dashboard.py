@@ -121,7 +121,7 @@ def compute_user_snapshot(session: Session, user_id: int, snap_date: date) -> As
     # 매매일지 자산 (0020, 2026-09-05 지시) — 진행 중 일지의 보유 취득원가 합. 실전매매와 같은 계좌면 제외(중복 방지)
     from app.mjournal import journal_assets
 
-    journal = sum(ja["cost"] for ja in journal_assets(session, user_id) if ja["counted"])
+    journal = sum(ja["value"] for ja in journal_assets(session, user_id) if ja["counted"])  # 평가액(시세 없으면 원가)
     snap = session.scalar(select(AssetSnapshot).where(
         AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date == snap_date))
     if snap is None:

@@ -89,7 +89,8 @@ type Dash = { portfolios?: PortRow[]; total_trend?: number[]; kr_trend?: number[
   manual_assets: { id: number; name: string; category: string; value: number }[];
 };
 type JournalAsset = { id: number; name: string; symbol: string; cost: number; realized: number; return_pct: number | null;
-  holdings: { symbol: string; qty: number; cost: number }[]; entries: number; counted: boolean; note: string | null };
+  value?: number; priced?: boolean; unrealized?: number | null; unrealized_pct?: number | null;   // 현재가 평가 (2026-09-06)
+  holdings: { symbol: string; qty: number; cost: number; price?: number | null; eval?: number | null }[]; entries: number; counted: boolean; note: string | null };
 type TrendSeries = { portfolio_id: number; name: string; market: string; currency: string;
   points: { date: string; equity: number }[] };
 type Signal = { status: string; regime?: string; e_target?: number; w_200?: number; w_lev?: number };
@@ -351,18 +352,19 @@ export default function DashboardPage() {
         {/* 매매일지 자산 — 진행 중 일지만, 취득원가 기준. 청산 일지는 표시하지 않음 (2026-09-05 지시) */}
         {(dash?.journals?.length ?? 0) > 0 && (
           <Card className="md:col-span-6">
-            <CardTitle>매매일지 자산 <span className="normal-case text-faint">· 진행 중 일지 — 보유는 취득원가(시세 미연동), 이름 클릭 시 해당 일지로</span></CardTitle>
+            <CardTitle>매매일지 자산 <span className="normal-case text-faint">· 진행 중 일지 — 연결 계좌 현재가로 평가(없으면 취득원가), 이름 클릭 시 해당 일지로</span></CardTitle>
             <div className="overflow-x-auto">
               <table className="w-full whitespace-nowrap text-[14px]">
                 <thead><tr className="border-b border-line text-left text-[12px] text-faint">
                   <th className="pb-2 pr-2 font-medium">#</th>
                   <th className="pb-2 font-medium">일지</th>
-                  <th className="pb-2 text-right font-medium">보유 원가</th>
+                  <th className="pb-2 text-right font-medium">평가액 <span className="font-normal">(원가)</span></th>
+                  <th className="pb-2 text-right font-medium">평가손익</th>
                   <th className="pb-2 text-right font-medium">실현손익</th>
                   <th className="pb-2 pl-6 font-medium">총자산 포함</th>
                 </tr></thead>
                 <tbody>
-                  {(dash!.journals ?? []).slice().sort((a, b) => b.cost - a.cost).map((j, i) => (
+                  {(dash!.journals ?? []).slice().sort((a, b) => (b.value ?? b.cost) - (a.value ?? a.cost)).map((j, i) => (
                     <tr key={j.id} className="border-b border-line/50 last:border-0">
                       <td className="py-2.5 pr-2 text-faint">{i + 1}</td>
                       <td className="py-2.5">
@@ -371,7 +373,10 @@ export default function DashboardPage() {
                           {j.holdings.length > 0 ? j.holdings.map((h) => `${h.symbol} ${h.qty.toLocaleString()}주`).join(" · ") : `보유 없음 · 기록 ${j.entries}건`}
                         </div>
                       </td>
-                      <td className="table-num py-2.5 font-bold">{fmtWon(j.cost)}</td>
+                      <td className="table-num py-2.5 font-bold">{fmtWon(j.value ?? j.cost)}
+                        {j.priced && <span className="ml-1 text-[11.5px] font-normal text-faint">({fmtWon(j.cost)})</span>}</td>
+                      <td className={`table-num py-2.5 font-semibold ${(j.unrealized ?? 0) > 0 ? "text-up" : (j.unrealized ?? 0) < 0 ? "text-down" : "text-faint"}`}>
+                        {j.priced && j.unrealized != null ? `${j.unrealized >= 0 ? "+" : ""}${fmtWon(j.unrealized)}${j.unrealized_pct != null ? ` (${(j.unrealized_pct * 100).toFixed(1)}%)` : ""}` : "—"}</td>
                       <td className={`table-num py-2.5 font-semibold ${j.realized > 0 ? "text-up" : j.realized < 0 ? "text-down" : "text-faint"}`}>
                         {j.realized !== 0 ? `${j.realized >= 0 ? "+" : ""}${fmtWon(j.realized)}` : "—"}
                         {j.return_pct != null && j.realized !== 0 && ` (${(j.return_pct * 100).toFixed(1)}%)`}
