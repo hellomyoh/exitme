@@ -114,7 +114,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="mx-auto max-w-4xl">
+    <main>
       <PageTitle title="일반 설정" sub="계정 · 증권사 연동 · 챗봇" />
       {forcePw && (
         <Callout icon="🔐">
@@ -225,8 +225,8 @@ export default function SettingsPage() {
         )}
 
         {acctOpen && (
-          <div className="mt-3 grid gap-3 border-t border-line pt-3 sm:grid-cols-2">
-            <p className="text-[13px] text-muted sm:col-span-2">
+          <div className="mt-3 grid gap-3 border-t border-line pt-3 sm:grid-cols-2 lg:grid-cols-3">
+            <p className="text-[13px] text-muted sm:col-span-2 lg:col-span-3">
               {editId === null ? "새 계좌를 등록합니다."
                 : "계좌를 수정합니다 — 앱키·시크릿은 비워두면 기존 값이 유지되고, 계좌번호도 비우면 그대로입니다."}
             </p>
@@ -262,7 +262,7 @@ export default function SettingsPage() {
               </div>
             </div>
             {(probe || acctMsg) && (
-              <div className="sm:col-span-2">
+              <div className="sm:col-span-2 lg:col-span-3">
                 {acctMsg && <p className="text-[13px] text-up">{acctMsg}</p>}
                 {probe && probe.length > 0 && (
                   <>
@@ -285,7 +285,7 @@ export default function SettingsPage() {
                 )}
               </div>
             )}
-            <div className="flex items-center gap-3 sm:col-span-2">
+            <div className="flex items-center gap-3 sm:col-span-2 lg:col-span-3">
               <button className="btn btn-primary"
                 disabled={editId === null && !(af.app_key && af.app_secret && af.account_no)}
                 onClick={() => void (async () => {

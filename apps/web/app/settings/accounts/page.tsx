@@ -46,17 +46,17 @@ export default function AccountsPage() {
   }
 
   // 권한 확인 전에는 화면을 그리지 않는다 — 비관리자에게 관리 UI 가 잠깐 노출되던 문제 (2026-09-05 지시)
-  if (allowed === null) return <main className="mx-auto max-w-4xl" />;
+  if (allowed === null) return <main />;
   if (allowed === false) {
     return (
-      <main className="mx-auto max-w-4xl">
+      <main>
         <PageTitle title="계정 관리" sub="" />
         <Callout icon="⛔">관리자 전용 메뉴입니다 — <Link href="/settings" className="font-semibold text-accent">일반 설정</Link>으로 이동하세요.</Callout>
       </main>
     );
   }
   return (
-    <main className="mx-auto max-w-4xl">
+    <main>
       <PageTitle title="계정 관리" sub="계정을 직접 발급해 전달합니다 — 발급 계정은 첫 로그인에서 비밀번호를 변경해야 합니다" />
       <Card className="mb-4">
         <CardTitle>새 계정 발급</CardTitle>
