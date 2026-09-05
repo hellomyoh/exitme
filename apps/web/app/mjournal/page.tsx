@@ -264,10 +264,11 @@ function MJournalPage() {
             <label className="grid gap-1 text-[13px] text-faint">증권사
               <input className="input" placeholder="예: NH투자증권" value={nf.broker} onChange={(e) => setNf({ ...nf, broker: e.target.value })} /></label>
             <div className="grid grid-cols-2 gap-3">
-              <label className="grid gap-1 text-[13px] text-faint">수수료율(%)
-                <input className="input" value={nf.fee} onChange={(e) => setNf({ ...nf, fee: e.target.value })} /></label>
-              <label className="grid gap-1 text-[13px] text-faint">제세금율(%, 매도)
-                <input className="input" value={nf.tax} onChange={(e) => setNf({ ...nf, tax: e.target.value })} /></label>
+              {/* input 고유 폭이 좁은 그리드 칸을 밀어내 카드 밖으로 나가던 문제 — w-full·min-w-0 (2026-09-05) */}
+              <label className="grid min-w-0 gap-1 text-[13px] text-faint">수수료율(%)
+                <input className="input w-full min-w-0" value={nf.fee} onChange={(e) => setNf({ ...nf, fee: e.target.value })} /></label>
+              <label className="grid min-w-0 gap-1 text-[13px] text-faint">제세금율(%, 매도)
+                <input className="input w-full min-w-0" value={nf.tax} onChange={(e) => setNf({ ...nf, tax: e.target.value })} /></label>
             </div>
           </div>
           <div className="mt-3 flex items-center gap-3">
