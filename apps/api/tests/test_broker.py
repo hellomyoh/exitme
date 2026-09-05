@@ -90,3 +90,23 @@ def test_import_fills_dry_run_and_idempotent(monkeypatch):
     assert r2["added"] == 0 and r2["skipped"] == 1  # 멱등
     pos = c.get(f"/portfolio/summary?portfolio_id={pid}", headers=h).json()["positions"]
     assert any(p["code"] == "069500" and p["qty"] == 10 for p in pos)
+
+
+def test_account_number_normalization():
+    """계좌번호 입력 정규화 (2026-09-05): 10자리·하이픈·공백 입력을 CANO 8 + 상품코드 2 로 분리."""
+    from app.broker import split_account
+
+    assert split_account("12345678-01") == ("12345678", "01")
+    assert split_account("12345678 22") == ("12345678", "22")
+    assert split_account("1234567801") == ("12345678", "01")
+    assert split_account("12345678", "22") == ("12345678", "22")  # 8자리면 입력 상품코드 유지
+
+    c, h = _client()
+    pid = c.post("/portfolios", json={"name": "계좌형식"}, headers=h).json()["id"]
+    base = {"app_key": "PS" + "k" * 18, "app_secret": "S" * 42}
+    r = c.put(f"/portfolio/{pid}/broker", json={**base, "account_no": "87654321-22"}, headers=h)
+    assert r.status_code == 200 and r.json()["acnt_prdt_cd"] == "22"
+    assert c.get(f"/portfolio/{pid}/broker", headers=h).json()["acnt_prdt_cd"] == "22"
+    # 자릿수 부족 → 422
+    assert c.put(f"/portfolio/{pid}/broker", json={**base, "account_no": "123456"},
+                 headers=h).status_code == 422

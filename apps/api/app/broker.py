@@ -48,9 +48,21 @@ def _mask(s: str) -> str:
 class BrokerIn(BaseModel):
     app_key: str = Field(min_length=10, max_length=200)
     app_secret: str = Field(min_length=10, max_length=400)
-    account_no: str = Field(min_length=6, max_length=20)     # 종합계좌 8자리
+    account_no: str = Field(min_length=6, max_length=20)     # "12345678" 또는 "12345678-01"
     acnt_prdt_cd: str = Field(default="01", pattern=r"^\d{2}$")
     env: str = Field(default="prod", pattern="^(prod|vps)$")
+
+
+def split_account(raw: str, prdt: str = "01") -> tuple[str, str]:
+    """계좌번호 입력 정규화 (2026-09-05) — KIS 는 종합계좌 8자리(CANO)와 상품코드 2자리를 나눠 받는다.
+
+    "12345678-01" / "12345678 01" / "1234567801" 처럼 붙여 입력해도 8+2 로 분리한다.
+    8자리만 오면 상품코드는 입력값(기본 01)을 쓴다.
+    """
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if len(digits) >= 10:
+        return digits[:8], digits[8:10]
+    return digits, prdt
 
 
 @router.get("/portfolio/{pid}/broker")
@@ -73,10 +85,14 @@ def put_broker(pid: int, body: BrokerIn, user_id: int = Depends(current_user_id)
     if row is None:
         row = BrokerCredential(user_id=user_id, portfolio_id=pid)
         session.add(row)
+    cano, prdt = split_account(body.account_no, body.acnt_prdt_cd)
+    if len(cano) != 8:
+        raise HTTPException(status_code=422,
+                            detail="계좌번호는 종합계좌 8자리(예: 12345678) 또는 12345678-01 형식이어야 합니다")
     row.app_key, row.app_secret = body.app_key.strip(), body.app_secret.strip()
-    row.account_no, row.acnt_prdt_cd, row.env = body.account_no.strip(), body.acnt_prdt_cd, body.env
+    row.account_no, row.acnt_prdt_cd, row.env = cano, prdt, body.env
     session.commit()
-    return {"linked": True}
+    return {"linked": True, "account_no": _mask(cano), "acnt_prdt_cd": prdt}
 
 
 @router.delete("/portfolio/{pid}/broker")

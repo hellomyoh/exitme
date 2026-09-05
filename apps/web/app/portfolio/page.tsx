@@ -416,7 +416,8 @@ function PortfolioPage() {
             </div>
           ) : (
             <p className="text-[13.5px] text-muted">
-              한국투자증권 앱키·시크릿·계좌번호를 등록하면 체결 내역을 자동으로 불러옵니다.
+              한국투자증권 앱키·시크릿·계좌번호를 등록하면 <b className="text-ink">그 계좌의</b> 체결 내역을 자동으로 불러옵니다.
+              계좌가 여러 개면 <b className="text-ink">포트별로 각각 등록</b>하세요(포트 1개 = 계좌 1개).
               <b className="text-ink"> 조회 TR 만 사용</b>하며 주문·이체는 하지 않습니다.
             </p>
           )}
@@ -427,7 +428,7 @@ function PortfolioPage() {
                 <input className="input w-full min-w-0" value={bf.app_key} onChange={(e) => setBf({ ...bf, app_key: e.target.value })} /></label>
               <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱시크릿(App Secret)
                 <input type="password" className="input w-full min-w-0" value={bf.app_secret} onChange={(e) => setBf({ ...bf, app_secret: e.target.value })} /></label>
-              <label className="grid min-w-0 gap-1 text-[13px] text-faint">종합계좌번호 (앞 8자리)
+              <label className="grid min-w-0 gap-1 text-[13px] text-faint">계좌번호 (예: 12345678-01)
                 <input className="input w-full min-w-0" value={bf.account_no} onChange={(e) => setBf({ ...bf, account_no: e.target.value })} /></label>
               <div className="grid grid-cols-2 gap-3">
                 <label className="grid min-w-0 gap-1 text-[13px] text-faint">상품코드
