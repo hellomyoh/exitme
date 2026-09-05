@@ -157,3 +157,31 @@ def test_probe_account_finds_product_code(monkeypatch):
     assert c.post("/broker/probe", json=body, headers=h).status_code == 502
     # 미인증 차단
     assert TestClient(app, base_url="https://testserver").post("/broker/probe", json=body).status_code == 401
+
+
+def test_account_update_keeps_keys_when_blank():
+    """계좌 수정 (2026-09-05): 라벨·계좌·환경 변경, 키는 비우면 유지·입력 시 교체, 타인 404."""
+    c, h = _client()
+    created = c.post("/broker/accounts", json={
+        "label": "옛이름", "app_key": "PS" + "a" * 18, "app_secret": "S" * 42,
+        "account_no": "12345678-01", "env": "prod"}, headers=h).json()
+    aid, old_key_mask = created["id"], created["app_key"]
+
+    # 키 없이 라벨·계좌·환경만 수정 → 키 유지
+    r = c.put(f"/broker/accounts/{aid}", json={"label": "새이름", "account_no": "87654321-22",
+                                               "env": "vps"}, headers=h)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["label"] == "새이름" and j["acnt_prdt_cd"] == "22" and j["env"] == "vps"
+    assert j["app_key"] == old_key_mask  # 마스킹 값 동일 = 키 그대로
+
+    # 빈 문자열도 유지로 간주
+    assert c.put(f"/broker/accounts/{aid}", json={"app_key": "", "app_secret": ""},
+                 headers=h).json()["app_key"] == old_key_mask
+    # 키 교체
+    j2 = c.put(f"/broker/accounts/{aid}", json={"app_key": "PS" + "z" * 18}, headers=h).json()
+    assert j2["app_key"] != old_key_mask and j2["app_key"].startswith("PSzz")
+    # 잘못된 계좌번호 → 422, 타인 → 404
+    assert c.put(f"/broker/accounts/{aid}", json={"account_no": "123"}, headers=h).status_code == 422
+    _, h2 = _client()
+    assert c.put(f"/broker/accounts/{aid}", json={"label": "탈취"}, headers=h2).status_code == 404

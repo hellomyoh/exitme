@@ -53,6 +53,7 @@ export default function SettingsPage() {
   const [accts, setAccts] = useState<Acct[]>([]);
   const [af, setAf] = useState({ label: "", app_key: "", app_secret: "", account_no: "", acnt_prdt_cd: "01", env: "prod" });
   const [acctOpen, setAcctOpen] = useState(false);
+  const [editId, setEditId] = useState<number | null>(null);   // null = 신규 등록
   const [probe, setProbe] = useState<ProbeAcct[] | null>(null);
   const [acctMsg, setAcctMsg] = useState("");
   const loadAccts = useCallback(() => {
@@ -181,7 +182,10 @@ export default function SettingsPage() {
       <Card className="mb-4">
         <CardTitle right={
           <button className="text-[12.5px] font-normal normal-case text-accent"
-            onClick={() => { setAcctOpen(!acctOpen); setProbe(null); setAcctMsg(""); }}>
+            onClick={() => {
+              setAcctOpen(!acctOpen); setProbe(null); setAcctMsg(""); setEditId(null);
+              setAf({ label: "", app_key: "", app_secret: "", account_no: "", acnt_prdt_cd: "01", env: "prod" });
+            }}>
             {acctOpen ? "닫기" : "＋ 계좌 등록"}</button>
         }>증권사 계좌 <span className="normal-case text-faint">
           · 여기서 등록하고 실전매매 화면에서 선택해 사용합니다 (조회 전용 — 주문은 하지 않습니다)</span>
@@ -202,11 +206,18 @@ export default function SettingsPage() {
                 <span className="text-faint">
                   {a.linked_portfolios.length > 0 ? `연결: ${a.linked_portfolios.join(", ")}` : "연결된 포트 없음"}
                 </span>
-                <button className="ml-auto text-[12.5px] text-faint transition-colors hover:text-down"
+                <button className="ml-auto text-[12.5px] text-accent transition-colors hover:underline"
+                  onClick={() => {
+                    setEditId(a.id); setAcctOpen(true); setProbe(null); setAcctMsg("");
+                    // 키는 비워 둔다 — 저장 시 비어 있으면 기존 키 유지
+                    setAf({ label: a.label, app_key: "", app_secret: "",
+                            account_no: "", acnt_prdt_cd: a.acnt_prdt_cd, env: a.env });
+                  }}>수정</button>
+                <button className="text-[12.5px] text-faint transition-colors hover:text-down"
                   onClick={() => void (async () => {
                     if (!window.confirm(`'${a.label}' 계좌 등록을 삭제할까요? 연결된 포트의 연동이 해제됩니다.`)) return;
                     const r = await apiFetch(`/broker/accounts/${a.id}`, { method: "DELETE" });
-                    if (r.ok) loadAccts();
+                    if (r.ok) { loadAccts(); if (editId === a.id) { setAcctOpen(false); setEditId(null); } }
                   })()}>삭제</button>
               </div>
             ))}
@@ -215,17 +226,21 @@ export default function SettingsPage() {
 
         {acctOpen && (
           <div className="mt-3 grid gap-3 border-t border-line pt-3 sm:grid-cols-2">
+            <p className="text-[13px] text-muted sm:col-span-2">
+              {editId === null ? "새 계좌를 등록합니다."
+                : "계좌를 수정합니다 — 앱키·시크릿은 비워두면 기존 값이 유지되고, 계좌번호도 비우면 그대로입니다."}
+            </p>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">별칭 (선택)
               <input className="input w-full min-w-0" placeholder="예: 한투 메인" value={af.label}
                 onChange={(e) => setAf({ ...af, label: e.target.value })} /></label>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">계좌번호 (앞 8자리)
-              <input className="input w-full min-w-0" placeholder="12345678" value={af.account_no}
+              <input className="input w-full min-w-0" placeholder={editId === null ? "12345678" : "변경할 때만 입력"} value={af.account_no}
                 onChange={(e) => setAf({ ...af, account_no: e.target.value })} /></label>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱키(App Key)
-              <input className="input w-full min-w-0" value={af.app_key}
+              <input className="input w-full min-w-0" placeholder={editId === null ? "" : "변경할 때만 입력"} value={af.app_key}
                 onChange={(e) => setAf({ ...af, app_key: e.target.value })} /></label>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱시크릿(App Secret)
-              <input type="password" className="input w-full min-w-0" value={af.app_secret}
+              <input type="password" className="input w-full min-w-0" placeholder={editId === null ? "" : "변경할 때만 입력"} value={af.app_secret}
                 onChange={(e) => setAf({ ...af, app_secret: e.target.value })} /></label>
             <div className="grid grid-cols-2 gap-3">
               <label className="grid min-w-0 gap-1 text-[13px] text-faint">환경
@@ -235,7 +250,8 @@ export default function SettingsPage() {
                 </select></label>
               <div className="grid content-end">
                 {/* KIS 는 계좌 목록 API 가 없어, 입력 계좌를 실제 조회해 상품코드까지 확인한다 */}
-                <button className="btn !py-2" disabled={!(af.app_key && af.app_secret && af.account_no)}
+                <button className="btn !py-2" title={editId !== null ? "조회하려면 앱키·시크릿·계좌번호를 입력하세요" : ""}
+                  disabled={!(af.app_key && af.app_secret && af.account_no)}
                   onClick={() => void (async () => {
                     setAcctMsg("조회 중…"); setProbe(null);
                     const r = await apiFetch("/broker/probe", { method: "POST", body: JSON.stringify({
@@ -271,15 +287,22 @@ export default function SettingsPage() {
             )}
             <div className="flex items-center gap-3 sm:col-span-2">
               <button className="btn btn-primary"
-                disabled={!(af.app_key && af.app_secret && af.account_no)}
+                disabled={editId === null && !(af.app_key && af.app_secret && af.account_no)}
                 onClick={() => void (async () => {
-                  const r = await apiFetch("/broker/accounts", { method: "POST", body: JSON.stringify(af) });
-                  if (r.ok) { setAcctOpen(false); setProbe(null); setAcctMsg("");
+                  const body = editId === null ? af : {
+                    label: af.label, env: af.env, acnt_prdt_cd: af.acnt_prdt_cd,
+                    ...(af.account_no.trim() ? { account_no: af.account_no } : {}),
+                    ...(af.app_key.trim() ? { app_key: af.app_key } : {}),
+                    ...(af.app_secret.trim() ? { app_secret: af.app_secret } : {}),
+                  };
+                  const r = await apiFetch(editId === null ? "/broker/accounts" : `/broker/accounts/${editId}`,
+                    { method: editId === null ? "POST" : "PUT", body: JSON.stringify(body) });
+                  if (r.ok) { setAcctOpen(false); setProbe(null); setAcctMsg(""); setEditId(null);
                     setAf({ label: "", app_key: "", app_secret: "", account_no: "", acnt_prdt_cd: "01", env: "prod" });
                     loadAccts(); }
-                  else setAcctMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `등록 실패 (${r.status})`);
-                })()}>등록</button>
-              <button className="btn" onClick={() => setAcctOpen(false)}>취소</button>
+                  else setAcctMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `저장 실패 (${r.status})`);
+                })()}>{editId === null ? "등록" : "저장"}</button>
+              <button className="btn" onClick={() => { setAcctOpen(false); setEditId(null); }}>취소</button>
               <span className="text-[12px] text-faint">키는 서버에 암호화 저장되며 화면에는 마스킹만 표시됩니다.</span>
             </div>
           </div>
