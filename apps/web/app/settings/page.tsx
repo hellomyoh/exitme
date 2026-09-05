@@ -48,13 +48,14 @@ export default function SettingsPage() {
 
   // 증권사 계좌 — 여기서 등록하고 실전매매에서 선택해 쓴다 (2026-09-05 지시)
   type Acct = { id: number; label: string; env: string; acnt_prdt_cd: string; app_key: string;
-    account_no: string; last_import_at: string | null; linked_portfolios: string[] };
+    app_secret: string; account_no: string; last_import_at: string | null; linked_portfolios: string[] };
   type ProbeAcct = { account_no: string; acnt_prdt_cd: string; label: string; holdings: number; deposit: number; total_eval: number };
   const [accts, setAccts] = useState<Acct[]>([]);
   const [af, setAf] = useState({ label: "", app_key: "", app_secret: "", account_no: "", acnt_prdt_cd: "01", env: "prod" });
   const [acctOpen, setAcctOpen] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);   // null = 신규 등록
-  const [testRes, setTestRes] = useState<Record<number, { ok: boolean; message?: string; holdings?: number; deposit?: number }>>({});
+  const [testRes, setTestRes] = useState<Record<number, { ok: boolean; message?: string; holdings?: number; deposit?: number;
+    suggest?: { acnt_prdt_cd: string; holdings: number; deposit: number } | null }>>({});
   const [probe, setProbe] = useState<ProbeAcct[] | null>(null);
   const [acctMsg, setAcctMsg] = useState("");
   const loadAccts = useCallback(() => {
@@ -92,6 +93,7 @@ export default function SettingsPage() {
     setSysMsg(usingDefault ? "✅ 초기화 — 내장 기본 프롬프트 사용" : "✅ 저장 — 다음 대화부터 적용");
   }
 
+  const curAcct = editId === null ? null : accts.find((x) => x.id === editId) ?? null;
   const forcePw = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("force_pw") === "1";
   // 섹션 탭 (2026-09-05 지시) — 카드 세로 나열 대신 탭으로 분리, ?tab= 로 상태 공유
   const TABS = [
@@ -203,6 +205,7 @@ export default function SettingsPage() {
               <div key={a.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-line bg-inset px-3 py-2 text-[13.5px]">
                 <span className="font-semibold">{a.label}</span>
                 <span className="text-muted">{a.account_no}-{a.acnt_prdt_cd}</span>
+                <span className="text-faint">키 {a.app_key}</span>
                 <span className={a.env === "vps" ? "text-warn" : "text-muted"}>{a.env === "vps" ? "모의투자" : "실전"}</span>
                 <span className="text-faint">
                   {a.linked_portfolios.length > 0 ? `연결: ${a.linked_portfolios.join(", ")}` : "연결된 포트 없음"}
@@ -212,6 +215,17 @@ export default function SettingsPage() {
                     {testRes[a.id].ok
                       ? `✓ 정상 (보유 ${testRes[a.id].holdings}종목 · 예수금 ${(testRes[a.id].deposit ?? 0).toLocaleString()}원)`
                       : `✗ ${testRes[a.id].message}`}
+                    {/* 상품코드만 틀린 경우 — 되는 코드를 찾아 한 번에 고칠 수 있게 (2026-09-05) */}
+                    {!testRes[a.id].ok && testRes[a.id].suggest && (
+                      <button className="ml-2 rounded border border-accent px-1.5 py-0.5 text-[11.5px] font-semibold text-accent"
+                        onClick={() => void (async () => {
+                          const cd = testRes[a.id].suggest!.acnt_prdt_cd;
+                          const r = await apiFetch(`/broker/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ acnt_prdt_cd: cd }) });
+                          if (r.ok) { setTestRes((p2) => ({ ...p2, [a.id]: { ok: true, holdings: testRes[a.id].suggest!.holdings, deposit: testRes[a.id].suggest!.deposit } })); loadAccts(); }
+                        })()}>
+                        상품코드 {testRes[a.id].suggest!.acnt_prdt_cd} 로 고치기 (보유 {testRes[a.id].suggest!.holdings}종목)
+                      </button>
+                    )}
                   </span>
                 )}
                 <button className="ml-auto text-[12.5px] text-muted transition-colors hover:text-ink"
@@ -243,19 +257,20 @@ export default function SettingsPage() {
           <div className="mt-3 grid gap-3 border-t border-line pt-3 sm:grid-cols-2 lg:grid-cols-3">
             <p className="text-[13px] text-muted sm:col-span-2 lg:col-span-3">
               {editId === null ? "새 계좌를 등록합니다."
-                : "계좌를 수정합니다 — 앱키·시크릿은 비워두면 기존 값이 유지되고, 계좌번호도 비우면 그대로입니다."}
+                : <>계좌를 수정합니다 — 아래 회색 글씨가 <b className="text-ink">현재 저장된 값(중간 자리 가림)</b>입니다.
+                   비워두면 그대로 유지되고, 새로 입력한 항목만 교체됩니다.</>}
             </p>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">별칭 (선택)
               <input className="input w-full min-w-0" placeholder="예: 한투 메인" value={af.label}
                 onChange={(e) => setAf({ ...af, label: e.target.value })} /></label>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">계좌번호 (앞 8자리)
-              <input className="input w-full min-w-0" placeholder={editId === null ? "12345678" : "변경할 때만 입력"} value={af.account_no}
+              <input className="input w-full min-w-0" placeholder={editId === null ? "12345678" : `현재 ${curAcct?.account_no ?? ""} — 변경할 때만 입력`} value={af.account_no}
                 onChange={(e) => setAf({ ...af, account_no: e.target.value })} /></label>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱키(App Key)
-              <input className="input w-full min-w-0" placeholder={editId === null ? "" : "변경할 때만 입력"} value={af.app_key}
+              <input className="input w-full min-w-0" placeholder={editId === null ? "" : `현재 ${curAcct?.app_key ?? ""} — 변경할 때만 입력`} value={af.app_key}
                 onChange={(e) => setAf({ ...af, app_key: e.target.value })} /></label>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱시크릿(App Secret)
-              <input type="password" className="input w-full min-w-0" placeholder={editId === null ? "" : "변경할 때만 입력"} value={af.app_secret}
+              <input type="password" className="input w-full min-w-0" placeholder={editId === null ? "" : `현재 ${curAcct?.app_secret ?? ""} — 변경할 때만 입력`} value={af.app_secret}
                 onChange={(e) => setAf({ ...af, app_secret: e.target.value })} /></label>
             <div className="grid grid-cols-2 gap-3">
               <label className="grid min-w-0 gap-1 text-[13px] text-faint">환경
@@ -315,6 +330,11 @@ export default function SettingsPage() {
                   if (r.ok) { setAcctOpen(false); setProbe(null); setAcctMsg(""); setEditId(null);
                     setAf({ label: "", app_key: "", app_secret: "", account_no: "", acnt_prdt_cd: "01", env: "prod" });
                     loadAccts(); }
+                  else if (r.status === 404) {
+                    // 다른 곳에서 삭제된 계좌를 수정하려 한 경우 — 목록을 새로 고치고 폼을 닫는다 (2026-09-05)
+                    setAcctMsg("이미 삭제된 계좌입니다 — 목록을 새로 고쳤습니다.");
+                    setEditId(null); setAcctOpen(false); loadAccts();
+                  }
                   else setAcctMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `저장 실패 (${r.status})`);
                 })()}>{editId === null ? "등록" : "저장"}</button>
               <button className="btn" onClick={() => { setAcctOpen(false); setEditId(null); }}>취소</button>

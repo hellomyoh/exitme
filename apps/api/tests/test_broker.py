@@ -185,3 +185,36 @@ def test_account_update_keeps_keys_when_blank():
     assert c.put(f"/broker/accounts/{aid}", json={"account_no": "123"}, headers=h).status_code == 422
     _, h2 = _client()
     assert c.put(f"/broker/accounts/{aid}", json={"label": "탈취"}, headers=h2).status_code == 404
+
+
+def test_masked_values_exposed_for_edit():
+    """수정 화면용 마스킹 (2026-09-05): 앱키·시크릿·계좌를 중간 가림으로 내보내되 평문은 절대 노출 안 함."""
+    from app.broker import _mask
+
+    assert _mask("12345678") == "1234**78"          # 8자리 계좌
+    assert _mask("PS1234567890ABCD") == "PS12********CD"
+    assert _mask("ab", 2, 2) == "**"                 # 너무 짧으면 전부 가림
+    key, secret = "PS" + "k" * 30, "SEC" + "z" * 170
+    c, h = _client()
+    made = c.post("/broker/accounts", json={"label": "마스킹", "app_key": key,
+                                            "app_secret": secret, "account_no": "10041234-22"},
+                  headers=h).json()
+    assert made["app_key"].startswith("PS") and made["app_key"].endswith(key[-2:])
+    assert "*" in made["app_key"] and key not in made["app_key"]
+    assert "*" in made["app_secret"] and secret not in made["app_secret"]
+    assert made["account_no"] == "1004**34" and made["acnt_prdt_cd"] == "22"
+    body = c.get("/broker/accounts", headers=h).text
+    assert key not in body and secret not in body    # 평문 미노출
+    # 삭제된 계좌 수정 → 404 (화면은 이 응답으로 목록을 새로 고친다)
+    c.delete(f"/broker/accounts/{made['id']}", headers=h)
+    assert c.put(f"/broker/accounts/{made['id']}", json={"label": "x"}, headers=h).status_code == 404
+
+
+def test_kis_error_messages_are_actionable():
+    """오류 안내 (2026-09-05): KIS 원문 코드를 조치 가능한 한국어로 바꿔 전달한다."""
+    from app.broker import humanize_kis_error
+
+    assert "계좌번호가 올바르지 않습니다" in humanize_kis_error("KIS error rt_cd=2 msg=ERROR : INPUT INVALID_CHECK_ACNO")
+    assert "앱키가 유효하지 않습니다" in humanize_kis_error("유효하지 않은 AppKey입니다. (HTTP 403, EGW00103)")
+    assert "분당 1회" in humanize_kis_error("EGW00133 접근 과다")
+    assert humanize_kis_error("알 수 없는 오류") == "알 수 없는 오류"  # 매핑 없으면 원문 유지
