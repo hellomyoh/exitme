@@ -34,23 +34,17 @@ def _owned(session: Session, pid: int, user_id: int):
 
 
 def _cred(session: Session, pid: int, user_id: int) -> BrokerCredential:
-    _owned(session, pid, user_id)
-    row = session.scalar(select(BrokerCredential).where(BrokerCredential.portfolio_id == pid))
-    if row is None:
-        raise HTTPException(status_code=409, detail="증권사 연동이 설정되지 않았습니다")
+    """포트에 연결된 증권사 계좌 — 설정에서 등록한 목록 중 선택된 것 (0017)."""
+    pf = _owned(session, pid, user_id)
+    row = session.get(BrokerCredential, pf.broker_credential_id) if pf.broker_credential_id else None
+    if row is None or row.user_id != user_id:
+        raise HTTPException(status_code=409,
+                            detail="이 포트에 연결된 증권사 계좌가 없습니다 — 일반 설정에서 계좌를 등록하고 연결하세요")
     return row
 
 
 def _mask(s: str) -> str:
     return s[:4] + "****" + s[-2:] if len(s) > 8 else "****"
-
-
-class BrokerIn(BaseModel):
-    app_key: str = Field(min_length=10, max_length=200)
-    app_secret: str = Field(min_length=10, max_length=400)
-    account_no: str = Field(min_length=6, max_length=20)     # "12345678" 또는 "12345678-01"
-    acnt_prdt_cd: str = Field(default="01", pattern=r"^\d{2}$")
-    env: str = Field(default="prod", pattern="^(prod|vps)$")
 
 
 def split_account(raw: str, prdt: str = "01") -> tuple[str, str]:
@@ -65,43 +59,97 @@ def split_account(raw: str, prdt: str = "01") -> tuple[str, str]:
     return digits, prdt
 
 
-@router.get("/portfolio/{pid}/broker")
-def get_broker(pid: int, user_id: int = Depends(current_user_id),
-               session: Session = Depends(get_session)) -> dict:
-    _owned(session, pid, user_id)
-    row = session.scalar(select(BrokerCredential).where(BrokerCredential.portfolio_id == pid))
-    if row is None:
-        return {"linked": False}
-    return {"linked": True, "env": row.env, "acnt_prdt_cd": row.acnt_prdt_cd,
+class AccountIn(BaseModel):
+    """설정에서 등록하는 증권사 계좌 (2026-09-05 지시)."""
+
+    label: str = Field(default="", max_length=40)
+    app_key: str = Field(min_length=10, max_length=200)
+    app_secret: str = Field(min_length=10, max_length=400)
+    account_no: str = Field(min_length=6, max_length=20)
+    acnt_prdt_cd: str = Field(default="01", pattern=r"^\d{2}$")
+    env: str = Field(default="prod", pattern="^(prod|vps)$")
+
+
+def _acct_out(row: BrokerCredential, linked_names: list[str] | None = None) -> dict:
+    return {"id": row.id, "label": row.label or f"{_mask(row.account_no)}",
+            "env": row.env, "acnt_prdt_cd": row.acnt_prdt_cd,
             "app_key": _mask(row.app_key), "account_no": _mask(row.account_no),
-            "last_import_at": row.last_import_at.isoformat() if row.last_import_at else None}
+            "last_import_at": row.last_import_at.isoformat() if row.last_import_at else None,
+            "linked_portfolios": linked_names or []}
 
 
-@router.put("/portfolio/{pid}/broker")
-def put_broker(pid: int, body: BrokerIn, user_id: int = Depends(current_user_id),
-               session: Session = Depends(get_session)) -> dict:
-    _owned(session, pid, user_id)
-    row = session.scalar(select(BrokerCredential).where(BrokerCredential.portfolio_id == pid))
-    if row is None:
-        row = BrokerCredential(user_id=user_id, portfolio_id=pid)
-        session.add(row)
+@router.get("/broker/accounts")
+def list_accounts(user_id: int = Depends(current_user_id),
+                  session: Session = Depends(get_session)) -> dict:
+    """등록된 증권사 계좌 목록 (설정 화면) — 키는 마스킹, 연결된 포트 이름 포함."""
+    from app.models import TradePortfolio
+
+    rows = session.scalars(select(BrokerCredential).where(BrokerCredential.user_id == user_id)
+                           .order_by(BrokerCredential.id)).all()
+    ports = session.scalars(select(TradePortfolio).where(TradePortfolio.user_id == user_id)).all()
+    by_cred: dict[int, list[str]] = {}
+    for p in ports:
+        if p.broker_credential_id:
+            by_cred.setdefault(p.broker_credential_id, []).append(p.name)
+    return {"items": [_acct_out(r, by_cred.get(r.id, [])) for r in rows]}
+
+
+@router.post("/broker/accounts", status_code=201)
+def create_account(body: AccountIn, user_id: int = Depends(current_user_id),
+                   session: Session = Depends(get_session)) -> dict:
     cano, prdt = split_account(body.account_no, body.acnt_prdt_cd)
     if len(cano) != 8:
         raise HTTPException(status_code=422,
                             detail="계좌번호는 종합계좌 8자리(예: 12345678) 또는 12345678-01 형식이어야 합니다")
-    row.app_key, row.app_secret = body.app_key.strip(), body.app_secret.strip()
-    row.account_no, row.acnt_prdt_cd, row.env = cano, prdt, body.env
+    row = BrokerCredential(user_id=user_id, label=body.label.strip() or f"{cano}-{prdt}",
+                           env=body.env, app_key=body.app_key.strip(),
+                           app_secret=body.app_secret.strip(), account_no=cano, acnt_prdt_cd=prdt)
+    session.add(row)
     session.commit()
-    return {"linked": True, "account_no": _mask(cano), "acnt_prdt_cd": prdt}
+    return _acct_out(row)
 
 
-@router.delete("/portfolio/{pid}/broker")
-def delete_broker(pid: int, user_id: int = Depends(current_user_id),
-                  session: Session = Depends(get_session)) -> dict:
-    row = _cred(session, pid, user_id)
-    session.delete(row)
+@router.delete("/broker/accounts/{aid}")
+def delete_account(aid: int, user_id: int = Depends(current_user_id),
+                   session: Session = Depends(get_session)) -> dict:
+    row = session.get(BrokerCredential, aid)
+    if row is None or row.user_id != user_id:
+        raise HTTPException(status_code=404, detail="account not found")
+    session.delete(row)  # 포트 연결은 FK ON DELETE SET NULL 로 자동 해제
     session.commit()
     return {"deleted": True}
+
+
+class LinkIn(BaseModel):
+    credential_id: int | None = None  # None = 연결 해제
+
+
+@router.get("/portfolio/{pid}/broker")
+def get_broker(pid: int, user_id: int = Depends(current_user_id),
+               session: Session = Depends(get_session)) -> dict:
+    """포트에 연결된 계좌 상태 — 실전매매 화면용."""
+    pf = _owned(session, pid, user_id)
+    row = session.get(BrokerCredential, pf.broker_credential_id) if pf.broker_credential_id else None
+    if row is None or row.user_id != user_id:
+        return {"linked": False}
+    return {"linked": True, **_acct_out(row)}
+
+
+@router.put("/portfolio/{pid}/broker")
+def link_broker(pid: int, body: LinkIn, user_id: int = Depends(current_user_id),
+                session: Session = Depends(get_session)) -> dict:
+    """설정에서 등록한 계좌를 이 포트에 연결/해제 (키 입력은 설정에서만)."""
+    pf = _owned(session, pid, user_id)
+    if body.credential_id is None:
+        pf.broker_credential_id = None
+        session.commit()
+        return {"linked": False}
+    row = session.get(BrokerCredential, body.credential_id)
+    if row is None or row.user_id != user_id:
+        raise HTTPException(status_code=404, detail="account not found")
+    pf.broker_credential_id = row.id
+    session.commit()
+    return {"linked": True, **_acct_out(row)}
 
 
 def _client(cred: BrokerCredential):

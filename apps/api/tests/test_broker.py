@@ -34,27 +34,42 @@ def test_reconcile_plan_cases():
     assert len(out) == 1 and out[0]["level"] == "warn" and "계획에 없던" in out[0]["text"]
 
 
-def test_broker_credentials_crud_and_isolation():
+def test_account_store_and_portfolio_link():
+    """설정에서 계좌 등록 → 실전매매 포트에 연결 (0017): 마스킹·재사용·격리·해제."""
     c, h = _client()
     pid = c.post("/portfolios", json={"name": "연동테스트"}, headers=h).json()["id"]
+    pid2 = c.post("/portfolios", json={"name": "두번째"}, headers=h).json()["id"]
     assert c.get(f"/portfolio/{pid}/broker", headers=h).json() == {"linked": False}
-    body = {"app_key": "PSxxxxxxxxxxxxxxxxxx", "app_secret": "SEC" + "y" * 40,
-            "account_no": "12345678", "acnt_prdt_cd": "01", "env": "vps"}
-    assert c.put(f"/portfolio/{pid}/broker", json=body, headers=h).json()["linked"] is True
-    got = c.get(f"/portfolio/{pid}/broker", headers=h).json()
-    assert got["linked"] and got["env"] == "vps"
-    assert "****" in got["app_key"] and body["app_key"] not in got["app_key"]   # 마스킹
-    assert "****" in got["account_no"]
-    # 평문이 응답에 없어야 함
-    assert body["app_secret"] not in c.get(f"/portfolio/{pid}/broker", headers=h).text
-    # 타인 접근 차단
+    assert c.get("/broker/accounts", headers=h).json()["items"] == []
+
+    body = {"label": "메인 계좌", "app_key": "PSxxxxxxxxxxxxxxxxxx", "app_secret": "SEC" + "y" * 40,
+            "account_no": "12345678-22", "env": "vps"}
+    acct = c.post("/broker/accounts", json=body, headers=h).json()
+    assert acct["label"] == "메인 계좌" and acct["acnt_prdt_cd"] == "22" and acct["env"] == "vps"
+    assert "****" in acct["app_key"] and body["app_key"] not in acct["app_key"]
+    lst = c.get("/broker/accounts", headers=h)
+    assert body["app_secret"] not in lst.text and len(lst.json()["items"]) == 1
+
+    # 같은 계좌를 두 포트에 연결(재사용) — 키 재입력 없음
+    for p in (pid, pid2):
+        r = c.put(f"/portfolio/{p}/broker", json={"credential_id": acct["id"]}, headers=h)
+        assert r.status_code == 200 and r.json()["linked"] is True
+    linked = c.get("/broker/accounts", headers=h).json()["items"][0]["linked_portfolios"]
+    assert set(linked) == {"연동테스트", "두번째"}
+
+    # 연결 해제
+    assert c.put(f"/portfolio/{pid2}/broker", json={"credential_id": None}, headers=h).json()["linked"] is False
+    assert c.post(f"/portfolio/{pid2}/import-fills", headers=h).status_code == 409  # 미연결
+    # 타인 계좌 연결 시도 차단
     _, h2 = _client()
-    assert c.get(f"/portfolio/{pid}/broker", headers=h2).status_code == 404
-    assert c.post(f"/portfolio/{pid}/import-fills", headers=h2).status_code == 404
-    # 연동 없는 포트에서 가져오기 → 409
-    pid2 = c.post("/portfolios", json={"name": "미연동"}, headers=h).json()["id"]
-    assert c.post(f"/portfolio/{pid2}/import-fills", headers=h).status_code == 409
-    assert c.delete(f"/portfolio/{pid}/broker", headers=h).json()["deleted"] is True
+    assert c.get("/broker/accounts", headers=h2).json()["items"] == []
+    assert c.delete(f"/broker/accounts/{acct['id']}", headers=h2).status_code == 404
+    pid3 = c.post("/portfolios", json={"name": "타인포트"}, headers=h2).json()["id"]
+    assert c.put(f"/portfolio/{pid3}/broker", json={"credential_id": acct["id"]},
+                 headers=h2).status_code == 404
+    # 계좌 삭제 → 연결 자동 해제
+    assert c.delete(f"/broker/accounts/{acct['id']}", headers=h).json()["deleted"] is True
+    assert c.get(f"/portfolio/{pid}/broker", headers=h).json() == {"linked": False}
 
 
 def test_import_fills_dry_run_and_idempotent(monkeypatch):
@@ -64,8 +79,9 @@ def test_import_fills_dry_run_and_idempotent(monkeypatch):
 
     c, h = _client()
     pid = c.post("/portfolios", json={"name": "가져오기"}, headers=h).json()["id"]
-    c.put(f"/portfolio/{pid}/broker", json={"app_key": "PS" + "k" * 18, "app_secret": "S" * 42,
-                                            "account_no": "12345678"}, headers=h)
+    aid = c.post("/broker/accounts", json={"app_key": "PS" + "k" * 18, "app_secret": "S" * 42,
+                                           "account_no": "12345678"}, headers=h).json()["id"]
+    c.put(f"/portfolio/{pid}/broker", json={"credential_id": aid}, headers=h)
     d = date.today() - timedelta(days=1)
     fake = [Execution(order_no="A1", trade_date=d, code="069500", side="buy",
                       filled_qty=10, avg_price=30000, order_qty=10, remain_qty=0, name="KODEX 200"),
@@ -102,14 +118,12 @@ def test_account_number_normalization():
     assert split_account("12345678", "22") == ("12345678", "22")  # 8자리면 입력 상품코드 유지
 
     c, h = _client()
-    pid = c.post("/portfolios", json={"name": "계좌형식"}, headers=h).json()["id"]
     base = {"app_key": "PS" + "k" * 18, "app_secret": "S" * 42}
-    r = c.put(f"/portfolio/{pid}/broker", json={**base, "account_no": "87654321-22"}, headers=h)
-    assert r.status_code == 200 and r.json()["acnt_prdt_cd"] == "22"
-    assert c.get(f"/portfolio/{pid}/broker", headers=h).json()["acnt_prdt_cd"] == "22"
+    r = c.post("/broker/accounts", json={**base, "account_no": "87654321-22"}, headers=h)
+    assert r.status_code == 201 and r.json()["acnt_prdt_cd"] == "22"
     # 자릿수 부족 → 422
-    assert c.put(f"/portfolio/{pid}/broker", json={**base, "account_no": "123456"},
-                 headers=h).status_code == 422
+    assert c.post("/broker/accounts", json={**base, "account_no": "123456"},
+                  headers=h).status_code == 422
 
 
 def test_probe_account_finds_product_code(monkeypatch):

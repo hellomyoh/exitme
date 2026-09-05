@@ -248,6 +248,9 @@ class TradePortfolio(TimestampMixin, Base):
     market: Mapped[str] = mapped_column(Text, nullable=False, default="KR")     # KR | US (US 는 센트 단위)
     backtest_id: Mapped[int | None] = mapped_column(ForeignKey("backtests.id"))
     params: Mapped[dict | None] = mapped_column(JSONB)
+    # 연결된 증권사 계좌 — 설정에서 등록한 목록 중 선택 (0017, 2026-09-05)
+    broker_credential_id: Mapped[int | None] = mapped_column(
+        ForeignKey("broker_credentials.id", ondelete="SET NULL"))
 
 
 class TradeTransaction(TimestampMixin, Base):
@@ -270,14 +273,13 @@ class TradeTransaction(TimestampMixin, Base):
 
 
 class BrokerCredential(TimestampMixin, Base):
-    """증권사 조회 연동 자격 — 포트당 1건, 조회 TR 전용(주문 미사용). 0016, 2026-09-05 지시."""
+    """증권사 계좌 — 설정에서 등록·관리하고 포트가 참조한다(0017). 조회 TR 전용(주문 미사용)."""
 
     __tablename__ = "broker_credentials"
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    portfolio_id: Mapped[int] = mapped_column(
-        ForeignKey("portfolios.id", ondelete="CASCADE"), unique=True, nullable=False)
+    label: Mapped[str] = mapped_column(Text, nullable=False, default="")   # 계좌 별칭 (0017)
     env: Mapped[str] = mapped_column(Text, nullable=False, default="prod")  # prod | vps(모의)
     app_key: Mapped[str] = mapped_column(EncryptedText, nullable=False)        # 🔒
     app_secret: Mapped[str] = mapped_column(EncryptedText, nullable=False)     # 🔒

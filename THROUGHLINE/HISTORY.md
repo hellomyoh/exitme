@@ -315,3 +315,9 @@
 - 작업 내용: 시장 조사(docs/market-research)에서 도출된 "조회 전용 연동" 을 구현. ① **계획 vs 등록 체결 대조**: 실행일이 도래한 최신 계획 스냅샷과 그날 등록 거래를 레그·방향별로 비교해 미이행/계획 외/수량 불일치를 주문표 카드 상단 경고 배너로 표시(**표시만 — 자동 수정 없음**, 사용자 지시). ② **체결 자동 가져오기**: KIS 일별주문체결조회(TTTC0081R 계열, 연속조회 페이징·응답 필드 방어적 파싱)로 최근 N일 체결을 조회해 미리보기 → 실행. broker_ref(주문번호:일자) 유니크로 멱등, 등록 후 _rebuild_ledger 로 로트·FIFO·실현손익 일관성 유지. ③ 포트당 증권사 자격(앱키·시크릿·계좌번호)을 AES-GCM 암호화 컬럼(EncryptedText, 0016)에 저장하고 응답은 마스킹. **주문 TR 은 구현하지 않음** — 자동 발주 미도입 원칙 유지.
 - 테스트: 대조 4케이스(일치/미이행/수량 불일치/계획 외)·자격 CRUD·마스킹·타인 접근 404·미연동 409·미리보기 무등록·중복 방지 — 전체 159 passed, tsc 클린, 헤드리스 UI 확인.
 - Git commit: feat: read-only broker link — auto fill import and plan reconciliation warnings
+
+## [2026-09-05] change | 증권사 계좌를 설정에서 관리 — 실전매매는 선택만 (사용자 검토 요청)
+
+- 작업 내용: 자격이 포트에 1:1 종속(포트마다 키 재입력)이던 구조를 **계정 단위 계좌 목록 + 포트 참조**로 변경(0017: broker_credentials.portfolio_id 제거·label 추가, portfolios.broker_credential_id FK ON DELETE SET NULL, 기존 연결은 마이그레이션에서 이관). 일반 설정에 '증권사 계좌' 카드(등록·계좌 조회로 상품코드 확인·연결된 포트 표시·삭제), 실전매매는 **드롭다운 선택**만(키 입력 없음, 미등록 시 설정 링크 안내). 한 계좌를 여러 포트에 재사용 가능, 계좌 삭제 시 연결 자동 해제.
+- 테스트: 계좌 CRUD·마스킹·재사용(두 포트 연결)·타인 계좌 연결 차단·삭제 시 해제·미연결 409 — 전체 161 passed, tsc 클린, E2E(설정 등록 → 실전매매 선택 → 연결됨) 확인.
+- Git commit: change: manage broker accounts in settings, select them per portfolio

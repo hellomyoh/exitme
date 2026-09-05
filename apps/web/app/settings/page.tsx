@@ -1,7 +1,7 @@
 "use client";
 
 /** 일반 설정 — 비밀번호 변경·세션·로그아웃 (2026-08-31 지시). */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiFetch, fetchMe, logout as apiLogout } from "../../lib/api";
@@ -45,6 +45,22 @@ export default function SettingsPage() {
     const r = await apiFetch("/settings/chat", { method: "PUT", body: JSON.stringify({ prompt: chatPrompt }) });
     setChatMsg(r.ok ? "✅ 저장되었습니다 — 다음 대화부터 적용" : `저장 실패 (${r.status})`);
   }
+
+  // 증권사 계좌 — 여기서 등록하고 실전매매에서 선택해 쓴다 (2026-09-05 지시)
+  type Acct = { id: number; label: string; env: string; acnt_prdt_cd: string; app_key: string;
+    account_no: string; last_import_at: string | null; linked_portfolios: string[] };
+  type ProbeAcct = { account_no: string; acnt_prdt_cd: string; label: string; holdings: number; deposit: number; total_eval: number };
+  const [accts, setAccts] = useState<Acct[]>([]);
+  const [af, setAf] = useState({ label: "", app_key: "", app_secret: "", account_no: "", acnt_prdt_cd: "01", env: "prod" });
+  const [acctOpen, setAcctOpen] = useState(false);
+  const [probe, setProbe] = useState<ProbeAcct[] | null>(null);
+  const [acctMsg, setAcctMsg] = useState("");
+  const loadAccts = useCallback(() => {
+    void apiFetch("/broker/accounts").then(async (r) => {
+      if (r.ok) setAccts(((await r.json()) as { items: Acct[] }).items);
+    });
+  }, []);
+  useEffect(() => loadAccts(), [loadAccts]);
 
   // 챗봇 시스템 프롬프트 — 전역·관리자 전용 (2026-09-04). 빈 값 저장 = 기본 복귀.
   const [isAdmin, setIsAdmin] = useState(false);
@@ -123,6 +139,114 @@ export default function SettingsPage() {
           {chatMsg && <span className="text-[13.5px] text-muted">{chatMsg}</span>}
         </div>
       </Card>
+      <Card className="mb-4">
+        <CardTitle right={
+          <button className="text-[12.5px] font-normal normal-case text-accent"
+            onClick={() => { setAcctOpen(!acctOpen); setProbe(null); setAcctMsg(""); }}>
+            {acctOpen ? "닫기" : "＋ 계좌 등록"}</button>
+        }>증권사 계좌 <span className="normal-case text-faint">
+          · 여기서 등록하고 실전매매 화면에서 선택해 사용합니다 (조회 전용 — 주문은 하지 않습니다)</span>
+        </CardTitle>
+
+        {accts.length === 0 && !acctOpen && (
+          <p className="text-[13.5px] text-muted">
+            등록된 계좌가 없습니다. 한국투자증권 앱키·시크릿·계좌번호를 등록하면 체결 내역을 자동으로 불러올 수 있습니다.
+          </p>
+        )}
+        {accts.length > 0 && (
+          <div className="grid gap-2">
+            {accts.map((a) => (
+              <div key={a.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-line bg-inset px-3 py-2 text-[13.5px]">
+                <span className="font-semibold">{a.label}</span>
+                <span className="text-muted">{a.account_no}-{a.acnt_prdt_cd}</span>
+                <span className={a.env === "vps" ? "text-warn" : "text-muted"}>{a.env === "vps" ? "모의투자" : "실전"}</span>
+                <span className="text-faint">
+                  {a.linked_portfolios.length > 0 ? `연결: ${a.linked_portfolios.join(", ")}` : "연결된 포트 없음"}
+                </span>
+                <button className="ml-auto text-[12.5px] text-faint transition-colors hover:text-down"
+                  onClick={() => void (async () => {
+                    if (!window.confirm(`'${a.label}' 계좌 등록을 삭제할까요? 연결된 포트의 연동이 해제됩니다.`)) return;
+                    const r = await apiFetch(`/broker/accounts/${a.id}`, { method: "DELETE" });
+                    if (r.ok) loadAccts();
+                  })()}>삭제</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {acctOpen && (
+          <div className="mt-3 grid gap-3 border-t border-line pt-3 sm:grid-cols-2">
+            <label className="grid min-w-0 gap-1 text-[13px] text-faint">별칭 (선택)
+              <input className="input w-full min-w-0" placeholder="예: 한투 메인" value={af.label}
+                onChange={(e) => setAf({ ...af, label: e.target.value })} /></label>
+            <label className="grid min-w-0 gap-1 text-[13px] text-faint">계좌번호 (앞 8자리)
+              <input className="input w-full min-w-0" placeholder="12345678" value={af.account_no}
+                onChange={(e) => setAf({ ...af, account_no: e.target.value })} /></label>
+            <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱키(App Key)
+              <input className="input w-full min-w-0" value={af.app_key}
+                onChange={(e) => setAf({ ...af, app_key: e.target.value })} /></label>
+            <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱시크릿(App Secret)
+              <input type="password" className="input w-full min-w-0" value={af.app_secret}
+                onChange={(e) => setAf({ ...af, app_secret: e.target.value })} /></label>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="grid min-w-0 gap-1 text-[13px] text-faint">환경
+                <select className="input w-full min-w-0" value={af.env}
+                  onChange={(e) => setAf({ ...af, env: e.target.value })}>
+                  <option value="prod">실전</option><option value="vps">모의투자</option>
+                </select></label>
+              <div className="grid content-end">
+                {/* KIS 는 계좌 목록 API 가 없어, 입력 계좌를 실제 조회해 상품코드까지 확인한다 */}
+                <button className="btn !py-2" disabled={!(af.app_key && af.app_secret && af.account_no)}
+                  onClick={() => void (async () => {
+                    setAcctMsg("조회 중…"); setProbe(null);
+                    const r = await apiFetch("/broker/probe", { method: "POST", body: JSON.stringify({
+                      app_key: af.app_key, app_secret: af.app_secret, account_no: af.account_no, env: af.env }) });
+                    if (r.ok) { setProbe(((await r.json()) as { accounts: ProbeAcct[] }).accounts); setAcctMsg(""); }
+                    else setAcctMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `조회 실패 (${r.status})`);
+                  })()}>계좌 조회</button>
+              </div>
+            </div>
+            {(probe || acctMsg) && (
+              <div className="sm:col-span-2">
+                {acctMsg && <p className="text-[13px] text-up">{acctMsg}</p>}
+                {probe && probe.length > 0 && (
+                  <>
+                    <div className="mb-1 text-[12.5px] text-faint">확인된 계좌 — 선택하면 그 계좌로 등록됩니다</div>
+                    <div className="grid gap-1.5">
+                      {probe.map((a) => (
+                        <button key={a.label}
+                          onClick={() => setAf({ ...af, account_no: a.account_no, acnt_prdt_cd: a.acnt_prdt_cd })}
+                          className={`flex flex-wrap items-center gap-x-4 rounded-lg border px-3 py-2 text-left text-[13.5px] transition-colors ${
+                            af.acnt_prdt_cd === a.acnt_prdt_cd && af.account_no === a.account_no
+                              ? "border-accent bg-accent-dim font-semibold" : "border-line bg-inset hover:border-line-strong"}`}>
+                          <span className="font-semibold">{a.label}</span>
+                          <span className="text-muted">보유 {a.holdings}종목</span>
+                          <span className="text-muted">예수금 {a.deposit.toLocaleString()}원</span>
+                          <span className="text-muted">평가 {a.total_eval.toLocaleString()}원</span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            <div className="flex items-center gap-3 sm:col-span-2">
+              <button className="btn btn-primary"
+                disabled={!(af.app_key && af.app_secret && af.account_no)}
+                onClick={() => void (async () => {
+                  const r = await apiFetch("/broker/accounts", { method: "POST", body: JSON.stringify(af) });
+                  if (r.ok) { setAcctOpen(false); setProbe(null); setAcctMsg("");
+                    setAf({ label: "", app_key: "", app_secret: "", account_no: "", acnt_prdt_cd: "01", env: "prod" });
+                    loadAccts(); }
+                  else setAcctMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `등록 실패 (${r.status})`);
+                })()}>등록</button>
+              <button className="btn" onClick={() => setAcctOpen(false)}>취소</button>
+              <span className="text-[12px] text-faint">키는 서버에 암호화 저장되며 화면에는 마스킹만 표시됩니다.</span>
+            </div>
+          </div>
+        )}
+      </Card>
+
       {isAdmin && (
         <Card className="mb-4">
           <CardTitle right={<span className="text-[12px] font-normal normal-case text-faint">
