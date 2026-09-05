@@ -113,3 +113,33 @@ def test_fetch_price():
 def test_mask_hides_secret():
     assert "PSabcdefghijk" not in mask("PSabcdefghijklmn")
     assert mask("short") == "****"
+
+
+@responses.activate
+def test_token_expiry_parsed_as_kst():
+    """만료시각은 KST 벽시계 (2026-09-05 결함): UTC naive 비교면 9시간 과대평가 — KST aware 로 고정."""
+    from app.services.kis_auth import KST
+
+    responses.post(PROD + "/oauth2/tokenP",
+                   json={"access_token": "t", "access_token_token_expired": "2030-01-01 21:00:00"})
+    auth = KisAuth("key", "secret", "prod")
+    tok = auth._issue(__import__("requests").Session())
+    assert tok.expires_at.tzinfo is not None
+    assert tok.expires_at == datetime(2030, 1, 1, 21, 0, tzinfo=KST)
+
+
+@responses.activate
+def test_token_reissued_within_margin():
+    """만료 10분 이내 토큰은 재발급 — 구 결함(UTC now 비교)에서는 9시간 동안 재사용됐다."""
+    from app.services.kis_auth import KST, _now
+
+    near = (_now() + timedelta(minutes=5)).astimezone(KST).strftime("%Y-%m-%d %H:%M:%S")
+    far = (_now() + timedelta(hours=24)).astimezone(KST).strftime("%Y-%m-%d %H:%M:%S")
+    responses.post(PROD + "/oauth2/tokenP",
+                   json={"access_token": "near", "access_token_token_expired": near})
+    responses.post(PROD + "/oauth2/tokenP",
+                   json={"access_token": "far", "access_token_token_expired": far})
+    auth = KisAuth("key", "secret", "prod")
+    assert auth.access_token() == "near"
+    assert auth.access_token() == "far"  # 마진 이내 → 즉시 재발급
+    assert len(responses.calls) == 2

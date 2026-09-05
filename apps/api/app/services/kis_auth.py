@@ -18,6 +18,16 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# KIS 만료시각(access_token_token_expired)은 KST 벽시계 문자열 — 컨테이너는 UTC 라서
+# naive 비교 시 9시간 과대평가(만료 토큰을 9시간 더 사용) 버그가 있었다 (2026-09-05 검토).
+from datetime import timezone as _tz  # noqa: E402
+
+KST = _tz(timedelta(hours=9))
+
+
+def _now() -> datetime:
+    return datetime.now(KST)
+
 BASE_URLS = {
     "prod": "https://openapi.koreainvestment.com:9443",
     "vps": "https://openapivts.koreainvestment.com:29443",
@@ -78,7 +88,10 @@ class KisAuth:
             return None
         try:
             data = json.loads(raw)
-            return _Token(data["value"], datetime.fromisoformat(data["expires_at"]))
+            exp = datetime.fromisoformat(data["expires_at"])
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=KST)  # 구버전 캐시(naive=KST) 호환
+            return _Token(data["value"], exp)
         except (ValueError, KeyError):
             return None
 
@@ -86,14 +99,14 @@ class KisAuth:
         r = self._redis()
         if r is None:
             return
-        ttl = max(int((token.expires_at - datetime.now()).total_seconds()), 60)
+        ttl = max(int((token.expires_at - _now()).total_seconds()), 60)
         r.set(self._redis_key(),
               json.dumps({"value": token.value, "expires_at": token.expires_at.isoformat()}),
               ex=ttl)
 
     def access_token(self, session: requests.Session | None = None) -> str:
         with self._lock:
-            now = datetime.now()
+            now = _now()
             if self._token and self._token.expires_at - _EXPIRY_MARGIN > now:
                 return self._token.value
             shared = self._load_shared()
@@ -109,7 +122,7 @@ class KisAuth:
                     logger.warning("KIS token issue rate-limited (403) — waiting 65s before retry")
                     time.sleep(65)
                     shared = self._load_shared()
-                    if shared and shared.expires_at - _EXPIRY_MARGIN > datetime.now():
+                    if shared and shared.expires_at - _EXPIRY_MARGIN > _now():
                         self._token = shared
                         return shared.value
                     self._token = self._issue(sess)
@@ -134,9 +147,9 @@ class KisAuth:
         # 공식 응답: access_token_token_expired = "YYYY-MM-DD HH:MM:SS", expires_in = 초
         expired_str = body.get("access_token_token_expired")
         if expired_str:
-            expires_at = datetime.strptime(expired_str, "%Y-%m-%d %H:%M:%S")
+            expires_at = datetime.strptime(expired_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=KST)
         else:
-            expires_at = datetime.now() + timedelta(seconds=int(body.get("expires_in", 86400)))
+            expires_at = _now() + timedelta(seconds=int(body.get("expires_in", 86400)))
         logger.info("KIS token issued env=%s key=%s expires=%s", self.env, mask(self.app_key), expires_at)
         return _Token(value=token, expires_at=expires_at)
 
