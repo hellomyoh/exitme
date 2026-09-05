@@ -44,6 +44,18 @@ def mask(secret: str) -> str:
     return secret[:4] + "****" + secret[-2:]
 
 
+class KisAuthError(RuntimeError):
+    """토큰 발급 실패 — KIS 응답 메시지를 그대로 담는다 (사용자 안내용, 2026-09-05)."""
+
+    def __init__(self, message: str, *, rate_limited: bool = False) -> None:
+        super().__init__(message)
+        self.rate_limited = rate_limited
+
+
+# 분당 1회 발급 제한 코드/문구 (그 외 403 은 자격·환경 오류로 취급)
+_RATE_LIMIT_HINTS = ("EGW00133", "1분", "초당", "빈번", "too many")
+
+
 @dataclass
 class _Token:
     value: str
@@ -51,9 +63,11 @@ class _Token:
 
 
 class KisAuth:
-    def __init__(self, app_key: str, app_secret: str, env: str = "prod") -> None:
+    def __init__(self, app_key: str, app_secret: str, env: str = "prod",
+                 wait_on_rate_limit: bool = True) -> None:
         if env not in BASE_URLS:
             raise ValueError(f"KIS_ENV must be prod|vps, got {env!r}")
+        self.wait_on_rate_limit = wait_on_rate_limit  # 대화형 호출은 대기하지 않는다 (2026-09-05)
         self.app_key = app_key
         self.app_secret = app_secret
         self.env = env
@@ -105,6 +119,12 @@ class KisAuth:
               ex=ttl)
 
     def access_token(self, session: requests.Session | None = None) -> str:
+        """캐시(메모리→Redis) 우선, 없으면 발급.
+
+        발급 실패 시 KIS 메시지를 KisAuthError 로 올린다. **분당 제한일 때만** 대기 후 재시도하며,
+        대화형 호출(wait_on_rate_limit=False)은 기다리지 않고 즉시 알린다 —
+        모든 403 을 제한으로 보고 65초 멈췄다가 결국 실패하던 결함 수정 (2026-09-05).
+        """
         with self._lock:
             now = _now()
             if self._token and self._token.expires_at - _EXPIRY_MARGIN > now:
@@ -116,18 +136,19 @@ class KisAuth:
             sess = session or requests.Session()
             try:
                 self._token = self._issue(sess)
-            except requests.HTTPError as exc:
-                if exc.response is not None and exc.response.status_code == 403:
-                    # 발급 빈도 제한 — 65초 대기 후 1회 재시도 (그 사이 타 프로세스 발급분 재확인)
-                    logger.warning("KIS token issue rate-limited (403) — waiting 65s before retry")
-                    time.sleep(65)
-                    shared = self._load_shared()
-                    if shared and shared.expires_at - _EXPIRY_MARGIN > _now():
-                        self._token = shared
-                        return shared.value
-                    self._token = self._issue(sess)
-                else:
+            except KisAuthError as exc:
+                if not exc.rate_limited:
                     raise
+                logger.warning("KIS token rate-limited key=%s (wait=%s)",
+                               mask(self.app_key), self.wait_on_rate_limit)
+                if not self.wait_on_rate_limit:
+                    raise
+                time.sleep(65)  # 배치 경로만 — 그 사이 타 프로세스 발급분 재확인
+                shared = self._load_shared()
+                if shared and shared.expires_at - _EXPIRY_MARGIN > _now():
+                    self._token = shared
+                    return shared.value
+                self._token = self._issue(sess)
             self._store_shared(self._token)
             return self._token.value
 
@@ -141,7 +162,19 @@ class KisAuth:
             },
             timeout=10,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            # KIS 는 사유를 본문에 준다 — 코드·메시지를 그대로 올려 사용자에게 안내한다
+            try:
+                b = resp.json()
+            except ValueError:
+                b = {}
+            code = str(b.get("error_code") or b.get("msg_cd") or "")
+            msg = str(b.get("error_description") or b.get("msg1") or resp.text[:200]).strip()
+            blob = f"{code} {msg}"
+            rate = any(h.lower() in blob.lower() for h in _RATE_LIMIT_HINTS)
+            detail = f"{msg or 'KIS 토큰 발급 실패'} (HTTP {resp.status_code}{f', {code}' if code else ''})"
+            logger.warning("KIS token issue failed env=%s key=%s -> %s", self.env, mask(self.app_key), detail)
+            raise KisAuthError(detail, rate_limited=rate)
         body = resp.json()
         token = body["access_token"]
         # 공식 응답: access_token_token_expired = "YYYY-MM-DD HH:MM:SS", expires_in = 초

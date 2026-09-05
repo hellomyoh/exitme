@@ -146,6 +146,25 @@ def update_account(aid: int, body: AccountUpdate, user_id: int = Depends(current
     return _acct_out(row)
 
 
+@router.post("/broker/accounts/{aid}/test")
+def test_account(aid: int, user_id: int = Depends(current_user_id),
+                 session: Session = Depends(get_session)) -> dict:
+    """저장된 자격으로 실제 조회해 연결 상태를 확인한다 (2026-09-05 — 잘못 등록된 키 조기 발견)."""
+    from app.services.kis_auth import KisAuth
+    from app.services.kis_client import KisTradingClient
+
+    row = session.get(BrokerCredential, aid)
+    if row is None or row.user_id != user_id:
+        raise HTTPException(status_code=404, detail="account not found")
+    auth = KisAuth(row.app_key, row.app_secret, row.env, wait_on_rate_limit=False)
+    try:
+        info = KisTradingClient(auth, cano=row.account_no, acnt_prdt_cd=row.acnt_prdt_cd).probe_balance()
+    except Exception as exc:  # noqa: BLE001 — 사유를 그대로 보여준다(잘못된 키·환경·계좌)
+        return {"ok": False, "message": str(exc)[:200]}
+    return {"ok": True, "holdings": info["holdings"], "deposit": info["deposit"],
+            "total_eval": info["total_eval"]}
+
+
 @router.delete("/broker/accounts/{aid}")
 def delete_account(aid: int, user_id: int = Depends(current_user_id),
                    session: Session = Depends(get_session)) -> dict:
@@ -193,7 +212,8 @@ def _client(cred: BrokerCredential):
     from app.services.kis_auth import KisAuth
     from app.services.kis_client import KisTradingClient
 
-    auth = KisAuth(cred.app_key, cred.app_secret, cred.env)
+    # 사용자가 화면에서 누른 요청 — 분당 제한이어도 기다리지 않고 즉시 안내 (2026-09-05)
+    auth = KisAuth(cred.app_key, cred.app_secret, cred.env, wait_on_rate_limit=False)
     return KisTradingClient(auth, cano=cred.account_no, acnt_prdt_cd=cred.acnt_prdt_cd)
 
 
@@ -229,7 +249,7 @@ def probe_account(body: ProbeIn, _user: int = Depends(current_user_id)) -> dict:
     if len(cano) != 8:
         raise HTTPException(status_code=422, detail="계좌번호는 8자리(또는 12345678-01) 형식이어야 합니다")
     candidates = [prdt] if body.acnt_prdt_cd else PRDT_CANDIDATES
-    auth = KisAuth(body.app_key.strip(), body.app_secret.strip(), body.env)
+    auth = KisAuth(body.app_key.strip(), body.app_secret.strip(), body.env, wait_on_rate_limit=False)
     found, errors = [], []
     for cd in candidates:
         try:
