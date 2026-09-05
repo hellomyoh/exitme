@@ -80,6 +80,8 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
     total_buy = total_sell = total_cost = total_realized = total_matched = 0
     realized_by: dict[str, int] = {}
     matched_by: dict[str, int] = {}
+    # 종목별 누적 실현손익 추이 (2026-09-05 지시: 현황 그래프는 이 일지 것만) — 같은 날 다건은 마지막 누적값
+    series_by: dict[str, dict[str, int]] = {}
     for e in sorted(entries, key=lambda x: (x.trade_date, x.id)):
         sym = (e.symbol or j.symbol).strip()
         lots = lots_by.setdefault(sym, [])
@@ -123,6 +125,7 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
             total_matched += matched_cost
             realized_by[sym] = realized_by.get(sym, 0) + realized
             matched_by[sym] = matched_by.get(sym, 0) + matched_cost
+            series_by.setdefault(sym, {})[e.trade_date.isoformat()] = realized_by[sym]
             rows.append({"id": e.id, "symbol": sym, "side": "sell",
                          "buy_date": first_date.isoformat() if first_date else None,
                          "sell_date": e.trade_date.isoformat(),
@@ -149,35 +152,9 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
                     "matched_cost": total_matched,
                     "return_pct": (total_realized / total_matched) if total_matched > 0 else None},
         "holdings": holdings, "symbols": symbols,
+        "series": {sym: [{"date": d, "value": v} for d, v in sorted(m.items())]
+                   for sym, m in series_by.items()},
     }
-
-
-@router.get("/mjournals/overview")
-def journals_overview(user_id: int = Depends(current_user_id),
-                      session: Session = Depends(get_session)) -> dict:
-    """전 일지 합산 현황 (2026-09-05 지시) — 종목별 보유 비중(취득원가 기준) + 누적 실현손익 추이.
-
-    수동 일지는 시세 미연동 — 비중은 원가, 수익 라인은 실현손익(매도 시점) 기준.
-    """
-    journals = session.scalars(select(ManualJournal).where(ManualJournal.user_id == user_id)
-                               .order_by(ManualJournal.id)).all()
-    items = []
-    for j in journals:
-        entries = session.scalars(select(ManualJournalEntry)
-                                  .where(ManualJournalEntry.journal_id == j.id)).all()
-        c = _compute(j, entries)
-        by_date: dict[str, int] = {}
-        cum = 0
-        for r in reversed(c["rows"]):  # rows 는 최신순 → 시간순으로
-            if r["side"] == "sell" and r["realized"] is not None:
-                cum += r["realized"]
-                by_date[r["sell_date"]] = cum  # 같은 날 다건은 마지막 누적값 (차트 시간축 유일성)
-        series = [{"date": d, "value": v} for d, v in sorted(by_date.items())]
-        items.append({"id": j.id, "name": j.name, "symbol": j.symbol,
-                      "holdings": c["holdings"],
-                      "realized": c["summary"]["realized"],
-                      "return_pct": c["summary"]["return_pct"], "series": series})
-    return {"items": items}
 
 
 @router.get("/mjournals/{jid}")
