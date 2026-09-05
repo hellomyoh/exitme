@@ -3,7 +3,9 @@
 /** 주식 매매일지 — 수동 기록 (2026-09-05 지시, 스프레드시트 대체).
  *  일지 생성 시 이름·기본 종목·증권사·요율을 받고, 매일 입력은 종목·구분·수량·단가만.
  *  한 일지에 여러 종목 입력 가능(드롭다운) — 실현손익·수익률·보유기간·비용은 종목별 FIFO 로
- *  서버가 계산. 그래프(보유 비중 도넛·누적 실현손익 라인)는 통계 카드 아래 배치. */
+ *  서버가 계산. 그래프(보유 비중 도넛·누적 실현손익 라인)는 통계 카드 아래 배치.
+ *  일지 간 완전 분리(2026-09-05 지시): 화면의 모든 숫자·그래프·종목 목록은 선택한 일지 하나의 것만 쓴다
+ *  (예전 '전체 현황'은 전 일지 합산이라 새 일지에 다른 일지 종목이 보이는 것처럼 오해를 낳았다). */
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { createChart, IChartApi, LineSeries } from "lightweight-charts";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -21,33 +23,26 @@ type Detail = JournalMeta & {
   fee_rate: number; tax_rate: number; rows: Row[]; symbols: string[];
   summary: { realized: number; sell_amount: number; buy_amount: number; cost: number; return_pct: number | null };
   holdings: Holding[];
+  series: Record<string, { date: string; value: number }[]>;   // 종목별 누적 실현손익 (이 일지만)
 };
-type OverviewItem = { id: number; name: string; symbol: string; holdings: Holding[];
-  realized: number; return_pct: number | null; series: { date: string; value: number }[] };
 
 const fm = (v: number) => `${v.toLocaleString()}원`;
 const OV_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
 
-/** 전체 현황 그래프 (2026-09-05 지시) — 통계 카드 아래 배치.
- *  좌: 종목별 보유 비중 도넛(전 일지 합산, 취득원가 기준 — 시세 미연동 명시),
- *  우: 일지별 누적 실현손익 라인. */
-function Overview({ items }: { items: OverviewItem[] }) {
+/** 이 일지 현황 그래프 (2026-09-05 지시) — 통계 카드 아래 배치. 선택한 일지 하나의 데이터만 쓴다.
+ *  좌: 종목별 보유 비중 도넛(취득원가 기준 — 시세 미연동 명시), 우: 종목별 누적 실현손익 라인. */
+function Overview({ detail }: { detail: Detail }) {
   const [tip, setTip] = useState<{ x: number; y: number; title: string; color: string;
     rows: { label: string; value: string; tone?: "up" | "down" }[] } | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
   const api = useRef<IChartApi | null>(null);
-  // 종목별 보유 합산 (전 일지)
-  const bySym = new Map<string, { qty: number; cost: number; realized: number; matched: number }>();
-  for (const it of items) for (const h of it.holdings) {
-    const cur = bySym.get(h.symbol) ?? { qty: 0, cost: 0, realized: 0, matched: 0 };
-    bySym.set(h.symbol, { qty: cur.qty + h.qty, cost: cur.cost + h.cost,
-                          realized: cur.realized + h.realized, matched: cur.matched + h.matched });
-  }
-  const held = [...bySym.entries()].map(([symbol, v]) => ({ symbol, ...v })).sort((a, b) => b.cost - a.cost);
+  const held = detail.holdings;                    // 서버가 원가 내림차순으로 준다
   const total = held.reduce((a, h) => a + h.cost, 0);
-  const symColor = (sym: string) => OV_COLORS[held.findIndex((h) => h.symbol === sym) % OV_COLORS.length];
-  const withSeries = items.filter((i) => i.series.length >= 1);
-  const jColor = (id: number) => OV_COLORS[items.findIndex((i) => i.id === id) % OV_COLORS.length];
+  // 색은 일지의 종목 목록 순서로 고정 — 도넛과 라인이 같은 종목에 같은 색 (필터에 따라 바뀌지 않음)
+  const symColor = (sym: string) => OV_COLORS[Math.max(detail.symbols.indexOf(sym), 0) % OV_COLORS.length];
+  const withSeries = Object.entries(detail.series)
+    .filter(([, pts]) => pts.length >= 1)
+    .map(([symbol, pts]) => ({ symbol, pts, realized: pts[pts.length - 1].value }));
 
   useEffect(() => {
     if (!chartRef.current || withSeries.length === 0) return;
@@ -66,18 +61,18 @@ function Overview({ items }: { items: OverviewItem[] }) {
     });
     api.current = chart;
     for (const it of withSeries) {
-      const pts = it.series.map((p) => ({ time: p.date, value: p.value }));
+      const pts = it.pts.map((p) => ({ time: p.date, value: p.value }));
       if (pts.length === 1) {  // 점 하나로는 라인이 안 보임 — 전날 0 에서 출발
         const d0 = new Date(pts[0].time);
         d0.setDate(d0.getDate() - 1);
         pts.unshift({ time: d0.toISOString().slice(0, 10), value: 0 });
       }
-      chart.addSeries(LineSeries, { color: jColor(it.id), lineWidth: 2, title: it.name }).setData(pts);
+      chart.addSeries(LineSeries, { color: symColor(it.symbol), lineWidth: 2, title: it.symbol }).setData(pts);
     }
     chart.timeScale().fitContent();
     return () => { try { api.current?.remove(); } catch { /* noop */ } api.current = null; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(items)]);
+  }, [detail.id, JSON.stringify(detail.series), JSON.stringify(detail.symbols)]);
 
   if (held.length === 0 && withSeries.length === 0) return null;
   const R = 52, r0 = 30, C = 64;
@@ -93,7 +88,7 @@ function Overview({ items }: { items: OverviewItem[] }) {
   });
   return (
     <Card className="relative mb-4">
-      <CardTitle>전체 현황 <span className="normal-case text-faint">· 보유 비중은 취득원가, 수익 라인은 실현손익 기준 (시세 미연동)</span></CardTitle>
+      <CardTitle>{detail.name} 현황 <span className="normal-case text-faint">· 이 일지만 · 보유 비중은 취득원가, 수익 라인은 종목별 누적 실현손익 (시세 미연동)</span></CardTitle>
       <div className="grid gap-6 lg:grid-cols-[auto_1fr]">
         <div className="flex items-center gap-4">
           {held.length > 0 && (
@@ -129,13 +124,12 @@ function Overview({ items }: { items: OverviewItem[] }) {
         </div>
         <div className="min-w-0">
           <div className="mb-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-muted">
-            <span className="font-semibold text-faint">누적 실현손익 (일지별)</span>
+            <span className="font-semibold text-faint">누적 실현손익 (종목별)</span>
             {withSeries.map((it) => (
-              <span key={it.id} className="inline-flex items-center gap-1.5">
-                <i className="h-2 w-2 rounded-full" style={{ background: jColor(it.id) }} />
-                {it.name} <b className={it.realized > 0 ? "text-up" : it.realized < 0 ? "text-down" : "text-ink"}>
-                  {it.realized >= 0 ? "+" : ""}{it.realized.toLocaleString()}원
-                  {it.return_pct != null && ` (${it.return_pct >= 0 ? "+" : ""}${(it.return_pct * 100).toFixed(1)}%)`}</b>
+              <span key={it.symbol} className="inline-flex items-center gap-1.5">
+                <i className="h-2 w-2 rounded-full" style={{ background: symColor(it.symbol) }} />
+                {it.symbol} <b className={it.realized > 0 ? "text-up" : it.realized < 0 ? "text-down" : "text-ink"}>
+                  {it.realized >= 0 ? "+" : ""}{it.realized.toLocaleString()}원</b>
               </span>
             ))}
             {withSeries.length === 0 && <span className="text-faint">매도(실현) 기록이 생기면 추이가 그려집니다.</span>}
@@ -181,14 +175,10 @@ function MJournalPage() {
   const [ef, setEf] = useState({ side: "buy", symbol: "", newSymbol: "", qty: "", price: "",
     date: new Date().toISOString().slice(0, 10), reason: "" });
   const [msg, setMsg] = useState("");
-  const [overview, setOverview] = useState<OverviewItem[]>([]);
 
   const load = useCallback(async (selected: number | null) => {
     const r = await apiFetch("/mjournals");
     if (!r.ok) return;
-    void apiFetch("/mjournals/overview").then(async (o) => {
-      if (o.ok) setOverview(((await o.json()) as { items: OverviewItem[] }).items);
-    });
     const items = ((await r.json()) as { items: JournalMeta[] }).items;
     setList(items);
     const id = selected ?? items[0]?.id ?? null;
@@ -312,8 +302,8 @@ function MJournalPage() {
             </div>
           </div>
 
-          {/* 그래프는 통계 카드 아래 (2026-09-05 지시) */}
-          <Overview items={overview} />
+          {/* 그래프는 통계 카드 아래, 선택한 일지의 데이터만 (2026-09-05 지시) */}
+          <Overview detail={detail} />
 
           <Card className="mb-4">
             <CardTitle right={

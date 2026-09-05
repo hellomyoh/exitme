@@ -59,7 +59,7 @@ def test_journal_isolation_and_delete():
 
 
 def test_multi_symbol_fifo_isolation():
-    """다종목 (0015): 종목별 FIFO 독립·종목별 보유 초과 매도 거부·overview holdings."""
+    """다종목 (0015): 종목별 FIFO 독립·종목별 보유 초과 매도 거부·종목별 누적 실현 시리즈."""
     c, h = _client()
     jid = c.post("/mjournals", json={"name": "멀티", "symbol": "대원제약",
                                      "fee_rate": 0.0, "tax_rate": 0.0}, headers=h).json()["id"]
@@ -75,6 +75,23 @@ def test_multi_symbol_fifo_isolation():
     assert d["holdings"] == [{"symbol": "대원제약", "qty": 10, "avg_price": 1000, "cost": 10000,
                               "realized": 0, "matched": 0, "return_pct": None}]
     assert set(d["symbols"]) == {"대원제약", "휴메딕스"}
-    ov = c.get("/mjournals/overview", headers=h).json()["items"]
-    me = next(x for x in ov if x["id"] == jid)
-    assert me["holdings"][0]["symbol"] == "대원제약" and me["series"][0]["value"] == 500
+    assert d["series"] == {"휴메딕스": [{"date": "2026-01-03", "value": 500}]}  # 매도 없는 종목은 라인 없음
+
+
+def test_journal_isolation_between_journals_and_users():
+    """일지 간·계정 간 완전 분리 (2026-09-05 지시): 새 일지에는 다른 일지의 종목·보유·추이가 섞이지 않고,
+    전 일지 합산 엔드포인트도 없다. 다른 계정은 일지 자체를 볼 수 없다."""
+    c, h = _client()
+    a = c.post("/mjournals", json={"name": "A", "symbol": "tiger 200", "fee_rate": 0.0, "tax_rate": 0.0},
+               headers=h).json()["id"]
+    c.post(f"/mjournals/{a}/entries", json={"side": "buy", "qty": 10, "price": 1000, "trade_date": "2026-01-01"}, headers=h)
+    c.post(f"/mjournals/{a}/entries", json={"side": "sell", "qty": 4, "price": 1500, "trade_date": "2026-01-02"}, headers=h)
+    b = c.post("/mjournals", json={"name": "B", "symbol": "kodex 200"}, headers=h).json()["id"]
+    db = c.get(f"/mjournals/{b}", headers=h).json()
+    assert db["symbols"] == ["kodex 200"] and db["holdings"] == [] and db["series"] == {} and db["rows"] == []
+    assert c.get("/mjournals/overview", headers=h).status_code in (404, 422)  # 합산 뷰 제거
+
+    c2, h2 = _client()  # 다른 계정
+    assert c2.get(f"/mjournals/{a}", headers=h2).status_code == 404
+    assert c2.get("/mjournals", headers=h2).json()["items"] == []
+    assert c2.post(f"/mjournals/{a}/entries", json={"side": "buy", "qty": 1, "price": 1}, headers=h2).status_code == 404
