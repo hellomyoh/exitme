@@ -284,3 +284,27 @@ def test_business_error_in_500_is_not_retried():
 
     from app.broker import humanize_kis_error
     assert "앱시크릿" in humanize_kis_error("KIS error EGW00304 고객식별키가 유효하지 않습니다.")
+
+
+
+def test_same_app_key_on_two_accounts_hint(monkeypatch):
+    """계좌별 앱키 힌트 (2026-09-05): 같은 앱키를 다른 계좌에도 등록한 상태에서 계좌 오류가 나면 원인을 짚어준다."""
+    from app.services import kis_client
+
+    class _Fail:
+        def __init__(self, *a, **kw):
+            pass
+
+        def probe_balance(self, prdt=None):
+            raise kis_client.KisError("KIS error rt_cd=2 msg=ERROR : INPUT INVALID_CHECK_ACNO")
+
+    monkeypatch.setattr(kis_client, "KisTradingClient", _Fail)
+    c, h = _client()
+    key, sec = "PS" + "z" * 34, "S" * 180
+    c.post("/broker/accounts", json={"label": "연금", "app_key": key, "app_secret": sec,
+                                     "account_no": "10040029-22"}, headers=h)
+    other = c.post("/broker/accounts", json={"label": "운영", "app_key": key, "app_secret": sec,
+                                             "account_no": "68800037-01"}, headers=h).json()["id"]
+    out = c.post(f"/broker/accounts/{other}/test", headers=h).json()
+    assert out["ok"] is False and out["suggest"] is None
+    assert "'연금'(1004**29-22)" in out["message"] and "계좌 하나에만 유효" in out["message"]
