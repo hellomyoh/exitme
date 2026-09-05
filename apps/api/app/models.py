@@ -316,6 +316,36 @@ class UserSettings(TimestampMixin, Base):
     chat_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")  # 챗봇 추가 지침 (0012)
 
 
+class BrokerOrder(TimestampMixin, Base):
+    """증권사 예약주문 접수 기록 (0019, 2026-09-05 지시) — 주문표 한 줄 = 한 행.
+
+    status: reserved(접수됨) → cancelled | filled | partial | unfilled ; 접수 실패는 failed.
+    line_key = kind:instrument:side:otype:price 로 같은 주문표 줄의 중복 접수를 막는다(활성 상태 부분 유니크).
+    """
+
+    __tablename__ = "broker_orders"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False)
+    broker_credential_id: Mapped[int | None] = mapped_column(
+        ForeignKey("broker_credentials.id", ondelete="SET NULL"), nullable=True)
+    plan_date: Mapped[date] = mapped_column(Date, nullable=False)       # 주문표 실행일
+    line_key: Mapped[str] = mapped_column(Text, nullable=False)
+    code: Mapped[str] = mapped_column(Text, nullable=False)             # PDNO (069500 등)
+    instrument: Mapped[str] = mapped_column(Text, nullable=False)       # K200 | LEV
+    kind: Mapped[str] = mapped_column(Text, nullable=False)             # grid1 | tp | liq …
+    side: Mapped[str] = mapped_column(Text, nullable=False)             # buy | sell
+    otype: Mapped[str] = mapped_column(Text, nullable=False)            # limit | market
+    qty: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    price: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    rsvn_ord_seq: Mapped[str | None] = mapped_column(Text, nullable=True)  # KIS 예약주문순번
+    order_no: Mapped[str | None] = mapped_column(Text, nullable=True)      # 장 시작 후 실제 주문번호
+    filled_qty: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="reserved")
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
 class ManualJournal(TimestampMixin, Base):
     """수동 주식 매매일지 — 전략 포트와 무관한 자유 기록 (0014, 2026-09-05 지시)."""
 

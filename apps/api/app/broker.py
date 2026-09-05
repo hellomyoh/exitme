@@ -1,23 +1,25 @@
-"""증권사 조회 연동 (2026-09-05 지시) — 체결 자동 가져오기 + 주문표 대조 경고.
+"""증권사 연동 (2026-09-05 지시) — 체결 자동 가져오기 + 주문표 대조 경고 + **예약주문 접수**.
 
 원칙:
-- **조회 전용**: 주문 TR 은 사용하지 않는다(자동 발주 미도입 — docs/market-research/10-broker-apis.md).
+- **주문은 예약주문만, 사용자 클릭으로만**: 장 마감 후 주문표에서 사용자가 버튼을 눌러 접수한다(자동 발주 없음,
+  정규 장중 주문 TR 미사용). 2026-09-05 지시로 "조회 전용" 원칙을 이렇게 바꿨다.
 - **자동 수정 금지**: 대조 결과는 경고로만 노출하고 원장을 임의로 고치지 않는다(사용자 지시).
 - 자격(앱키·시크릿·계좌번호)은 앱 레벨 AES-GCM 암호화 컬럼에 저장하고 응답에는 마스킹만 내보낸다.
+- 장 마감 후(15:45) 배치가 연결 계좌의 체결을 가져와 원장·통계를 갱신하고 예약주문 상태를 확정한다.
 """
 from __future__ import annotations
 
 import logging
 from datetime import date, datetime, time, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import current_user_id
 from app.db import get_session
-from app.models import BrokerCredential, Instrument, TradeTransaction
+from app.models import BrokerCredential, BrokerOrder, Instrument, TradeTransaction
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -339,6 +341,10 @@ def probe_account(body: ProbeIn, _user: int = Depends(current_user_id)) -> dict:
     return {"accounts": found, "tried": candidates, "errors": errors}
 
 
+class BrokerFetchError(RuntimeError):
+    """증권사 조회 실패 — 라우트는 502 로, 배치는 기록으로 처리한다."""
+
+
 @router.post("/portfolio/{pid}/import-fills")
 def import_fills(pid: int, days: int = 7, dry_run: bool = True,
                  user_id: int = Depends(current_user_id),
@@ -348,13 +354,22 @@ def import_fills(pid: int, days: int = 7, dry_run: bool = True,
     멱등: broker_ref = "주문번호:일자" 유니크 — 재실행해도 중복 등록되지 않는다.
     """
     cred = _cred(session, pid, user_id)
+    try:
+        return import_fills_for_portfolio(session, pid, cred, days=days, dry_run=dry_run)
+    except BrokerFetchError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+def import_fills_for_portfolio(session: Session, pid: int, cred: BrokerCredential,
+                               days: int = 7, dry_run: bool = True) -> dict:
+    """체결 가져오기 본체 — 화면(라우트)과 장 마감 후 배치가 같이 쓴다 (2026-09-05)."""
     end = datetime.now(KST).date()
     start = end - timedelta(days=max(1, min(days, 90)) - 1)
     try:
         execs = _client(cred).fetch_executions(start, end)
     except Exception as exc:  # noqa: BLE001 — 자격 오류·유량 등 원인을 사용자에게 그대로 전달
         logger.warning("import-fills failed pid=%s: %s", pid, exc)
-        raise HTTPException(status_code=502, detail=f"증권사 조회 실패 — {humanize_kis_error(str(exc)[:200])}")
+        raise BrokerFetchError(f"증권사 조회 실패 — {humanize_kis_error(str(exc)[:200])}")
 
     known = {t.broker_ref for t in session.scalars(
         select(TradeTransaction).where(TradeTransaction.portfolio_id == pid,
@@ -458,3 +473,293 @@ def reconcile_for_portfolio(session: Session, pid: int, market: str = "KR") -> d
                       "side": t.kind, "qty": t.qty or 0, "price": t.price or 0})
     items = reconcile_plan(plan.payload.get("orders", []), fills)
     return {"date": d.isoformat(), "items": items}
+
+
+# ── 예약주문 접수·취소·상태 (0019, 2026-09-05 지시) ─────────────────────────────────
+# 흐름: 장 마감 후 주문표 → [증권사에 예약주문 접수] 클릭 → 확인 → KIS 예약주문(CTSC0008U) 줄 단위 접수 →
+#       화면에 등록완료 표시 → 장 시작 시 KIS 가 주문 → 15:45 배치가 체결 가져오기 + 상태(체결/미체결) 확정.
+
+STATUS_KO = {"reserved": "등록완료", "cancelled": "취소됨", "filled": "체결", "partial": "일부 체결",
+             "unfilled": "미체결", "failed": "접수 실패", "duplicate": "이미 접수됨", "mismatch": "주문표 불일치"}
+
+
+def reservation_window(now: datetime | None = None, session: Session | None = None) -> dict:
+    """예약주문 접수 가능 여부 — KIS 규정: 15:40 ~ 다음 영업일 07:30, 서버 초기화(23:40~00:10) 제외.
+
+    휴장일(주말·공휴일)은 하루 종일 창 안이다(전 영업일 15:40 ~ 다음 영업일 07:30).
+    """
+    now = now or datetime.now(KST)
+    t = now.time()
+    if t >= time(23, 40) or t < time(0, 10):
+        return {"open": False, "reason": "KIS 서버 초기화 시간(23:40~00:10)에는 예약주문을 받지 않습니다"}
+    trading_day = now.weekday() < 5
+    if trading_day and session is not None:
+        from app.models import TradingCalendar
+
+        cal = session.get(TradingCalendar, now.date())
+        if cal is not None and not cal.is_open:
+            trading_day = False
+    if not trading_day:
+        return {"open": True, "reason": "휴장일 — 다음 영업일 장 시작 시 주문됩니다"}
+    if t >= time(15, 40):
+        return {"open": True, "reason": "예약주문 접수 시간 — 다음 영업일 장 시작 시 주문됩니다"}
+    if t < time(7, 30):
+        return {"open": True, "reason": "예약주문 접수 시간 — 오늘 장 시작 시 주문됩니다"}
+    return {"open": False, "reason": "예약주문은 장 마감 후 15:40 ~ 다음 영업일 07:30 에만 접수됩니다 — 지금은 장중입니다"}
+
+
+def line_key(o: dict) -> str:
+    """주문표 한 줄의 식별자 — signals 의 병합 키(instrument, side, otype, price, kind)와 같은 정보."""
+    price = o.get("price")
+    return f"{o.get('kind')}:{o.get('instrument')}:{o.get('side')}:{o.get('otype')}:{int(price) if price else 'mkt'}"
+
+
+def _resolve_codes(session: Session, pf) -> tuple[str, str]:
+    """주문표 레그(K200/LEV) → 종목코드. signals._portfolio_orders 와 같은 규칙(보유 종목 → 포트 설정 → KODEX)."""
+    from app.models import PositionLot
+
+    if pf.market == "US":
+        raise HTTPException(status_code=409, detail="미국 포트는 예약주문을 지원하지 않습니다 (KIS 국내주식 전용)")
+    held = {session.get(Instrument, l.instrument_id).code
+            for l in session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pf.id)).all()}
+    pref = (pf.params or {}).get("code_200") if pf.params else None
+    if "102110" in held and "069500" not in held:
+        code_200 = "102110"
+    elif "069500" in held:
+        code_200 = "069500"
+    else:
+        code_200 = pref or "069500"
+    return code_200, "122630"
+
+
+def _order_out(o: BrokerOrder) -> dict:
+    return {"id": o.id, "plan_date": o.plan_date.isoformat(), "line_key": o.line_key, "code": o.code,
+            "instrument": o.instrument, "kind": o.kind, "side": o.side, "otype": o.otype,
+            "qty": o.qty, "price": o.price, "rsvn_ord_seq": o.rsvn_ord_seq, "order_no": o.order_no,
+            "filled_qty": o.filled_qty, "status": o.status, "status_ko": STATUS_KO.get(o.status, o.status),
+            "message": o.message,
+            "created_at": o.created_at.isoformat() if o.created_at else None}
+
+
+def sync_orders(session: Session, cred: BrokerCredential, rows: list[BrokerOrder],
+                today: date, now: datetime | None = None) -> int:
+    """KIS 예약주문 조회로 활성 행의 상태를 갱신한다. 반환: 상태가 바뀐 건수. 조회 실패는 0 (화면을 막지 않음)."""
+    active = [r for r in rows if r.status in ("reserved", "partial")]
+    if not active:
+        return 0
+    now = now or datetime.now(KST)
+    # KIS 조회의 일자 범위는 **주문일자(실행일)** 기준 — 접수일이 아니다 (실계좌 확인 2026-09-05:
+    # 토요일 접수분이 ord_dt=다음 영업일로 조회됨). 접수일~실행일을 모두 덮는다.
+    start = min((r.created_at.astimezone(KST).date() if r.created_at else today) for r in active)
+    end = max(max(r.plan_date for r in active), today)
+    try:
+        remote = _client(cred).list_reserved_orders(start, end)
+    except Exception as exc:  # noqa: BLE001 — 상태 조회 실패는 다음 동기화에서 재시도
+        logger.warning("reserved-order sync failed cred=%s: %s", cred.id, exc)
+        return 0
+    by_seq = {str(r["rsvn_ord_seq"]): r for r in remote if r.get("rsvn_ord_seq")}
+    changed = 0
+    for r in active:
+        m = by_seq.get(str(r.rsvn_ord_seq or ""))
+        if m is None:
+            continue
+        r.order_no = m.get("order_no") or r.order_no
+        r.filled_qty = int(m.get("filled_qty") or 0)
+        day_over = r.plan_date < today or (r.plan_date == today and now.time() >= time(15, 30))
+        if m.get("cancel_dt"):
+            st = "cancelled"
+        elif r.filled_qty >= r.qty:
+            st = "filled"
+        elif r.filled_qty > 0:
+            st = "partial" if not day_over else "partial"
+        elif day_over:
+            st = "unfilled"     # 실행일 장이 끝났는데 체결 0 — 예약주문은 당일 유효라 사실상 소멸
+        else:
+            st = "reserved"
+        if m.get("result"):
+            r.message = str(m["result"])[:200]
+        r.response = {**(r.response or {}), "sync": m}
+        if st != r.status:
+            r.status = st
+            changed += 1
+    return changed
+
+
+class OrderLineIn(BaseModel):
+    instrument: str = Field(pattern="^(K200|LEV)$")
+    kind: str = Field(min_length=1, max_length=30)
+    side: str = Field(pattern="^(buy|sell)$")
+    otype: str = Field(pattern="^(limit|market)$")
+    qty: int = Field(gt=0)
+    price: int | None = Field(default=None, ge=0)
+
+
+class ReserveIn(BaseModel):
+    date: date                                   # 주문표 실행일 (signal.exec_day)
+    lines: list[OrderLineIn] = Field(min_length=1, max_length=40)
+
+
+@router.get("/portfolio/{pid}/orders")
+def list_broker_orders(pid: int, date_: date | None = Query(default=None, alias="date"), refresh: bool = False,
+                       user_id: int = Depends(current_user_id),
+                       session: Session = Depends(get_session)) -> dict:
+    """이 포트의 예약주문 접수 기록 (실행일 필터) + 접수 가능 창. refresh=1 이면 KIS 조회로 상태를 갱신한다."""
+    from app.dashboard import kst_today
+
+    pf = _owned(session, pid, user_id)
+    q = select(BrokerOrder).where(BrokerOrder.portfolio_id == pid)
+    if date_ is not None:
+        q = q.where(BrokerOrder.plan_date == date_)
+    rows = session.scalars(q.order_by(BrokerOrder.id)).all()
+    if refresh and pf.broker_credential_id:
+        cred = session.get(BrokerCredential, pf.broker_credential_id)
+        if cred is not None and cred.user_id == user_id and sync_orders(session, cred, rows, kst_today()):
+            session.commit()
+    return {"window": reservation_window(session=session), "items": [_order_out(r) for r in rows]}
+
+
+@router.post("/portfolio/{pid}/orders/reserve")
+def reserve_broker_orders(pid: int, body: ReserveIn, user_id: int = Depends(current_user_id),
+                          session: Session = Depends(get_session)) -> dict:
+    """주문표 줄들을 KIS 예약주문으로 접수한다 — 사용자가 화면에서 확인한 뒤 누른 요청만.
+
+    안전장치: 연결 계좌(실전)만 · 접수 창 안에서만 · 서버에 저장된 그날의 주문표 스냅샷과 줄이 정확히 일치해야 함 ·
+    같은 줄의 활성 예약이 있으면 건너뜀(중복 접수 방지) · 줄 단위 실패는 기록하고 계속.
+    """
+    from app.dashboard import kst_today
+    from app.models import PortfolioPlan
+
+    pf = _owned(session, pid, user_id)
+    cred = _cred(session, pid, user_id)
+    if cred.env != "prod":
+        raise HTTPException(status_code=409, detail="모의투자 계좌는 예약주문을 지원하지 않습니다 — 실전 계좌를 연결하세요")
+    win = reservation_window(session=session)
+    if not win["open"]:
+        raise HTTPException(status_code=409, detail=win["reason"])
+    today = kst_today()
+    if body.date < today:
+        raise HTTPException(status_code=409, detail="지난 실행일의 주문표는 접수할 수 없습니다 — 주문표를 새로 고치세요")
+    plan = session.scalar(select(PortfolioPlan).where(PortfolioPlan.portfolio_id == pid,
+                                                      PortfolioPlan.trade_date == body.date))
+    if plan is None:
+        raise HTTPException(status_code=404, detail="이 실행일의 주문표 스냅샷이 없습니다 — 주문표를 먼저 조회하세요")
+    plan_lines = {line_key(o): o for o in (plan.payload or {}).get("orders", [])}
+    code_200, code_lev = _resolve_codes(session, pf)
+    active = {r.line_key for r in session.scalars(
+        select(BrokerOrder).where(BrokerOrder.portfolio_id == pid, BrokerOrder.plan_date == body.date,
+                                  BrokerOrder.status == "reserved")).all()}
+    client = _client(cred)
+    items, ok, failed = [], 0, 0
+    for ln in body.lines:
+        o = ln.model_dump()
+        key = line_key(o)
+        code = code_200 if ln.instrument == "K200" else code_lev
+        price = ln.price if ln.otype == "limit" else None
+        pending = {"id": None, "plan_date": body.date.isoformat(), "line_key": key, "code": code,
+                   "instrument": ln.instrument, "kind": ln.kind, "side": ln.side, "otype": ln.otype,
+                   "qty": ln.qty, "price": price, "rsvn_ord_seq": None, "order_no": None, "filled_qty": 0,
+                   "created_at": None}
+        pl = plan_lines.get(key)
+        if pl is None or int(pl.get("qty") or 0) != ln.qty:
+            items.append({**pending, "status": "mismatch", "status_ko": STATUS_KO["mismatch"],
+                          "message": "화면의 주문표가 서버에 저장된 계획과 다릅니다 — 새로 고친 뒤 다시 접수하세요"})
+            failed += 1
+            continue
+        if key in active:
+            items.append({**pending, "status": "duplicate", "status_ko": STATUS_KO["duplicate"],
+                          "message": "같은 줄의 예약주문이 이미 접수돼 있습니다"})
+            continue
+        row = BrokerOrder(portfolio_id=pid, broker_credential_id=cred.id, plan_date=body.date, line_key=key,
+                          code=code, instrument=ln.instrument, kind=ln.kind, side=ln.side, otype=ln.otype,
+                          qty=ln.qty, price=price)
+        try:
+            r = client.reserve_order(code, ln.side, ln.qty, price)
+            row.rsvn_ord_seq = r["rsvn_ord_seq"] or None
+            row.status = "reserved"
+            row.message = r["msg"] or None
+            row.response = r["raw"] if isinstance(r["raw"], dict) else {}
+            active.add(key)
+            ok += 1
+            logger.info("reserved order pid=%s %s %s %s x%s @%s seq=%s", pid, key, code, ln.side, ln.qty, price, row.rsvn_ord_seq)
+        except Exception as exc:  # noqa: BLE001 — 줄 단위 실패는 기록하고 다음 줄 계속
+            row.status = "failed"
+            row.message = humanize_kis_error(str(exc)[:200])
+            failed += 1
+            logger.warning("reserve failed pid=%s %s: %s", pid, key, exc)
+        session.add(row)
+        session.flush()
+        items.append(_order_out(row))
+    session.commit()
+    return {"date": body.date.isoformat(), "reserved": ok, "failed": failed, "items": items}
+
+
+@router.post("/portfolio/{pid}/orders/{oid}/cancel")
+def cancel_broker_order(pid: int, oid: int, user_id: int = Depends(current_user_id),
+                        session: Session = Depends(get_session)) -> dict:
+    """접수된 예약주문 취소 (정정은 없음 — 취소 후 재접수)."""
+    _owned(session, pid, user_id)
+    row = session.get(BrokerOrder, oid)
+    if row is None or row.portfolio_id != pid:
+        raise HTTPException(status_code=404, detail="order not found")
+    if row.status not in ("reserved", "partial"):
+        raise HTTPException(status_code=409, detail=f"취소할 수 없는 상태입니다 ({STATUS_KO.get(row.status, row.status)})")
+    cred = _cred(session, pid, user_id)
+    created = row.created_at or datetime.now(KST)
+    ord_dt = (created.astimezone(KST) if created.tzinfo else created).date()
+    try:
+        r = _client(cred).cancel_reserved_order(row.rsvn_ord_seq or "", ord_dt,
+                                                orgno=str((row.response or {}).get("RSVN_ORD_ORGNO") or ""))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"예약주문 취소 실패 — {humanize_kis_error(str(exc)[:200])}")
+    row.status = "cancelled"
+    row.message = r["msg"] or "취소됨"
+    session.commit()
+    return _order_out(row)
+
+
+def run_post_close_sync(session: Session, now: datetime | None = None) -> dict:
+    """장 마감 후 자동 동기화 (2026-09-05 지시 3항) — 워커 15:45 (17:10 재시도, 멱등).
+
+    연결 계좌마다: ① 당일(2일치) 체결 가져오기 → 원장 재생으로 보유·수익률·통계 갱신,
+    ② 예약주문 상태 확정(체결/일부/미체결/취소), ③ 연결된 매매일지 체결 가져오기. 계좌별 실패는 기록만 하고 계속.
+    """
+    from app.mjournal import import_journal_fills_for
+    from app.models import ManualJournal, TradePortfolio
+
+    now = now or datetime.now(KST)
+    today = now.date()
+    out: dict = {"date": today.isoformat(), "portfolios": [], "journals": []}
+    for pf in session.scalars(select(TradePortfolio).where(TradePortfolio.broker_credential_id.is_not(None))).all():
+        cred = session.get(BrokerCredential, pf.broker_credential_id)
+        if cred is None or cred.env != "prod":
+            continue
+        rec: dict = {"portfolio_id": pf.id, "name": pf.name}
+        try:
+            r = import_fills_for_portfolio(session, pf.id, cred, days=2, dry_run=False)
+            rec.update(fetched=r["fetched"], added=r["added"], skipped=r["skipped"])
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
+            rec["error"] = str(exc)[:200]
+        try:
+            rows = session.scalars(select(BrokerOrder).where(
+                BrokerOrder.portfolio_id == pf.id, BrokerOrder.status.in_(("reserved", "partial")))).all()
+            rec["orders_changed"] = sync_orders(session, cred, rows, today, now)
+            session.commit()
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
+            rec["orders_error"] = str(exc)[:200]
+        out["portfolios"].append(rec)
+    for j in session.scalars(select(ManualJournal).where(ManualJournal.broker_credential_id.is_not(None))).all():
+        cred = session.get(BrokerCredential, j.broker_credential_id)
+        if cred is None or cred.env != "prod":
+            continue
+        rec = {"journal_id": j.id, "name": j.name}
+        try:
+            r = import_journal_fills_for(session, j, cred, days=2, dry_run=False)
+            rec.update(fetched=r["fetched"], added=r["added"], skipped=r["skipped"])
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
+            rec["error"] = str(exc)[:200]
+        out["journals"].append(rec)
+    logger.info("post-close sync: %s", out)
+    return out

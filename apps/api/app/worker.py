@@ -43,6 +43,16 @@ celery_app.conf.update(
             "task": "app.worker.daily_asset_snapshot",
             "schedule": crontab(hour=16, minute=40, day_of_week="mon-fri"),
         },
+        # 장 마감 후 증권사 동기화 (2026-09-05 지시 3항) — 연결 계좌의 체결 가져오기 + 예약주문 상태 확정.
+        # 15:45 본 실행(일봉 수집 16:05 전에 원장 반영 → 다음 주문표에 오늘 체결 포함), 17:10 재시도(멱등)
+        "broker-post-close-sync": {
+            "task": "app.worker.broker_post_close_sync",
+            "schedule": crontab(hour=15, minute=45, day_of_week="mon-fri"),
+        },
+        "broker-post-close-sync-retry": {
+            "task": "app.worker.broker_post_close_sync",
+            "schedule": crontab(hour=17, minute=10, day_of_week="mon-fri"),
+        },
     },
 )
 
@@ -274,6 +284,22 @@ def daily_signal(target: str | None = None) -> dict:
             finish_batch(session, run, "failed", {"error": str(exc)[:500]})
             session.commit()
             raise
+
+
+@celery_app.task(name="app.worker.broker_post_close_sync", max_retries=1, autoretry_for=(Exception,), retry_backoff=120)
+def broker_post_close_sync() -> dict:
+    """장 마감 후 증권사 동기화 — 연결 계좌마다 당일 체결 가져오기(원장·통계 갱신) + 예약주문 상태 확정 (2026-09-05 지시)."""
+    from app.broker import run_post_close_sync
+    from app.db import SessionLocal
+    from app.models import TradingCalendar
+
+    today = datetime.now(KST).date()
+    with SessionLocal() as session:
+        cal = session.get(TradingCalendar, today)
+        if cal is not None and not cal.is_open:
+            logger.info("skip broker_post_close_sync: %s is a holiday", today)
+            return {"skipped": "holiday", "date": today.isoformat()}
+        return run_post_close_sync(session)
 
 
 @celery_app.task(name="app.worker.daily_asset_snapshot")
