@@ -314,7 +314,14 @@ export default function DashboardPage() {
                             {p.pnl !== 0 ? `${p.pnl >= 0 ? "+" : ""}${money(p.pnl)}` : "—"}
                             {p.pnl_pct !== null && p.pnl !== 0 && ` (${(p.pnl_pct * 100).toFixed(2)}%)`}
                           </td>
-                          <td className="py-1 pl-6"><div className="w-28"><Spark data={p.trend} className="h-7 w-full" /></div></td>
+                          <td className="py-1 pl-6">
+                            {/* 이틀 이상 데이터가 있어야 선이 됨 — 첫날은 빈칸 대신 안내 (2026-09-05 지시) */}
+                            <div className="w-28">
+                              {(p.trend?.length ?? 0) >= 2
+                                ? <Spark data={p.trend} className="h-7 w-full" />
+                                : <span className="text-[11.5px] text-faint" title="내일 종가부터 추세가 그려집니다">첫날 · 추세 없음</span>}
+                            </div>
+                          </td>
                         </tr>
                       );
                     })}

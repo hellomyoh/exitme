@@ -141,7 +141,7 @@ function PortfolioPage() {
   const [editColor, setEditColor] = useState("");
   const [entryOpen, setEntryOpen] = useState(false);  // 체결 입력 폼 펼침 (2026-08-29 일지 개편)
   const [signal, setSignal] = useState<Signal | null>(null);
-  const [curve, setCurve] = useState<{ date: string; equity: number; index: number }[]>([]);
+  const [curve, setCurve] = useState<{ date: string; equity: number; index: number; pnl?: number }[]>([]);
   const eqRef = useRef<HTMLDivElement>(null);
   const eqApi = useRef<IChartApi | null>(null);
 
@@ -155,10 +155,16 @@ function PortfolioPage() {
   };
   const pendingLines = (signal?.orders ?? []).filter((o) => { const b = boFor(o); return !(b && ACTIVE.includes(b.status)); });
   const instName = (o: OrderRow) => o.instrument === "K200" ? (signal?.name_200 ?? "KODEX 200") : "KODEX 레버리지";
-  async function reserveAll() {
-    if (!sum || !signal?.exec_day) return;
+  // 줄 선택 (2026-09-05 지시: 체크해서 고른 줄만 등록) — 주문표가 바뀌면 접수 대기 줄 전체를 기본 선택
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const pendingKeys = pendingLines.map(lineKey).join("|");
+  useEffect(() => { setSel(new Set(pendingKeys ? pendingKeys.split("|") : [])); }, [pendingKeys, signal?.exec_day]);
+  const selectedLines = pendingLines.filter((o) => sel.has(lineKey(o)));
+  const toggleSel = (o: OrderRow) => setSel((prev) => { const n = new Set(prev); const k = lineKey(o); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  async function reserveSelected() {
+    if (!sum || !signal?.exec_day || selectedLines.length === 0) return;
     setBoBusy(true); setBoMsg("");
-    const lines = pendingLines.map((o) => ({ instrument: o.instrument, kind: o.kind, side: o.side, otype: o.otype, qty: o.qty, price: o.price ?? null }));
+    const lines = selectedLines.map((o) => ({ instrument: o.instrument, kind: o.kind, side: o.side, otype: o.otype, qty: o.qty, price: o.price ?? null }));
     const r = await apiFetch(`/portfolio/${sum.portfolio.id}/orders/reserve`, { method: "POST", body: JSON.stringify({ date: signal.exec_day, lines }) });
     const j = (await r.json().catch(() => ({}))) as { reserved?: number; failed?: number; detail?: string };
     setBoBusy(false); setBoConfirm(false);
@@ -640,6 +646,8 @@ function PortfolioPage() {
               <span>주식 <b className="text-ink">{fm(sum.stock_value)}</b>{sum.total_equity > 0 && <span className="text-faint"> ({(sum.stock_value / sum.total_equity * 100).toFixed(0)}%)</span>}</span>
             </span>} />
           <Stat size="lg" label={`순손익${includeCosts ? " (비용차감)" : ""}`} value={withPct(fm(net), netPct)} tone={pnlTone(net)}
+            // 손익 추이(평가액 − 납입 원금, 비용 차감 전) — 세 카드 모두 하단 미니 그래프로 일관 (2026-09-05 지시)
+            spark={curve.map((c) => c.pnl ?? 0)} sparkColor={net > 0 ? "#d92f45" : net < 0 ? "#2563eb" : "#9aa1ad"}
             tip={<span>실현손익 + 평가손익 − 추정 수수료(체크 시). %는 납입 원금(입금−출금) 대비 — 원금 이상 출금 시 %는 표시하지 않습니다.<br />
               실현손익 = 매도로 확정된 손익(FIFO 매칭), 평가손익 = (현재가 − 평균단가) × 보유 수량(%는 보유원가 대비).</span>}
             sub={<span className="flex flex-wrap gap-x-3">
@@ -781,11 +789,18 @@ function PortfolioPage() {
           <div className="mb-3 flex flex-wrap items-center gap-2 text-[13px]">
             {broker?.linked ? (
               <>
-                <button className="btn btn-primary !py-1.5" disabled={boBusy || !bo?.window.open || pendingLines.length === 0}
-                  title={!bo?.window.open ? (bo?.window.reason ?? "") : pendingLines.length === 0 ? "모든 줄이 이미 접수되었습니다" : ""}
+                <button className="btn btn-primary !py-1.5" disabled={boBusy || !bo?.window.open || selectedLines.length === 0}
+                  title={!bo?.window.open ? (bo?.window.reason ?? "") : pendingLines.length === 0 ? "모든 줄이 이미 접수되었습니다"
+                    : selectedLines.length === 0 ? "표에서 등록할 줄을 체크하세요" : ""}
                   onClick={() => setBoConfirm(true)}>
-                  증권사에 예약주문 접수{pendingLines.length > 0 && pendingLines.length < (signal.orders?.length ?? 0) ? ` (남은 ${pendingLines.length}건)` : pendingLines.length > 0 ? ` (${pendingLines.length}건)` : ""}
+                  선택 주문 등록하기{selectedLines.length > 0 ? ` (${selectedLines.length}/${pendingLines.length}건)` : pendingLines.length > 0 ? ` (0/${pendingLines.length}건)` : ""}
                 </button>
+                {pendingLines.length > 0 && (
+                  <button className="text-[12.5px] text-accent hover:underline" disabled={boBusy}
+                    onClick={() => setSel(selectedLines.length === pendingLines.length ? new Set() : new Set(pendingLines.map(lineKey)))}>
+                    {selectedLines.length === pendingLines.length ? "전체 해제" : "전체 선택"}
+                  </button>
+                )}
                 <span className={bo?.window.open ? "text-faint" : "text-warn"}>{bo?.window.reason ?? ""}</span>
                 {bo && bo.items.some((i) => ACTIVE.includes(i.status)) && (
                   <button className="btn !py-1.5" disabled={boBusy} onClick={() => void refreshOrders()}>증권사 상태 새로고침</button>
@@ -800,10 +815,10 @@ function PortfolioPage() {
         {boConfirm && signal?.orders && (
           <div className="mb-3 rounded-lg border border-line-strong bg-raised/40 p-3.5 text-[13px]">
             <div className="mb-2 text-[13.5px] font-bold">
-              예약주문 접수 확인 — {broker?.label} ({broker?.account_no}-{broker?.acnt_prdt_cd}) · 실행일 {signal.exec_day}
+              선택한 {selectedLines.length}건 예약주문 등록 — {broker?.label} ({broker?.account_no}-{broker?.acnt_prdt_cd}) · 실행일 {signal.exec_day}
             </div>
             <ul className="mb-2 grid gap-1">
-              {pendingLines.map((o, i) => (
+              {selectedLines.map((o, i) => (
                 <li key={i} className="flex flex-wrap items-center gap-2">
                   <Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge>
                   <span>{instName(o)}</span>
@@ -816,15 +831,15 @@ function PortfolioPage() {
             </ul>
             <p className="mb-2 text-faint">
               {(() => {
-                const buy = pendingLines.filter((o) => o.side === "buy" && o.price).reduce((a, o) => a + o.qty * (o.price ?? 0), 0);
-                const sell = pendingLines.filter((o) => o.side === "sell" && o.price).reduce((a, o) => a + o.qty * (o.price ?? 0), 0);
+                const buy = selectedLines.filter((o) => o.side === "buy" && o.price).reduce((a, o) => a + o.qty * (o.price ?? 0), 0);
+                const sell = selectedLines.filter((o) => o.side === "sell" && o.price).reduce((a, o) => a + o.qty * (o.price ?? 0), 0);
                 return `지정가 합계 — 매수 ${fm(buy)} · 매도 ${fm(sell)}. `;
               })()}
               장 시작 시 KIS 가 주문합니다(예약주문은 당일만 유효). 접수 후에도 아래 표에서 줄별로 취소할 수 있습니다. 시장가 줄은 시가로 체결됩니다.
             </p>
             <div className="flex gap-2">
-              <button className="btn btn-primary !py-1.5" disabled={boBusy || pendingLines.length === 0} onClick={() => void reserveAll()}>
-                {boBusy ? "접수 중…" : `${pendingLines.length}건 접수`}</button>
+              <button className="btn btn-primary !py-1.5" disabled={boBusy || selectedLines.length === 0} onClick={() => void reserveSelected()}>
+                {boBusy ? "등록 중…" : `${selectedLines.length}건 등록하기`}</button>
               <button className="btn !py-1.5" disabled={boBusy} onClick={() => setBoConfirm(false)}>닫기</button>
             </div>
           </div>
@@ -834,6 +849,14 @@ function PortfolioPage() {
             {/* 모바일: 줄바꿈 금지 + 축약(종목 짧게·작은 글씨)으로 한 화면에 — 넘치면 가로 스크롤 (2026-09-02 지시) */}
             <table className="w-full whitespace-nowrap text-[13px] sm:text-[14.5px]">
               <thead><tr className="border-b border-line text-left text-[13px] text-faint">
+                {market === "KR" && broker?.linked && (
+                  <th className="pb-2 pr-1 font-medium">
+                    <input type="checkbox" className="h-4 w-4 accent-[var(--color-ink)]" title="접수 대기 줄 전체 선택/해제"
+                      disabled={pendingLines.length === 0}
+                      checked={pendingLines.length > 0 && selectedLines.length === pendingLines.length}
+                      onChange={(e) => setSel(e.target.checked ? new Set(pendingLines.map(lineKey)) : new Set())} />
+                  </th>
+                )}
                 <th className="pb-2 font-medium">구분</th><th className="pb-2 font-medium">종목</th>
                 <th className="pb-2 font-medium">방향</th>
                 <th className="pb-2 text-right font-medium">방식 · 가격</th>
@@ -843,7 +866,16 @@ function PortfolioPage() {
               </tr></thead>
               <tbody>
                 {signal.orders.map((o, i) => (
-                  <tr key={i} className="border-b border-line/50 last:border-0">
+                  <tr key={i} className={`border-b border-line/50 last:border-0 ${market === "KR" && broker?.linked && !sel.has(lineKey(o)) && pendingLines.includes(o) ? "opacity-60" : ""}`}>
+                    {market === "KR" && broker?.linked && (
+                      <td className="py-2 pr-1">
+                        {pendingLines.includes(o) ? (
+                          <input type="checkbox" className="h-4 w-4 accent-[var(--color-ink)]" checked={sel.has(lineKey(o))} onChange={() => toggleSel(o)} />
+                        ) : (
+                          <span className="inline-block h-4 w-4 text-center text-[12px] text-faint" title="이미 접수됨">✓</span>
+                        )}
+                      </td>
+                    )}
                     <td className="py-2"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge></td>
                     <td className="py-2">
                       {(() => {

@@ -226,8 +226,22 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
         by_port.setdefault(pid_, []).append(eq_)
         bucket = us_by_date if cur_ == "USD" else kr_by_date
         bucket[d_] = bucket.get(d_, 0) + eq_
+    # 스냅샷은 매일 16:40 부터 쌓여 새 포트는 이틀이 지나야 선이 된다 — 그동안은 원장 일별 평가액으로 보완 (2026-09-05 지시)
+    from app.models import TradeTransaction
+    from app.portfolios import _daily_series
+
     for p in port_rows:
-        p["trend"] = by_port.get(p["id"], [])
+        tr = by_port.get(p["id"], [])
+        if len(tr) < 2:
+            txs = session.scalars(select(TradeTransaction).where(TradeTransaction.portfolio_id == p["id"])
+                                  .order_by(TradeTransaction.executed_at, TradeTransaction.id)).all()
+            try:
+                ledger = [round(v) for d_, v, _f in _daily_series(session, p["id"], txs) if d_ >= since]
+            except Exception:  # noqa: BLE001 — 추세는 보조 정보, 실패해도 대시보드는 떠야 한다
+                ledger = []
+            if len(ledger) >= 2:
+                tr = ledger
+        p["trend"] = tr
     # 총자산 추세는 사용자 스냅샷에서
     totals = session.scalars(select(AssetSnapshot).where(
         AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date >= since)
