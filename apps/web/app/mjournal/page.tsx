@@ -386,7 +386,9 @@ function MJournalPage() {
           desc="'＋ 새 매매일지'로 종목·증권사·요율을 등록하면, 이후에는 종목·수량·단가만 입력하면 됩니다." />
       ) : (
         <>
-          <div className="mb-4 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(160px,1fr))]">
+          {/* 카드 2줄(좌 2×2) + 우측 보유 패널(2줄 높이) — 보유 종목이 많아도 가독성 유지 (2026-09-05 지시) */}
+          <div className="mb-4 grid gap-3 lg:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:col-span-2">
             <Stat label="총 실현손익"
               value={<>{fm(detail.summary.realized)}{detail.summary.return_pct != null &&
                 <span className="whitespace-nowrap text-[14px]"> ({detail.summary.return_pct >= 0 ? "+" : ""}{(detail.summary.return_pct * 100).toFixed(1)}%)</span>}</>}
@@ -395,21 +397,49 @@ function MJournalPage() {
             <Stat label="총 매도 금액" value={fm(detail.summary.sell_amount)} />
             <Stat label="총 매수 금액" value={fm(detail.summary.buy_amount)} />
             <Stat label="총 매매 비용" value={fm(detail.summary.cost)} hint="수수료 + 제세금" />
-            <div className="card px-4 py-3.5">
-              <div className="text-[13px] text-faint">현재 보유 <span className="text-[11px]">(FIFO 잔여)</span></div>
-              {detail.holdings.length === 0 ? (
-                <div className="mt-1 text-[19px] font-bold">없음</div>
-              ) : (
-                <div className="mt-1.5 grid max-h-24 content-start gap-1 overflow-y-auto text-[13.5px]">
-                  {detail.holdings.map((h) => (
-                    <div key={h.symbol} className="flex items-baseline justify-between gap-2">
-                      <span className="truncate font-semibold">{h.symbol}</span>
-                      <span className="shrink-0 text-muted">{h.qty.toLocaleString()}주 <span className="text-faint">@{h.avg_price.toLocaleString()}</span></span>
-                    </div>
-                  ))}
+          </div>
+          {(() => {
+            const total = detail.holdings.reduce((a, h) => a + h.cost, 0);
+            const color = (sym: string) => OV_COLORS[Math.max(detail.symbols.indexOf(sym), 0) % OV_COLORS.length];
+            return (
+              <div className="card flex flex-col px-4 py-3.5">
+                <div className="mb-1.5 flex items-baseline justify-between gap-2">
+                  <span className="text-[13px] text-faint">현재 보유 <span className="text-[11px]">(FIFO 잔여 · 취득원가 비중)</span></span>
+                  {detail.holdings.length > 0 && (
+                    <span className="shrink-0 text-[12px] text-faint">{detail.holdings.length}종목 · {fm(total)}</span>
+                  )}
                 </div>
-              )}
-            </div>
+                {detail.holdings.length === 0 ? (
+                  <div className="text-[19px] font-bold">없음</div>
+                ) : (
+                  <div className="grid max-h-60 content-start overflow-y-auto">
+                    {detail.holdings.map((h, i) => {
+                      const w = total > 0 ? h.cost / total : 0;
+                      return (
+                        <div key={h.symbol}
+                          className="grid grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-x-2 border-b border-line/50 py-1.5 text-[13px] last:border-0">
+                          <span className="text-[12px] text-faint">{i + 1}</span>
+                          <span className="min-w-0">
+                            <b className="block truncate text-ink" title={h.symbol}>{h.symbol}</b>
+                            <span className="block text-[11.5px] text-faint">{h.qty.toLocaleString()}주 @{h.avg_price.toLocaleString()}</span>
+                          </span>
+                          <span className="text-right">
+                            <b className="table-num block text-ink">{fm(h.cost)}</b>
+                            <span className="inline-flex items-center gap-1.5 text-[11.5px] text-faint">
+                              <i className="inline-block h-1.5 w-12 overflow-hidden rounded-full bg-inset">
+                                <i className="block h-full rounded-full" style={{ width: `${Math.max(w * 100, 2)}%`, background: color(h.symbol) }} />
+                              </i>
+                              {(w * 100).toFixed(0)}%
+                            </span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           </div>
 
           {/* 그래프는 통계 카드 아래, 선택한 일지의 데이터만 (2026-09-05 지시) */}

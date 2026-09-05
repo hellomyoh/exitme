@@ -1,5 +1,7 @@
+"use client";
+
 /** 공용 UI 프리미티브 — 디자인 토큰(globals.css) 기반. 화면 간 일관성의 단일 출처. */
-import type { ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Spark } from "./spark";
 
 export function PageTitle({ title, sub }: { title: string; sub?: string }) {
@@ -25,17 +27,20 @@ export function CardTitle({ children, right }: { children: ReactNode; right?: Re
   );
 }
 
-export function Stat({ label, value, tone = "default", hint, tip, spark, sparkColor }: {
+export function Stat({ label, value, tone = "default", hint, tip, spark, sparkColor, sub, size = "md" }: {
   label: string; value: ReactNode; tone?: "default" | "up" | "down" | "accent"; hint?: string; tip?: ReactNode;
   spark?: number[] | null; sparkColor?: string;  // 카드 하단 미니 추세 (2026-09-05, Zenith 스타일)
+  sub?: ReactNode;          // 값 아래 보조 정보 한 줄 (예: 구성·세부 손익) — 카드 수를 줄이기 위한 2차 정보 (2026-09-05)
+  size?: "md" | "lg";       // lg = 상단 핵심 카드 (값 24px)
 }) {
   const color = { default: "text-ink", up: "text-up", down: "text-down", accent: "text-accent" }[tone];
   const labelEl = tip ? <Tip tip={tip}><span>{label}</span><span className="text-faint">ⓘ</span></Tip> : label;
   return (
-    <div className="card px-4 py-3.5">
+    <div className={`card px-4 ${size === "lg" ? "py-4" : "py-3.5"}`}>
       <div className="text-[13px] text-faint">{labelEl}</div>
       {/* nowrap 금지 — 긴 값(금액+%)은 공백에서 줄바꿈되어 카드 밖으로 넘치지 않게 (2026-09-02) */}
-      <div className={`mt-1 break-keep text-[19px] font-bold leading-snug ${color}`}>{value}</div>
+      <div className={`mt-1 break-keep font-bold leading-snug ${size === "lg" ? "text-[24px]" : "text-[19px]"} ${color}`}>{value}</div>
+      {sub && <div className="mt-1 text-[12.5px] leading-relaxed text-muted">{sub}</div>}
       {hint && <div className="mt-0.5 text-[11px] text-faint">{hint}</div>}
       {spark && spark.length >= 2 && <Spark data={spark} color={sparkColor} />}
     </div>
@@ -87,12 +92,26 @@ export function GaugeBar({ ratio, color = "var(--color-accent)", height = 8 }: {
   );
 }
 
-/** 마우스 롤오버 도움말 — label 위에 hover 시 툴팁 표시 */
+/** 마우스 롤오버 도움말 — label 위에 hover 시 툴팁 표시.
+ *  화면 오른쪽 끝(TWR·XIRR 카드 등)에서는 왼쪽으로, 화면 위쪽에서는 아래로 펼친다 —
+ *  항상 left-0/bottom-full 로만 열려 오른쪽 카드의 도움말이 화면 밖으로 잘리던 문제 (2026-09-05 지시). */
 export function Tip({ tip, children }: { tip: ReactNode; children: ReactNode }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [side, setSide] = useState<"left" | "right">("left");
+  const [vert, setVert] = useState<"up" | "down">("up");
+  const place = () => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setSide(r.left + 336 > window.innerWidth - 12 ? "right" : "left");  // 툴팁 폭 320 + 여백
+    setVert(r.top < 240 ? "down" : "up");
+  };
   return (
-    <span className="group relative inline-flex cursor-help items-center gap-1">
+    <span ref={ref} tabIndex={0} onMouseEnter={place} onFocus={place}
+      className="group relative inline-flex cursor-help items-center gap-1 outline-none">
       {children}
-      <span className="pointer-events-none invisible absolute bottom-full left-0 z-30 mb-2 w-80 max-w-[calc(100vw-2.5rem)] rounded-xl border border-line bg-surface p-3.5 text-left text-[13.5px] font-normal normal-case leading-relaxed text-muted opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100">
+      <span className={`pointer-events-none invisible absolute z-30 w-80 max-w-[calc(100vw-2.5rem)] rounded-xl border border-line bg-surface p-3.5 text-left text-[13.5px] font-normal normal-case leading-relaxed text-muted opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100 ${
+        side === "right" ? "right-0" : "left-0"} ${vert === "up" ? "bottom-full mb-2" : "top-full mt-2"}`}>
         {tip}
       </span>
     </span>
