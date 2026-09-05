@@ -218,3 +218,69 @@ def test_kis_error_messages_are_actionable():
     assert "앱키가 유효하지 않습니다" in humanize_kis_error("유효하지 않은 AppKey입니다. (HTTP 403, EGW00103)")
     assert "분당 1회" in humanize_kis_error("EGW00133 접근 과다")
     assert humanize_kis_error("알 수 없는 오류") == "알 수 없는 오류"  # 매핑 없으면 원문 유지
+
+
+def test_truncated_secret_is_rejected():
+    """잘린 자격 차단 (2026-09-05): 9자짜리 시크릿이 저장돼 조회에서만 EGW00304 로 실패하던 사고 재발 방지."""
+    c, h = _client()
+    r = c.post("/broker/accounts", json={"app_key": "PS" + "k" * 18, "app_secret": "SShortSec",
+                                         "account_no": "12345678", "acnt_prdt_cd": "01"}, headers=h)
+    assert r.status_code == 422 and "앱시크릿" in r.json()["detail"]
+
+    aid = c.post("/broker/accounts", json={"app_key": "PS" + "k" * 18, "app_secret": "S" * 42,
+                                           "account_no": "12345678", "acnt_prdt_cd": "01"},
+                 headers=h).json()["id"]
+    # 수정 경로도 같은 기준 — 여기에 구멍이 있어 짧은 값이 들어갔다
+    bad = c.put(f"/broker/accounts/{aid}", json={"app_secret": "SShortSec"}, headers=h)
+    assert bad.status_code == 422 and "앱시크릿" in bad.json()["detail"]
+    # 비워 두면 기존 값 유지 (검사 대상 아님)
+    assert c.put(f"/broker/accounts/{aid}", json={"label": "그대로"}, headers=h).status_code == 200
+
+
+def test_token_cache_key_changes_with_secret():
+    """토큰 캐시 분리 (2026-09-05): 시크릿을 바꾸면 옛 토큰을 재사용하지 않는다."""
+    from app.services.kis_auth import KisAuth
+
+    a = KisAuth("PS" + "k" * 34, "A" * 180, "prod")
+    b = KisAuth("PS" + "k" * 34, "B" * 180, "prod")          # 같은 앱키, 새 시크릿
+    assert a._redis_key() != b._redis_key()
+    assert KisAuth("PS" + "k" * 34, "A" * 180, "prod")._redis_key() == a._redis_key()
+    assert KisAuth("PS" + "k" * 34, "A" * 180, "vps")._redis_key() != a._redis_key()
+
+
+def test_business_error_in_500_is_not_retried():
+    """500 재시도 범위 (2026-09-05): 자격 오류(EGW00304)는 즉시 알리고, 유량(EGW00201)만 재시도한다."""
+    import pytest
+
+    from app.services.kis_client import KisClient, KisError
+
+    class _Resp:
+        status_code = 500
+
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    class _Sess:
+        def __init__(self, body):
+            self.body, self.calls = body, 0
+
+        def get(self, *a, **kw):
+            self.calls += 1
+            return _Resp(self.body)
+
+    class _Auth:
+        base_url = "https://example.invalid"
+
+        def headers(self, tr_id, session=None):
+            return {}
+
+    sess = _Sess({"rt_cd": "1", "msg_cd": "EGW00304", "msg1": "고객식별키가 유효하지 않습니다."})
+    with pytest.raises(KisError, match="EGW00304"):
+        KisClient(_Auth(), sess)._get("/x", "TR", {})
+    assert sess.calls == 1  # 재시도 없음
+
+    from app.broker import humanize_kis_error
+    assert "앱시크릿" in humanize_kis_error("KIS error EGW00304 고객식별키가 유효하지 않습니다.")

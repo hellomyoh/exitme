@@ -49,6 +49,8 @@ _ERROR_HINTS = [
     ("EGW00103", "앱키가 유효하지 않습니다 — KIS Developers 에서 발급한 값을 다시 확인하세요"),
     ("EGW00133", "토큰 발급이 분당 1회로 제한됩니다 — 1분 뒤 다시 시도하세요"),
     ("EGW00121", "앱시크릿이 올바르지 않습니다"),
+    ("EGW00105", "앱시크릿이 올바르지 않습니다 — 전체(180자 내외)를 다시 복사해 붙여넣으세요"),
+    ("EGW00304", "앱시크릿이 올바르지 않습니다 — 전체(180자 내외)를 다시 복사해 붙여넣으세요"),
     ("모의", "모의투자 계좌는 환경을 '모의투자'로 선택해야 합니다"),
 ]
 
@@ -58,6 +60,22 @@ def humanize_kis_error(msg: str) -> str:
         if key in msg:
             return f"{hint} (원문: {msg[:80]})"
     return msg
+
+
+# KIS 자격 길이 (앱키 36자·앱시크릿 180자 내외) — 잘려 붙여넣은 값을 저장 전에 거른다 (2026-09-05).
+# 짧은 시크릿은 토큰은 캐시로 넘어가고 조회에서만 EGW00304 로 실패해 원인 파악이 어렵다.
+KIS_KEY_MIN, KIS_SECRET_MIN = 20, 40
+
+
+def check_credential(app_key: str, app_secret: str) -> tuple[str, str]:
+    k, sec = app_key.strip(), app_secret.strip()
+    if len(k) < KIS_KEY_MIN:
+        raise HTTPException(status_code=422,
+                            detail=f"앱키가 너무 짧습니다({len(k)}자) — KIS 앱키는 36자입니다. 전체를 복사해 붙여넣으세요")
+    if len(sec) < KIS_SECRET_MIN:
+        raise HTTPException(status_code=422,
+                            detail=f"앱시크릿이 너무 짧습니다({len(sec)}자) — KIS 앱시크릿은 180자 내외입니다. 전체를 복사해 붙여넣으세요")
+    return k, sec
 
 
 def _mask(s: str, head: int = 4, tail: int = 2) -> str:
@@ -86,8 +104,8 @@ class AccountIn(BaseModel):
     """설정에서 등록하는 증권사 계좌 (2026-09-05 지시)."""
 
     label: str = Field(default="", max_length=40)
-    app_key: str = Field(min_length=10, max_length=200)
-    app_secret: str = Field(min_length=10, max_length=400)
+    app_key: str = Field(min_length=1, max_length=200)      # 길이 안내는 check_credential 이 담당
+    app_secret: str = Field(min_length=1, max_length=400)
     account_no: str = Field(min_length=6, max_length=20)
     acnt_prdt_cd: str = Field(default="01", pattern=r"^\d{2}$")
     env: str = Field(default="prod", pattern="^(prod|vps)$")
@@ -126,9 +144,10 @@ def create_account(body: AccountIn, user_id: int = Depends(current_user_id),
     if len(cano) != 8:
         raise HTTPException(status_code=422,
                             detail="계좌번호는 종합계좌 8자리(예: 12345678) 또는 12345678-01 형식이어야 합니다")
+    key, secret = check_credential(body.app_key, body.app_secret)
     row = BrokerCredential(user_id=user_id, label=body.label.strip() or f"{cano}-{prdt}",
-                           env=body.env, app_key=body.app_key.strip(),
-                           app_secret=body.app_secret.strip(), account_no=cano, acnt_prdt_cd=prdt)
+                           env=body.env, app_key=key,
+                           app_secret=secret, account_no=cano, acnt_prdt_cd=prdt)
     session.add(row)
     session.commit()
     return _acct_out(row)
@@ -163,10 +182,12 @@ def update_account(aid: int, body: AccountUpdate, user_id: int = Depends(current
         row.label = body.label.strip() or row.label
     if body.env:
         row.env = body.env
-    if body.app_key and body.app_key.strip():          # 비우면 기존 키 유지
-        row.app_key = body.app_key.strip()
-    if body.app_secret and body.app_secret.strip():
-        row.app_secret = body.app_secret.strip()
+    # 비우면 기존 값 유지 — 입력했다면 저장된 짝과 함께 길이를 검사한다
+    new_key = body.app_key.strip() if body.app_key else ""
+    new_secret = body.app_secret.strip() if body.app_secret else ""
+    if new_key or new_secret:
+        key, secret = check_credential(new_key or row.app_key, new_secret or row.app_secret)
+        row.app_key, row.app_secret = key, secret
     session.commit()
     return _acct_out(row)
 
@@ -263,8 +284,8 @@ class ProbeIn(BaseModel):
     입력한 계좌를 실제 조회해 확인하고, 상품코드를 모르면 후보를 훑어 되는 것을 찾아 제시한다.
     """
 
-    app_key: str = Field(min_length=10, max_length=200)
-    app_secret: str = Field(min_length=10, max_length=400)
+    app_key: str = Field(min_length=1, max_length=200)      # 길이 안내는 check_credential 이 담당
+    app_secret: str = Field(min_length=1, max_length=400)
     account_no: str = Field(min_length=6, max_length=20)
     acnt_prdt_cd: str | None = None      # None/빈값 = 후보 자동 탐색
     env: str = Field(default="prod", pattern="^(prod|vps)$")
@@ -288,7 +309,8 @@ def probe_account(body: ProbeIn, _user: int = Depends(current_user_id)) -> dict:
     if len(cano) != 8:
         raise HTTPException(status_code=422, detail="계좌번호는 8자리(또는 12345678-01) 형식이어야 합니다")
     candidates = [prdt] if body.acnt_prdt_cd else PRDT_CANDIDATES
-    auth = KisAuth(body.app_key.strip(), body.app_secret.strip(), body.env, wait_on_rate_limit=False)
+    key, secret = check_credential(body.app_key, body.app_secret)
+    auth = KisAuth(key, secret, body.env, wait_on_rate_limit=False)
     found, errors = [], []
     for cd in candidates:
         try:
