@@ -95,3 +95,79 @@ def test_journal_isolation_between_journals_and_users():
     assert c2.get(f"/mjournals/{a}", headers=h2).status_code == 404
     assert c2.get("/mjournals", headers=h2).json()["items"] == []
     assert c2.post(f"/mjournals/{a}/entries", json={"side": "buy", "qty": 1, "price": 1}, headers=h2).status_code == 404
+
+
+def test_journal_broker_link_and_import(monkeypatch):
+    """일지 ↔ 계좌 연결 + 체결 가져오기 (0018): 종목명 정규화 매칭·새 종목 추가·보유 초과/수동 중복 경고·멱등·격리."""
+    from datetime import date as _d
+
+    from app.services import kis_client
+    from app.services.kis_client import Execution
+
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "연금저축", "symbol": "kodex 200", "fee_rate": 0.0, "tax_rate": 0.0},
+                 headers=h).json()["id"]
+    # 수동 기초 보유 10주
+    assert c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 10, "price": 10000,
+                                                     "trade_date": "2026-01-02"}, headers=h).status_code == 201
+    # 연결 전 가져오기는 409
+    assert c.post(f"/mjournals/{jid}/import-fills", headers=h).status_code == 409
+
+    acct = c.post("/broker/accounts", json={"label": "연금", "app_key": "PS" + "k" * 34, "app_secret": "S" * 180,
+                                            "account_no": "10040029-22"}, headers=h).json()
+    assert c.get(f"/mjournals/{jid}/broker", headers=h).json() == {"linked": False, "account": None}
+    r = c.put(f"/mjournals/{jid}/broker", json={"credential_id": acct["id"]}, headers=h).json()
+    assert r["linked"] is True and r["account"]["label"] == "연금" and r["account"]["account_no"] == "1004**29-22"
+    assert c.get(f"/mjournals/{jid}", headers=h).json()["linked_account"]["id"] == acct["id"]
+    # 다른 계정: 일지도 계좌도 보이지 않는다
+    c2, h2 = _client()
+    assert c2.put(f"/mjournals/{jid}/broker", json={"credential_id": acct["id"]}, headers=h2).status_code == 404
+    j2 = c2.post("/mjournals", json={"name": "남의 일지", "symbol": "x"}, headers=h2).json()["id"]
+    assert c2.put(f"/mjournals/{j2}/broker", json={"credential_id": acct["id"]}, headers=h2).status_code == 404
+
+    def ex(no, d, code, side, qty, price, name):
+        return Execution(order_no=no, trade_date=d, code=code, side=side, filled_qty=qty, avg_price=price,
+                         order_qty=qty, remain_qty=0, name=name)
+
+    execs = [
+        ex("A1", _d(2026, 1, 5), "069500", "buy", 5, 11000, "KODEX 200"),    # 이름 매칭(대소문자·공백 무시) → 코드 학습
+        ex("A2", _d(2026, 1, 6), "102110", "buy", 3, 20000, "TIGER 200"),    # 새 종목
+        ex("A3", _d(2026, 1, 7), "069500", "sell", 30, 12000, "KODEX 200"),  # 보유 25 초과 → 경고(등록은 됨)
+        ex("A4", _d(2026, 1, 2), "069500", "buy", 10, 10000, "KODEX 200"),   # 수동 기록과 동일 → 중복 경고
+    ]
+
+    class _Fake:
+        def __init__(self, *a, **kw):
+            pass
+
+        def fetch_executions(self, start, end, only_filled=True):
+            return execs
+
+    monkeypatch.setattr(kis_client, "KisTradingClient", _Fake)
+
+    pv = c.post(f"/mjournals/{jid}/import-fills?days=30", headers=h).json()
+    assert pv["dry_run"] is True and pv["fetched"] == 4 and pv["added"] == 0
+    by = {i["broker_ref"]: i for i in pv["items"]}
+    assert by["A4:2026-01-02"]["symbol"] == "kodex 200" and by["A4:2026-01-02"]["match"] == "이름"
+    assert by["A1:2026-01-05"]["symbol"] == "kodex 200" and by["A1:2026-01-05"]["match"] == "코드"
+    assert by["A2:2026-01-06"]["symbol"] == "TIGER 200" and by["A2:2026-01-06"]["match"] == "새 종목"
+    assert any("보유(25주)보다 많은 매도" in w for w in by["A3:2026-01-07"]["warnings"])
+    assert any("수동 기록" in w for w in by["A4:2026-01-02"]["warnings"])
+    assert pv["new_symbols"] == ["TIGER 200"]
+    assert len(c.get(f"/mjournals/{jid}", headers=h).json()["rows"]) == 1  # 미리보기는 저장하지 않는다
+
+    ap = c.post(f"/mjournals/{jid}/import-fills?days=30&dry_run=false", headers=h).json()
+    assert ap["added"] == 4 and ap["skipped"] == 0
+    d = c.get(f"/mjournals/{jid}", headers=h).json()
+    assert len(d["rows"]) == 5 and sum(r["source"] == "broker" for r in d["rows"]) == 4
+    assert set(d["symbols"]) == {"kodex 200", "TIGER 200"}
+    over = next(r for r in d["rows"] if r["side"] == "sell")
+    assert "많은 매도" in (over.get("error") or "") and over["code"] == "069500"  # 경고 행으로 표시(자동 수정 없음)
+
+    again = c.post(f"/mjournals/{jid}/import-fills?days=30&dry_run=false", headers=h).json()
+    assert again["added"] == 0 and again["skipped"] == 4                          # 재실행 멱등
+    assert len(c.get(f"/mjournals/{jid}", headers=h).json()["rows"]) == 5
+
+    c.put(f"/mjournals/{jid}/broker", json={"credential_id": None}, headers=h)   # 해제
+    assert c.get(f"/mjournals/{jid}/broker", headers=h).json()["linked"] is False
+    assert c.post(f"/mjournals/{jid}/import-fills", headers=h).status_code == 409
