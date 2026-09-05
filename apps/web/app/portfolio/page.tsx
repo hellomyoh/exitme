@@ -629,20 +629,53 @@ function PortfolioPage() {
 
       {/* 새 실전매매 작성 중에는 기존 포트 내용을 숨김 — 새 계좌 만드는 화면에 이전 내역이 섞여 보이는 혼동 방지 (2026-09-02 지시) */}
       {!showStart && <>
+      {/* 상단 현황판 — 카드 8장(2줄 반)을 핵심 3장으로 압축, 나머지는 카드 안 보조 줄로 (2026-09-05 지시).
+          총자산(현금·주식 구성) · 순손익(실현·평가 세부) · 수익률 TWR(XIRR 보조). 그래프는 바로 아래. */}
       {sum && (
-        <div className="mb-4 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
-          <Stat label="총자산" value={fm(sum.total_equity)} tip="현금 + 보유 주식 평가액(최근 종가 기준)의 합" spark={curve.map((c) => c.equity)} />
-          <Stat label="현금" value={fm(sum.cash)} tip="입금 − 출금 − 매수금액 + 매도금액의 원장 잔액" />
-          <Stat label="주식" value={fm(sum.stock_value)} tip="보유 수량 × 최근 종가 (지연 시세)" />
-          <Stat label="실현손익" value={fm(sum.realized_pnl)} tone={pnlTone(sum.realized_pnl)} tip="매도로 확정된 손익의 누적 — 매도가와 매수가(FIFO 선입선출 매칭)의 차이" />
-          <Stat label="평가손익" value={withPct(fm(sum.unrealized_pnl), evalPct)} tone={pnlTone(sum.unrealized_pnl)} tip="아직 팔지 않은 보유분의 손익 — (현재가 − 평균단가) × 보유 수량. %는 보유원가 대비" />
-          <Stat label={`순손익${includeCosts ? " (비용차감)" : ""}`} value={withPct(fm(net), netPct)} tone={pnlTone(net)} tip="실현손익 + 평가손익 − 추정 수수료(체크 시). %는 납입 원금(입금−출금) 대비 — 원금 이상 출금 시 %는 표시하지 않습니다" />
-          <Stat label="TWR" value={fmtPct(sum.twr, 2)} tip="시간가중수익률 — 입출금 시점의 영향을 제거한 운용 성과. 펀드 수익률과 같은 방식이며, 입금이 많아도 왜곡되지 않습니다" spark={curve.map((c) => c.index)} sparkColor="#2a78d6" />
-          <Stat label="XIRR" value={fmtPct(sum.xirr, 2)} tip="내부수익률(연환산) — 입출금 현금흐름과 현재 평가액으로 계산한 '내 돈 기준' 연 수익률" />
+        <div className="mb-3 grid gap-3 md:grid-cols-3">
+          <Stat size="lg" label="총자산" value={fm(sum.total_equity)} spark={curve.map((c) => c.equity)}
+            tip={<span>현금 + 보유 주식 평가액(최근 종가 기준)의 합.<br />현금 = 입금 − 출금 − 매수금액 + 매도금액의 원장 잔액, 주식 = 보유 수량 × 최근 종가(지연 시세).</span>}
+            sub={<span className="flex flex-wrap gap-x-3">
+              <span>현금 <b className="text-ink">{fm(sum.cash)}</b></span>
+              <span>주식 <b className="text-ink">{fm(sum.stock_value)}</b>{sum.total_equity > 0 && <span className="text-faint"> ({(sum.stock_value / sum.total_equity * 100).toFixed(0)}%)</span>}</span>
+            </span>} />
+          <Stat size="lg" label={`순손익${includeCosts ? " (비용차감)" : ""}`} value={withPct(fm(net), netPct)} tone={pnlTone(net)}
+            tip={<span>실현손익 + 평가손익 − 추정 수수료(체크 시). %는 납입 원금(입금−출금) 대비 — 원금 이상 출금 시 %는 표시하지 않습니다.<br />
+              실현손익 = 매도로 확정된 손익(FIFO 매칭), 평가손익 = (현재가 − 평균단가) × 보유 수량(%는 보유원가 대비).</span>}
+            sub={<span className="flex flex-wrap gap-x-3">
+              <span>실현 <b className={toneCls[pnlTone(sum.realized_pnl)]}>{fm(sum.realized_pnl)}</b></span>
+              <span>평가 <b className={toneCls[pnlTone(sum.unrealized_pnl)]}>{withPct(fm(sum.unrealized_pnl), evalPct)}</b></span>
+            </span>} />
+          <Stat size="lg" label="수익률 (TWR)" value={fmtPct(sum.twr, 2)} tone={pnlTone(sum.twr ?? 0)} spark={curve.map((c) => c.index)} sparkColor="#2a78d6"
+            tip={<span>시간가중수익률 — 입출금 시점의 영향을 제거한 운용 성과. 펀드 수익률과 같은 방식이며, 입금이 많아도 왜곡되지 않습니다.<br />
+              XIRR = 내부수익률(연환산) — 입출금 현금흐름과 현재 평가액으로 계산한 &apos;내 돈 기준&apos; 연 수익률.</span>}
+            sub={<span>XIRR(연환산) <b className="text-ink">{fmtPct(sum.xirr, 2)}</b></span>} />
         </div>
       )}
 
-      {/* 보유 종목 — 상단 현황판 바로 아래 (2026-08-29 지시) */}
+      {/* 수익률 추이 (2026-08-28 지시 — 시뮬레이터와 동일 스타일, TWR 지수) */}
+      <Card className="mb-4">
+        <CardTitle right={curve.length > 0 ? (
+          <span className={`text-[15px] font-bold normal-case ${curve[curve.length - 1].index >= 100 ? "text-up" : "text-down"}`}>
+            {(curve[curve.length - 1].index - 100).toFixed(2)}%
+          </span>
+        ) : undefined}>수익률 추이 <span className="normal-case text-faint">· 시작 = 100 · 입출금 왜곡 제거(TWR)</span></CardTitle>
+        {curve.length >= 2 ? (
+          <div ref={eqRef} className="h-52" />
+        ) : curve.length === 1 ? (
+          <div className="flex items-center gap-4 rounded-xl bg-inset px-5 py-6">
+            <span className="text-3xl">🌱</span>
+            <div>
+              <div className="text-[16px] font-bold">오늘 시작한 실전매매입니다 — 현재 수익률 {(curve[0].index - 100).toFixed(2)}%</div>
+              <div className="mt-1 text-[13.5px] text-muted">평가액 {curve[0].equity.toLocaleString()}원 · 내일 종가부터 추이 그래프가 그려집니다.</div>
+            </div>
+          </div>
+        ) : (
+          <p className="text-[14px] text-faint">거래를 등록하면 수익률 추이가 표시됩니다.</p>
+        )}
+      </Card>
+
+      {/* 보유 종목 — 현황판·추이 그래프 아래 (2026-09-05 재배치) */}
       {sum?.positions.length === 0 ? (
         <EmptyState icon="📒" title="보유 포지션이 없습니다"
           desc="HTS에서 체결한 매수 내역을 위 폼으로 등록하면 수익률 추적이 시작됩니다. 입출금도 등록해야 TWR·XIRR이 정확해집니다." />
@@ -688,27 +721,6 @@ function PortfolioPage() {
       )}
 
 
-      {/* 수익률 추이 (2026-08-28 지시 — 시뮬레이터와 동일 스타일, TWR 지수) */}
-      <Card className="mb-4">
-        <CardTitle right={curve.length > 0 ? (
-          <span className={`text-[15px] font-bold normal-case ${curve[curve.length - 1].index >= 100 ? "text-up" : "text-down"}`}>
-            {(curve[curve.length - 1].index - 100).toFixed(2)}%
-          </span>
-        ) : undefined}>수익률 추이 <span className="normal-case text-faint">· 시작 = 100 · 입출금 왜곡 제거(TWR)</span></CardTitle>
-        {curve.length >= 2 ? (
-          <div ref={eqRef} className="h-64" />
-        ) : curve.length === 1 ? (
-          <div className="flex items-center gap-4 rounded-xl bg-inset px-5 py-6">
-            <span className="text-3xl">🌱</span>
-            <div>
-              <div className="text-[16px] font-bold">오늘 시작한 실전매매입니다 — 현재 수익률 {(curve[0].index - 100).toFixed(2)}%</div>
-              <div className="mt-1 text-[13.5px] text-muted">평가액 {curve[0].equity.toLocaleString()}원 · 내일 종가부터 추이 그래프가 그려집니다.</div>
-            </div>
-          </div>
-        ) : (
-          <p className="text-[14px] text-faint">거래를 등록하면 수익률 추이가 표시됩니다.</p>
-        )}
-      </Card>
 
       {/* 오늘의 주문표 (2026-08-28 지시 — 실전매매 중간 섹션) */}
       <Card className="mb-4">

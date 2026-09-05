@@ -118,16 +118,18 @@ export default function SettingsPage() {
   const curAcct = editId === null ? null : accts.find((x) => x.id === editId) ?? null;
   const forcePw = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("force_pw") === "1";
   // 섹션 탭 (2026-09-05 지시) — 카드 세로 나열 대신 탭으로 분리, ?tab= 로 상태 공유
-  const TABS = [
+  const TABS_ALL = [
     { key: "account", label: "계정", desc: "비밀번호 · 세션" },
     { key: "broker", label: "증권사 계좌", desc: "체결 자동 가져오기 연동" },
-    { key: "chat", label: "챗봇", desc: "매매 도우미 지침" },
+    { key: "chat", label: "챗봇", desc: "시스템 프롬프트 (관리자)", adminOnly: true },
   ] as const;
-  type TabKey = (typeof TABS)[number]["key"];
+  type TabKey = (typeof TABS_ALL)[number]["key"];
+  // 챗봇 탭은 관리자 전용 — 일반 계정에는 추가 지침 카드도 보이지 않는다 (2026-09-05 지시)
+  const TABS = TABS_ALL.filter((t) => !("adminOnly" in t && t.adminOnly) || isAdmin);
   const [tab, setTab] = useState<TabKey>("account");
   useEffect(() => {
     const q = new URLSearchParams(window.location.search).get("tab") as TabKey | null;
-    if (q && TABS.some((t) => t.key === q)) setTab(q);
+    if (q && TABS_ALL.some((t) => t.key === q)) setTab(q);
     if (new URLSearchParams(window.location.search).get("force_pw") === "1") setTab("account");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -185,9 +187,9 @@ export default function SettingsPage() {
       </Card>
       </>)}
 
-      {tab === "chat" && (<>
+      {tab === "chat" && isAdmin && (<>
       <Card className="mb-4">
-        <CardTitle>챗봇 추가 지침</CardTitle>
+        <CardTitle>챗봇 추가 지침 <span className="normal-case text-faint">· 관리자 계정 전용</span></CardTitle>
         <p className="mb-2 text-[13.5px] leading-relaxed text-muted">
           매매 도우미의 기본 지침(전략 지식·데이터 근거 규칙) <b className="text-ink">뒤에 덧붙는</b> 나만의 지침입니다.
           말투·관심 포트·보고 형식 등을 지정하세요. 기본 안전 규칙은 대체되지 않습니다.
