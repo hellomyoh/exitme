@@ -308,3 +308,165 @@ def test_same_app_key_on_two_accounts_hint(monkeypatch):
     out = c.post(f"/broker/accounts/{other}/test", headers=h).json()
     assert out["ok"] is False and out["suggest"] is None
     assert "'연금'(1004**29-22)" in out["message"] and "계좌 하나에만 유효" in out["message"]
+
+
+
+def test_reservation_window_rules():
+    """예약주문 접수 창 (KIS 규정): 15:40~다음 영업일 07:30, 23:40~00:10 제외, 휴장일은 종일."""
+    from datetime import datetime
+
+    from app.broker import KST, reservation_window
+
+    def at(y, m, d, hh, mm):
+        return reservation_window(datetime(y, m, d, hh, mm, tzinfo=KST))
+
+    assert at(2026, 9, 7, 16, 0)["open"] is True      # 월 16:00 — 장 마감 후
+    assert at(2026, 9, 7, 7, 0)["open"] is True       # 월 07:00 — 장 시작 전
+    assert at(2026, 9, 7, 10, 0)["open"] is False     # 월 10:00 — 장중
+    assert at(2026, 9, 7, 15, 39)["open"] is False    # 15:39 — 아직
+    assert at(2026, 9, 5, 14, 0)["open"] is True      # 토 14:00 — 휴장일 종일
+    assert at(2026, 9, 7, 23, 50)["open"] is False    # 서버 초기화
+    assert at(2026, 9, 7, 0, 5)["open"] is False
+
+
+def _fake_kis(monkeypatch, reserve_fail_for: set[str] | None = None, remote: list[dict] | None = None):
+    """예약주문 접수/취소/조회를 흉내내는 클라이언트 — 호출 기록을 남긴다."""
+    from app.services import kis_client
+
+    calls: dict = {"reserve": [], "cancel": []}
+    seq = {"n": 100}
+
+    class _Fake:
+        def __init__(self, *a, **kw):
+            pass
+
+        def reserve_order(self, code, side, qty, price, end_date=None):
+            calls["reserve"].append((code, side, qty, price))
+            if reserve_fail_for and code in reserve_fail_for:
+                raise kis_client.KisError("KIS error APBK0919 주문가능금액을 초과하였습니다 (HTTP 200)")
+            seq["n"] += 1
+            return {"rsvn_ord_seq": str(seq["n"]), "msg": "예약주문이 접수되었습니다", "raw": {"RSVN_ORD_SEQ": str(seq["n"])}}
+
+        def cancel_reserved_order(self, rsvn_ord_seq, ord_dt, orgno=""):
+            calls["cancel"].append(rsvn_ord_seq)
+            return {"msg": "예약주문이 취소되었습니다", "raw": {}}
+
+        def list_reserved_orders(self, start, end, include_cancelled=True):
+            return remote or []
+
+    monkeypatch.setattr(kis_client, "KisTradingClient", _Fake)
+    return calls
+
+
+def _plan_setup(c, h, exec_day: str):
+    """포트 + 계좌 연결 + 그날의 주문표 스냅샷(그리드 매수 2줄·익절 매도 1줄)을 만든다."""
+    from datetime import date as _d
+
+    from app.db import SessionLocal
+    from app.models import PortfolioPlan
+
+    pid = c.post("/portfolios", json={"name": "예약테스트"}, headers=h).json()["id"]
+    acct = c.post("/broker/accounts", json={"label": "위탁", "app_key": "PS" + "k" * 34, "app_secret": "S" * 180,
+                                            "account_no": "68800037-01"}, headers=h).json()
+    assert c.put(f"/portfolio/{pid}/broker", json={"credential_id": acct["id"]}, headers=h).status_code == 200
+    orders = [
+        {"instrument": "K200", "side": "buy", "otype": "limit", "qty": 3, "price": 108000, "kind": "grid1"},
+        {"instrument": "K200", "side": "buy", "otype": "limit", "qty": 3, "price": 106500, "kind": "grid2"},
+        {"instrument": "LEV", "side": "sell", "otype": "market", "qty": 2, "price": None, "kind": "liq"},
+    ]
+    with SessionLocal() as s:
+        s.add(PortfolioPlan(portfolio_id=pid, trade_date=_d.fromisoformat(exec_day),
+                            payload={"orders": orders, "regime": "BULL"}))
+        s.commit()
+    return pid, acct, orders
+
+
+def test_reserve_orders_flow(monkeypatch):
+    """주문표 → 예약주문: 줄 단위 접수·실패 기록, 주문표 불일치 거절, 중복 차단, 취소, 상태 동기화."""
+    from datetime import datetime, timedelta
+
+    import app.broker as broker
+
+    c, h = _client()
+    # 접수 창을 강제로 열어 둔다(토요일 16:00) — 창 규칙은 별도 테스트
+    monkeypatch.setattr(broker, "reservation_window", lambda now=None, session=None: {"open": True, "reason": "test"})
+    exec_day = (datetime.now(broker.KST).date() + timedelta(days=1)).isoformat()
+    pid, acct, orders = _plan_setup(c, h, exec_day)
+    calls = _fake_kis(monkeypatch, reserve_fail_for={"122630"})   # 레버리지 매도는 실패시킨다
+
+    # 화면 줄 그대로 접수
+    r = c.post(f"/portfolio/{pid}/orders/reserve", json={"date": exec_day, "lines": orders}, headers=h)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["reserved"] == 2 and out["failed"] == 1
+    by = {i["kind"]: i for i in out["items"]}
+    assert by["grid1"]["status"] == "reserved" and by["grid1"]["rsvn_ord_seq"] == "101" and by["grid1"]["code"] == "069500"
+    assert by["grid2"]["status"] == "reserved" and by["grid2"]["price"] == 106500
+    assert by["liq"]["status"] == "failed" and "주문가능금액" in by["liq"]["message"] and by["liq"]["code"] == "122630"
+    assert calls["reserve"] == [("069500", "buy", 3, 108000), ("069500", "buy", 3, 106500), ("122630", "sell", 2, None)]
+
+    # 같은 줄 재접수 → 중복(활성 예약 있음), KIS 호출 없음. 실패했던 줄은 재시도됨(여기선 다시 실패)
+    r2 = c.post(f"/portfolio/{pid}/orders/reserve", json={"date": exec_day, "lines": orders}, headers=h).json()
+    assert [i["status"] for i in r2["items"]] == ["duplicate", "duplicate", "failed"]
+    assert len(calls["reserve"]) == 4
+
+    # 화면 주문표가 서버 계획과 다르면(수량 변경) 거절 — KIS 호출 없음
+    bad = dict(orders[0], qty=99)
+    r3 = c.post(f"/portfolio/{pid}/orders/reserve", json={"date": exec_day, "lines": [bad]}, headers=h).json()
+    assert r3["items"][0]["status"] == "mismatch" and r3["reserved"] == 0 and len(calls["reserve"]) == 4
+
+    # 목록: 실행일 필터 + 접수 창
+    lst = c.get(f"/portfolio/{pid}/orders?date={exec_day}", headers=h).json()
+    assert lst["window"]["open"] is True
+    assert sorted(i["status"] for i in lst["items"]) == ["failed", "failed", "reserved", "reserved"]
+
+    # 취소
+    grid1 = next(i for i in lst["items"] if i["kind"] == "grid1" and i["status"] == "reserved")
+    cx = c.post(f"/portfolio/{pid}/orders/{grid1['id']}/cancel", headers=h)
+    assert cx.status_code == 200 and cx.json()["status"] == "cancelled" and calls["cancel"] == ["101"]
+    assert c.post(f"/portfolio/{pid}/orders/{grid1['id']}/cancel", headers=h).status_code == 409  # 이미 취소
+
+    # 상태 동기화: KIS 조회에 grid2 가 전량 체결로 나오면 filled
+    _fake_kis(monkeypatch, remote=[{"rsvn_ord_seq": "102", "order_no": "0001234", "filled_qty": 3,
+                                    "cancel_dt": "", "result": "정상처리"}])
+    lst2 = c.get(f"/portfolio/{pid}/orders?date={exec_day}&refresh=1", headers=h).json()
+    g2 = next(i for i in lst2["items"] if i["kind"] == "grid2")
+    assert g2["status"] == "filled" and g2["order_no"] == "0001234" and g2["filled_qty"] == 3
+
+    # 다른 계정은 접근 불가
+    c2, h2 = _client()
+    assert c2.get(f"/portfolio/{pid}/orders", headers=h2).status_code == 404
+    assert c2.post(f"/portfolio/{pid}/orders/reserve", json={"date": exec_day, "lines": orders}, headers=h2).status_code == 404
+
+
+def test_reserve_orders_guards(monkeypatch):
+    """접수 거절 조건: 창 닫힘(409)·연결 계좌 없음(409)·모의투자(409)·스냅샷 없음(404)·지난 실행일(409)."""
+    from datetime import datetime, timedelta
+
+    import app.broker as broker
+
+    c, h = _client()
+    _fake_kis(monkeypatch)
+    exec_day = (datetime.now(broker.KST).date() + timedelta(days=1)).isoformat()
+    line = [{"instrument": "K200", "side": "buy", "otype": "limit", "qty": 1, "price": 100000, "kind": "grid1"}]
+
+    pid = c.post("/portfolios", json={"name": "가드"}, headers=h).json()["id"]
+    assert c.post(f"/portfolio/{pid}/orders/reserve", json={"date": exec_day, "lines": line}, headers=h).status_code == 409  # 계좌 없음
+
+    vps = c.post("/broker/accounts", json={"label": "모의", "app_key": "PS" + "v" * 34, "app_secret": "S" * 180,
+                                           "account_no": "12345678-01", "env": "vps"}, headers=h).json()
+    c.put(f"/portfolio/{pid}/broker", json={"credential_id": vps["id"]}, headers=h)
+    r = c.post(f"/portfolio/{pid}/orders/reserve", json={"date": exec_day, "lines": line}, headers=h)
+    assert r.status_code == 409 and "모의투자" in r.json()["detail"]
+
+    prod = c.post("/broker/accounts", json={"label": "실전", "app_key": "PS" + "p" * 34, "app_secret": "S" * 180,
+                                            "account_no": "12345678-01"}, headers=h).json()
+    c.put(f"/portfolio/{pid}/broker", json={"credential_id": prod["id"]}, headers=h)
+    monkeypatch.setattr(broker, "reservation_window", lambda now=None, session=None: {"open": False, "reason": "장중"})
+    r = c.post(f"/portfolio/{pid}/orders/reserve", json={"date": exec_day, "lines": line}, headers=h)
+    assert r.status_code == 409 and r.json()["detail"] == "장중"
+
+    monkeypatch.setattr(broker, "reservation_window", lambda now=None, session=None: {"open": True, "reason": "ok"})
+    assert c.post(f"/portfolio/{pid}/orders/reserve", json={"date": exec_day, "lines": line}, headers=h).status_code == 404  # 스냅샷 없음
+    past = (datetime.now(broker.KST).date() - timedelta(days=1)).isoformat()
+    assert c.post(f"/portfolio/{pid}/orders/reserve", json={"date": past, "lines": line}, headers=h).status_code == 409

@@ -267,7 +267,11 @@ def parse_execution(row: dict) -> Execution | None:
 
 
 class KisTradingClient(KisClient):
-    """계좌 조회 전용 클라이언트 — 주문 TR 은 구현하지 않는다(설계상 자동 발주 미도입)."""
+    """계좌 클라이언트 — 조회 TR + **예약주문** TR (2026-09-05 지시로 조회 전용 원칙 변경).
+
+    주문은 사용자가 주문표에서 버튼을 눌러 명시적으로 접수하는 예약주문(CTSC0008U)만 구현한다.
+    정규 장중 주문(order-cash)은 도입하지 않는다. 모의투자(vps)는 예약주문 TR 이 없다.
+    """
 
     def __init__(self, auth: KisAuth, cano: str, acnt_prdt_cd: str = "01",
                  session: requests.Session | None = None) -> None:
@@ -317,6 +321,96 @@ class KisTradingClient(KisClient):
             fk, nk = (body.get("ctx_area_fk100") or "").strip(), nk_next
         return out
 
+    # ── 예약주문 (2026-09-05 지시) — 접수 15:40~다음 영업일 07:30, 장 시작 시 자동 주문 ──
+    def _post(self, path: str, tr_id: str, body: dict[str, str]) -> dict:
+        """주문 계열 POST — 재시도하지 않는다(중복 접수 방지). rt_cd != "0" 은 KisError."""
+        self._throttle()
+        resp = self.session.post(self.auth.base_url + path,
+                                 headers=self.auth.headers(tr_id, self.session), json=body, timeout=10)
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+        if resp.status_code != 200 or str(data.get("rt_cd")) != "0":
+            code = str(data.get("msg_cd") or "").strip()
+            msg = str(data.get("msg1") or resp.text[:120]).strip()
+            raise KisError(f"KIS error {code} {msg} (HTTP {resp.status_code})".replace("  ", " "))
+        return data
+
+    def reserve_order(self, code: str, side: str, qty: int, price: int | None,
+                      end_date: date | None = None) -> dict:
+        """국내주식 예약주문 접수 (CTSC0008U). price None/0 = 시장가.
+
+        반환 {"rsvn_ord_seq": 예약주문순번, "msg": KIS 메시지, "raw": output}.
+        """
+        if self.auth.env == "vps":
+            raise KisError("모의투자 계좌는 예약주문을 지원하지 않습니다 — 실전 계좌를 연결하세요")
+        if qty <= 0:
+            raise KisError("주문 수량이 0 입니다")
+        body = {
+            "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "PDNO": code,
+            "ORD_QTY": str(int(qty)), "ORD_UNPR": str(int(price or 0)),
+            "SLL_BUY_DVSN_CD": "02" if side == "buy" else "01",   # 02 매수 / 01 매도
+            "ORD_DVSN_CD": "00" if price else "01",               # 00 지정가 / 01 시장가
+            "ORD_OBJT_CBLC_DVSN_CD": "10",                        # 10 현금
+        }
+        if end_date is not None:
+            body["RSVN_ORD_END_DT"] = end_date.strftime("%Y%m%d")  # 기간예약 (최대 30일)
+        data = self._post(RESV_ORDER_PATH, RESV_ORDER_TR, body)
+        out = data.get("output") or {}
+        if isinstance(out, list):
+            out = out[0] if out else {}
+        seq = str(_first(out, "RSVN_ORD_SEQ", "rsvn_ord_seq")).strip()
+        return {"rsvn_ord_seq": seq, "msg": str(data.get("msg1") or "").strip(), "raw": out}
+
+    def cancel_reserved_order(self, rsvn_ord_seq: str, ord_dt: date, orgno: str = "") -> dict:
+        """예약주문 취소 (CTSC0009U). 정정은 지원하지 않는다 — 취소 후 재접수."""
+        body = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd,
+                "RSVN_ORD_SEQ": str(rsvn_ord_seq), "RSVN_ORD_ORGNO": orgno or "",
+                "RSVN_ORD_ORD_DT": ord_dt.strftime("%Y%m%d")}
+        data = self._post(RESV_CANCEL_PATH, RESV_CANCEL_TR, body)
+        out = data.get("output") or {}
+        return {"msg": str(data.get("msg1") or "").strip(), "raw": out if isinstance(out, dict) else {}}
+
+    def list_reserved_orders(self, start: date, end: date, include_cancelled: bool = True) -> list[dict]:
+        """예약주문 조회 (CTSC0004R) — 접수일 [start, end]. 첫 페이지(최대 수십 건)만 읽는다."""
+        body = self._get(RESV_LIST_PATH, RESV_LIST_TR, {
+            "RSVN_ORD_ORD_DT": start.strftime("%Y%m%d"), "RSVN_ORD_END_DT": end.strftime("%Y%m%d"),
+            "TMNL_MDIA_KIND_CD": "00", "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "PRCS_DVSN_CD": "0", "CNCL_YN": "Y" if include_cancelled else "N",
+            "RSVN_ORD_SEQ": "", "PDNO": "", "SLL_BUY_DVSN_CD": "",
+            "CTX_AREA_FK200": "", "CTX_AREA_NK200": "",
+        })
+        rows = body.get("output") or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        out = []
+        for r in rows:
+            out.append({
+                "rsvn_ord_seq": _first(r, "rsvn_ord_seq", "RSVN_ORD_SEQ"),
+                "ord_dt": _first(r, "rsvn_ord_ord_dt", "RSVN_ORD_ORD_DT"),
+                "rcit_dt": _first(r, "rsvn_ord_rcit_dt", "RSVN_ORD_RCIT_DT"),
+                "code": _first(r, "pdno", "PDNO"), "name": _first(r, "kor_item_shtn_name"),
+                "side": "buy" if _first(r, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD") == "02" else "sell",
+                "qty": _to_int(_first(r, "ord_rsvn_qty", "ORD_RSVN_QTY")),
+                "price": _to_int(_first(r, "ord_rsvn_unpr", "ORD_RSVN_UNPR")),
+                "filled_qty": _to_int(_first(r, "tot_ccld_qty", "TOT_CCLD_QTY")),
+                "filled_amt": _to_int(_first(r, "tot_ccld_amt", "TOT_CCLD_AMT")),
+                "cancel_dt": _first(r, "cncl_ord_dt", "CNCL_ORD_DT"),
+                "order_no": _first(r, "odno", "ODNO"),
+                "result": _first(r, "prcs_rslt", "PRCS_RSLT"),
+                "ord_dvsn": _first(r, "ord_dvsn_cd", "ORD_DVSN_CD"),
+            })
+        return out
+
+
+# ── 예약주문 TR (koreainvestment/open-trading-api 공식 예제 기준, 2026-09-05) ─────────
+RESV_ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-resv"
+RESV_ORDER_TR = "CTSC0008U"
+RESV_CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-resv-rvsecncl"
+RESV_CANCEL_TR = "CTSC0009U"
+RESV_LIST_PATH = "/uapi/domestic-stock/v1/trading/order-resv-ccnl"
+RESV_LIST_TR = "CTSC0004R"
 
 # ── 잔고 조회 (연결 확인·계좌 탐색용, 2026-09-05) ──────────────────────────────
 BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"

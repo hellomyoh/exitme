@@ -128,6 +128,15 @@ function PortfolioPage() {
   const [acctList, setAcctList] = useState<{ id: number; label: string; account_no: string; acnt_prdt_cd: string; env: string }[]>([]);
   const [imp, setImp] = useState<{ items: ImportRow[]; added: number; skipped: number; unknown_codes: string[] } | null>(null);
   const [impMsg, setImpMsg] = useState("");
+  // 예약주문 (2026-09-05 지시) — 장 마감 후 주문표에서 버튼으로 접수, 줄별 등록/체결 상태 표시
+  type BrokerOrderRow = { id: number | null; plan_date: string; line_key: string; code: string; instrument: string; kind: string; side: string;
+    otype: string; qty: number; price: number | null; rsvn_ord_seq: string | null; order_no: string | null; filled_qty: number;
+    status: string; status_ko: string; message: string | null };
+  type BrokerOrders = { window: { open: boolean; reason: string }; items: BrokerOrderRow[] };
+  const [bo, setBo] = useState<BrokerOrders | null>(null);
+  const [boConfirm, setBoConfirm] = useState(false);
+  const [boBusy, setBoBusy] = useState(false);
+  const [boMsg, setBoMsg] = useState("");
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("");
   const [entryOpen, setEntryOpen] = useState(false);  // 체결 입력 폼 펼침 (2026-08-29 일지 개편)
@@ -135,6 +144,45 @@ function PortfolioPage() {
   const [curve, setCurve] = useState<{ date: string; equity: number; index: number }[]>([]);
   const eqRef = useRef<HTMLDivElement>(null);
   const eqApi = useRef<IChartApi | null>(null);
+
+  // ── 예약주문 헬퍼 (2026-09-05) ──
+  const lineKey = (o: OrderRow) => `${o.kind}:${o.instrument}:${o.side}:${o.otype}:${o.price ? Math.round(o.price) : "mkt"}`;
+  const ACTIVE = ["reserved", "filled", "partial"];
+  const boFor = (o: OrderRow): BrokerOrderRow | null => {
+    if (!bo) return null;
+    const same = bo.items.filter((i) => i.line_key === lineKey(o));
+    return same.slice().reverse().find((i) => ACTIVE.includes(i.status)) ?? same[same.length - 1] ?? null;
+  };
+  const pendingLines = (signal?.orders ?? []).filter((o) => { const b = boFor(o); return !(b && ACTIVE.includes(b.status)); });
+  const instName = (o: OrderRow) => o.instrument === "K200" ? (signal?.name_200 ?? "KODEX 200") : "KODEX 레버리지";
+  async function reserveAll() {
+    if (!sum || !signal?.exec_day) return;
+    setBoBusy(true); setBoMsg("");
+    const lines = pendingLines.map((o) => ({ instrument: o.instrument, kind: o.kind, side: o.side, otype: o.otype, qty: o.qty, price: o.price ?? null }));
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/orders/reserve`, { method: "POST", body: JSON.stringify({ date: signal.exec_day, lines }) });
+    const j = (await r.json().catch(() => ({}))) as { reserved?: number; failed?: number; detail?: string };
+    setBoBusy(false); setBoConfirm(false);
+    if (!r.ok) { setBoMsg(j.detail ?? `접수 실패 (${r.status})`); return; }
+    setBoMsg(`${j.reserved ?? 0}건 접수${(j.failed ?? 0) > 0 ? ` · ${j.failed}건 실패 — 아래 표의 ✗ 를 확인하세요` : ""}`);
+    void load(pid);
+  }
+  async function cancelOrder(b: BrokerOrderRow) {
+    if (!sum || b.id === null) return;
+    if (!window.confirm(`예약주문 #${b.rsvn_ord_seq ?? b.id} (${b.side === "buy" ? "매수" : "매도"} ${b.qty}주)를 취소할까요?`)) return;
+    setBoBusy(true);
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/orders/${b.id}/cancel`, { method: "POST" });
+    setBoBusy(false);
+    if (!r.ok) setBoMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `취소 실패 (${r.status})`);
+    else setBoMsg("예약주문을 취소했습니다");
+    void load(pid);
+  }
+  async function refreshOrders() {
+    if (!sum) return;
+    setBoBusy(true);
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/orders${signal?.exec_day ? `?date=${signal.exec_day}&` : "?"}refresh=1`);
+    setBoBusy(false);
+    if (r.ok) { setBo((await r.json()) as BrokerOrders); setBoMsg("증권사 상태를 새로 고쳤습니다"); }
+  }
 
   const load = useCallback(async (id: number | null) => {
     let sid: number | null = id;
@@ -159,12 +207,15 @@ function PortfolioPage() {
     }
     // 오늘의 주문표 — 선택된 실전 포트의 보유·현금 기준. 조회 시 '그날의 주문표'가 스냅샷 저장됨
     const sg = await apiFetch(`/signals/daily${sid ? `?portfolio_id=${sid}` : ""}`);
-    if (sg.ok) setSignal((await sg.json()) as Signal);
+    let sgj: Signal | null = null;
+    if (sg.ok) { sgj = (await sg.json()) as Signal; setSignal(sgj); }
     const jr = await apiFetch(`/portfolio/journal${sid ? `?portfolio_id=${sid}` : ""}`);
     if (jr.ok) setJournal(((await jr.json()) as { items: JournalItem[] }).items);
     if (sid) {
       const bk = await apiFetch(`/portfolio/${sid}/broker`);
       if (bk.ok) setBroker((await bk.json()) as BrokerInfo);
+      const bor = await apiFetch(`/portfolio/${sid}/orders${sgj?.exec_day ? `?date=${sgj.exec_day}` : ""}`);
+      setBo(bor.ok ? ((await bor.json()) as BrokerOrders) : null);
       const al = await apiFetch("/broker/accounts");
       if (al.ok) setAcctList(((await al.json()) as { items: typeof acctList }).items);
     }
@@ -393,7 +444,7 @@ function PortfolioPage() {
               계좌 등록·관리 →</Link>
           }>
             증권사 연동 <span className="normal-case text-faint">
-              · 설정에 등록한 계좌를 선택하면 체결을 자동으로 가져옵니다 (조회 전용)</span>
+              · 설정에 등록한 계좌를 선택하면 체결을 자동으로 가져오고, 주문표에서 예약주문을 접수할 수 있습니다</span>
           </CardTitle>
           <div className="flex flex-wrap items-center gap-3 text-[13.5px]">
             <select className="input !py-2" value={broker?.linked ? String(broker.id ?? "") : ""}
@@ -713,6 +764,59 @@ function PortfolioPage() {
             <div className="mt-1 text-[11.5px] text-faint">자동으로 고치지 않습니다 — 일지에서 직접 수정하거나 증권사 내역을 가져오세요.</div>
           </div>
         )}
+        {/* 예약주문 접수 (2026-09-05 지시) — 장 마감 후 버튼으로 KIS 예약주문, 사용자가 확인한 뒤에만 */}
+        {market === "KR" && signal?.status === "OK" && signal.orders && signal.orders.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-[13px]">
+            {broker?.linked ? (
+              <>
+                <button className="btn btn-primary !py-1.5" disabled={boBusy || !bo?.window.open || pendingLines.length === 0}
+                  title={!bo?.window.open ? (bo?.window.reason ?? "") : pendingLines.length === 0 ? "모든 줄이 이미 접수되었습니다" : ""}
+                  onClick={() => setBoConfirm(true)}>
+                  증권사에 예약주문 접수{pendingLines.length > 0 && pendingLines.length < (signal.orders?.length ?? 0) ? ` (남은 ${pendingLines.length}건)` : pendingLines.length > 0 ? ` (${pendingLines.length}건)` : ""}
+                </button>
+                <span className={bo?.window.open ? "text-faint" : "text-warn"}>{bo?.window.reason ?? ""}</span>
+                {bo && bo.items.some((i) => ACTIVE.includes(i.status)) && (
+                  <button className="btn !py-1.5" disabled={boBusy} onClick={() => void refreshOrders()}>증권사 상태 새로고침</button>
+                )}
+              </>
+            ) : (
+              <span className="text-faint">예약주문을 접수하려면 아래 <b className="text-ink">증권사 연동</b>에서 계좌를 연결하세요.</span>
+            )}
+            {boMsg && <span className="text-muted">{boMsg}</span>}
+          </div>
+        )}
+        {boConfirm && signal?.orders && (
+          <div className="mb-3 rounded-lg border border-line-strong bg-raised/40 p-3.5 text-[13px]">
+            <div className="mb-2 text-[13.5px] font-bold">
+              예약주문 접수 확인 — {broker?.label} ({broker?.account_no}-{broker?.acnt_prdt_cd}) · 실행일 {signal.exec_day}
+            </div>
+            <ul className="mb-2 grid gap-1">
+              {pendingLines.map((o, i) => (
+                <li key={i} className="flex flex-wrap items-center gap-2">
+                  <Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge>
+                  <span>{instName(o)}</span>
+                  <b className={o.side === "buy" ? "text-up" : "text-down"}>{o.side === "buy" ? "매수" : "매도"}</b>
+                  <span className="table-num">{o.qty.toLocaleString()}주</span>
+                  <span className="table-num">{o.price ? `지정가 ${fpx(o.price)}` : "시장가"}</span>
+                  {o.price && <span className="text-faint">≈ {fm(o.qty * o.price)}</span>}
+                </li>
+              ))}
+            </ul>
+            <p className="mb-2 text-faint">
+              {(() => {
+                const buy = pendingLines.filter((o) => o.side === "buy" && o.price).reduce((a, o) => a + o.qty * (o.price ?? 0), 0);
+                const sell = pendingLines.filter((o) => o.side === "sell" && o.price).reduce((a, o) => a + o.qty * (o.price ?? 0), 0);
+                return `지정가 합계 — 매수 ${fm(buy)} · 매도 ${fm(sell)}. `;
+              })()}
+              장 시작 시 KIS 가 주문합니다(예약주문은 당일만 유효). 접수 후에도 아래 표에서 줄별로 취소할 수 있습니다. 시장가 줄은 시가로 체결됩니다.
+            </p>
+            <div className="flex gap-2">
+              <button className="btn btn-primary !py-1.5" disabled={boBusy || pendingLines.length === 0} onClick={() => void reserveAll()}>
+                {boBusy ? "접수 중…" : `${pendingLines.length}건 접수`}</button>
+              <button className="btn !py-1.5" disabled={boBusy} onClick={() => setBoConfirm(false)}>닫기</button>
+            </div>
+          </div>
+        )}
         {signal?.status === "OK" && signal.orders && signal.orders.length > 0 ? (
           <div className="overflow-x-auto">
             {/* 모바일: 줄바꿈 금지 + 축약(종목 짧게·작은 글씨)으로 한 화면에 — 넘치면 가로 스크롤 (2026-09-02 지시) */}
@@ -723,6 +827,7 @@ function PortfolioPage() {
                 <th className="pb-2 text-right font-medium">방식 · 가격</th>
                 <th className="pb-2 text-right font-medium">수량<span className="hidden sm:inline">{signal?.basis === "portfolio" ? " (내 계좌 기준)" : " (모델 1억)"}</span></th>
                 <th className="pb-2 pl-4 font-medium">체결</th>
+                {market === "KR" && broker?.linked && <th className="pb-2 pl-3 font-medium">예약</th>}
               </tr></thead>
               <tbody>
                 {signal.orders.map((o, i) => (
@@ -748,6 +853,29 @@ function PortfolioPage() {
                         <span className="sm:hidden">등록</span><span className="hidden sm:inline">체결 등록</span>
                       </button>
                     </td>
+                    {market === "KR" && broker?.linked && (
+                      <td className="py-2 pl-3 text-[12.5px]">
+                        {(() => {
+                          const b = boFor(o);
+                          if (!b) return <span className="text-faint">—</span>;
+                          if (b.status === "reserved") return (
+                            <span className="inline-flex items-center gap-1.5" title={`예약주문 #${b.rsvn_ord_seq ?? ""} · ${b.message ?? ""}`}>
+                              <span className="font-semibold text-ok">✓ 등록완료</span>
+                              <span className="text-faint">#{b.rsvn_ord_seq}</span>
+                              <button className="text-faint hover:text-down" disabled={boBusy} onClick={() => void cancelOrder(b)}>취소</button>
+                            </span>);
+                          if (b.status === "filled") return <span className="font-semibold text-ok" title={`주문번호 ${b.order_no ?? ""}`}>✓ 체결 {b.filled_qty.toLocaleString()}주</span>;
+                          if (b.status === "partial") return (
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className="font-semibold text-warn">◐ 일부 체결 {b.filled_qty}/{b.qty}</span>
+                              <button className="text-faint hover:text-down" disabled={boBusy} onClick={() => void cancelOrder(b)}>취소</button>
+                            </span>);
+                          if (b.status === "unfilled") return <span className="text-faint">○ 미체결</span>;
+                          if (b.status === "cancelled") return <span className="text-faint">취소됨</span>;
+                          return <span className="text-down" title={b.message ?? ""}>✗ {b.status_ko}{b.message ? ` — ${b.message.slice(0, 40)}` : ""}</span>;
+                        })()}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

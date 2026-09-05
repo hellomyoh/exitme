@@ -270,13 +270,27 @@ def import_journal_fills(jid: int, days: int = 30, dry_run: bool = True,
     - 경고만(검토 2-3·2-6): 해당일 보유 초과 매도, 같은 날 같은 종목·수량·단가의 수동 기록 → 등록은 하되 경고 표시
     - 비용은 일지 요율로 추정(검토 2-4) — 체결 응답에 수수료·세금이 없다
     """
-    from app.services.kis_auth import KisAuth
-    from app.services.kis_client import KisTradingClient
-
     j = _owned(session, jid, user_id)
     cred = session.get(BrokerCredential, j.broker_credential_id) if j.broker_credential_id else None
     if cred is None or cred.user_id != user_id:
         raise HTTPException(status_code=409, detail="이 일지에 연결된 증권사 계좌가 없습니다 — 아래에서 계좌를 연결하세요")
+    try:
+        return import_journal_fills_for(session, j, cred, days=days, dry_run=dry_run)
+    except _FetchFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+class _FetchFailed(RuntimeError):
+    pass
+
+
+def import_journal_fills_for(session: Session, j: ManualJournal, cred: BrokerCredential,
+                             days: int = 30, dry_run: bool = True) -> dict:
+    """체결 가져오기 본체 — 화면(라우트)과 장 마감 후 배치(app.broker.run_post_close_sync)가 같이 쓴다."""
+    from app.services.kis_auth import KisAuth
+    from app.services.kis_client import KisTradingClient
+
+    jid = j.id
     end = datetime.now(KST).date()
     start = end - timedelta(days=max(1, min(days, 365)) - 1)
     try:
@@ -285,7 +299,7 @@ def import_journal_fills(jid: int, days: int = 30, dry_run: bool = True,
             .fetch_executions(start, end)
     except Exception as exc:  # noqa: BLE001 — 자격·유량 등 사유를 그대로 안내
         logger.warning("journal import-fills failed jid=%s: %s", jid, exc)
-        raise HTTPException(status_code=502, detail=f"증권사 조회 실패 — {humanize_kis_error(str(exc)[:200])}")
+        raise _FetchFailed(f"증권사 조회 실패 — {humanize_kis_error(str(exc)[:200])}")
 
     entries = session.scalars(select(ManualJournalEntry)
                               .where(ManualJournalEntry.journal_id == jid)).all()
