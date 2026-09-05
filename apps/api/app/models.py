@@ -20,7 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.crypto import EncryptedBigInt
+from app.crypto import EncryptedBigInt, EncryptedText
 
 
 class Base(DeclarativeBase):
@@ -266,6 +266,24 @@ class TradeTransaction(TimestampMixin, Base):
     executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     memo: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    broker_ref: Mapped[str | None] = mapped_column(Text)  # 증권사 체결 식별자 — 자동 가져오기 멱등 (0016)
+
+
+class BrokerCredential(TimestampMixin, Base):
+    """증권사 조회 연동 자격 — 포트당 1건, 조회 TR 전용(주문 미사용). 0016, 2026-09-05 지시."""
+
+    __tablename__ = "broker_credentials"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"), unique=True, nullable=False)
+    env: Mapped[str] = mapped_column(Text, nullable=False, default="prod")  # prod | vps(모의)
+    app_key: Mapped[str] = mapped_column(EncryptedText, nullable=False)        # 🔒
+    app_secret: Mapped[str] = mapped_column(EncryptedText, nullable=False)     # 🔒
+    account_no: Mapped[str] = mapped_column(EncryptedText, nullable=False)     # 🔒 종합계좌 8자리
+    acnt_prdt_cd: Mapped[str] = mapped_column(Text, nullable=False, default="01")
+    last_import_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class PositionLot(Base):
