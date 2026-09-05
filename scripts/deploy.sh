@@ -1,34 +1,50 @@
 #!/usr/bin/env bash
 # ExitMe 원격 서버 배포 스크립트 (2026-09-05 지시) — 태그(버전)를 받아 코드 체크아웃 → 이미지 재빌드 → 마이그레이션 → 헬스 검증.
 #
-#   사용법:  scripts/deploy.sh <태그|브랜치> [--no-build] [--prune] [--port 12010]
+#   사용법:  scripts/deploy.sh <태그|브랜치> [--stash] [--no-build] [--prune] [--port 12010]
 #   예시:    scripts/deploy.sh v0.1.1            # 태그 v0.1.1 로 패치 배포
+#            scripts/deploy.sh v0.1.1 --stash    # 추적 파일 로컬 변경을 stash 로 치우고 진행 (변경은 보존됨)
 #            scripts/deploy.sh main              # main 최신으로 (개발·검증용)
 #            scripts/deploy.sh v0.1.1 --prune    # 배포 후 안 쓰는 이미지 정리
+#   다른 위치의 복사본으로 실행할 때: cd /path/to/exitme && bash /tmp/deploy.sh v0.1.1  (저장소는 현재 디렉터리)
 #
 #   운영 구성(docker-compose.prod.yml)은 소스를 이미지에 넣어 실행하므로 `restart` 만으로는 반영되지 않는다.
 #   이 스크립트는 반드시 `up -d --build` 로 다시 만들고, 새 이미지 안에서 alembic 을 돌린 뒤
 #   /api/health 의 version(app/VERSION)·build_time(이미지 빌드 시각)·db_revision 으로 반영 여부를 검증한다.
 set -euo pipefail
 
+# 저장소 위치: 스크립트가 저장소 안(scripts/)에 있으면 그 상위, 아니면(복사본 실행) 현재 디렉터리
+if [[ -z "${EXITME_DIR:-}" ]]; then
+  _here="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || true)"
+  if [[ -f "$_here/docker-compose.yml" ]]; then EXITME_DIR="$_here"; else EXITME_DIR="$PWD"; fi
+  export EXITME_DIR
+fi
+# git checkout 이 실행 중인 이 파일을 바꾸면 bash 가 깨질 수 있어 임시 복사본으로 재실행한다
+if [[ -z "${DEPLOY_SH_COPY:-}" ]]; then
+  _tmp="$(mktemp)"; cp "$0" "$_tmp"
+  DEPLOY_SH_COPY=1 exec bash "$_tmp" "$@"
+fi
+
 REF="${1:-}"
 if [[ -z "$REF" || "$REF" == "-h" || "$REF" == "--help" ]]; then
-  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
   exit 1
 fi
 shift
-BUILD=1; PRUNE=0; PORT=12010
+BUILD=1; PRUNE=0; PORT=12010; STASH=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-build) BUILD=0 ;;
     --prune) PRUNE=1 ;;
+    --stash) STASH=1 ;;
     --port) PORT="${2:?--port 값 필요}"; shift ;;
     *) echo "알 수 없는 옵션: $1" >&2; exit 1 ;;
   esac
   shift
 done
 
-cd "$(dirname "$0")/.."
+cd "$EXITME_DIR"
+[[ -f docker-compose.yml && -d .git ]] || { echo "저장소 디렉터리가 아닙니다: $EXITME_DIR (cd /path/to/exitme 후 실행)" >&2; exit 1; }
 COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
 log() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 fail() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
@@ -57,10 +73,29 @@ else
   log "배포 전: 실행 중인 서비스 없음(또는 헬스 응답 없음) — 첫 배포로 간주"
 fi
 
-# 0) 작업 트리에 추적 파일 변경이 있으면 중단 — 덮어쓰지 않는다 (.env 등 미추적 파일은 무관)
-if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
-  git status --short --untracked-files=no
-  fail "추적 파일에 로컬 변경이 있습니다 — 정리(commit/stash)한 뒤 다시 실행하세요"
+# 0) 작업 트리에 추적 파일 변경이 있으면 덮어쓰지 않는다 (.env 등 미추적 파일은 무관).
+#    파일 모드(755/644)만 다른 것은 무시. 컨테이너가 호스트 파일을 다시 쓴 경우(개발 구성 bind mount 로 띄웠을 때
+#    next-env.d.ts·package-lock.json)가 가장 흔하다 — 어떤 파일인지와 처리법을 함께 보여준다.
+DIRTY="$(git -c core.fileMode=false status --porcelain --untracked-files=no)"
+if [[ -n "$DIRTY" ]]; then
+  log "추적 파일 로컬 변경 감지"
+  echo "$DIRTY"
+  git -c core.fileMode=false diff --stat | tail -n 5
+  GEN=0; MANUAL=0
+  while read -r _st f; do
+    case "$f" in
+      apps/web/next-env.d.ts|apps/web/package-lock.json|apps/api/alembic/versions/*) GEN=1 ;;
+      *) MANUAL=1 ;;
+    esac
+  done <<< "$DIRTY"
+  [[ $GEN -eq 1 ]] && echo "· next-env.d.ts / package-lock.json 은 개발 구성(bind mount)으로 띄웠을 때 컨테이너가 다시 쓴 파일입니다 — 버려도 됩니다: git checkout -- <파일>"
+  [[ $MANUAL -eq 1 ]] && echo "· 서버에서 직접 고친 파일(nginx 설정·compose 등)이면 보존이 필요합니다 — 커밋해서 올리거나 --stash 로 치우고 배포 후 git stash pop"
+  if [[ $STASH -eq 1 ]]; then
+    git stash push -m "deploy.sh auto-stash $(date -u +%FT%TZ) before $REF" >/dev/null
+    echo "→ --stash: 변경을 stash 에 보관하고 진행합니다 (복구: git stash pop)"
+  else
+    fail "추적 파일에 로컬 변경이 있습니다 — 위 안내대로 정리하거나 --stash 옵션으로 다시 실행하세요"
+  fi
 fi
 
 # 1) 코드 체크아웃 — 태그면 detached, 브랜치면 fast-forward
