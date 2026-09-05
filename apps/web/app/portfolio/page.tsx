@@ -38,7 +38,7 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; exec_day?: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[] };
+type Signal = { status: string; exec_day?: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number> };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -49,6 +49,36 @@ const ORDER_KIND_KO: Record<string, string> = {
 };
 
 const toneCls = { up: "text-up", down: "text-down", default: "text-ink" };
+
+// 계산 근거 — 구 주문표 페이지에서 이관 (2026-09-05 메뉴 제거). 지표 라벨·주문별 실행 조건 설명.
+const IND_LABELS: [string, string, "price" | "pct"][] = [
+  ["close", "종가", "price"], ["ma20", "MA20 (20일 평균)", "price"], ["ma60", "MA60 (60일 평균)", "price"],
+  ["ma200", "MA200 (200일 평균)", "price"], ["ema20", "EMA20", "price"], ["atr20", "ATR20 (변동폭)", "price"],
+  ["grid", "그리드 간격", "pct"], ["sigma20", "σ20 (연율 총변동성)", "pct"],
+  ["sigma_down", "σ_down (하방 변동성)", "pct"], ["sigma_ref", "σ_ref (250일 중위)", "pct"],
+  ["gap_to_ma200", "MA200 대비 이격", "pct"], ["exit_level", "청산 기준선 (MA200 −2%)", "price"],
+];
+function orderCondDesc(o: OrderRow, ind: Record<string, number> | undefined): string {
+  const grid = ind?.grid ?? 0;
+  const close = ind?.close ?? 0;
+  if (o.kind.startsWith("grid")) {
+    const k = Number(o.kind.slice(4));
+    return `전일 종가 ${close.toLocaleString()}에서 −${(grid * k * 100).toFixed(1)}% 하락 시 매수`;
+  }
+  const map: Record<string, string> = {
+    tp: "보유 로트가 매수가 +Grid% 도달 시 익절",
+    reduce: "목표 비중 초과분을 시가에 축소 매도",
+    lev_strat: "레버리지 전략 트랙 — 목표 비중까지 시가 매수/매도",
+    lev_tact1: "레버리지 눌림목 1차 (EMA20 −0.75×ATR 이탈)",
+    lev_tact2: "레버리지 눌림목 2차 (EMA20 −1.5×ATR 이탈)",
+    lev_tact_exit: "레버리지 전술 물량 이탈 (EMA20 회복)",
+    lev_liq: "레버리지 전량 청산 (레짐 이탈/변동성 초과)",
+    tf_entry: "종가가 MA200 위 — 다음날 시가 전량 매수",
+    tf_exit: "종가가 MA200 −2% 관통 — 다음날 시가 전량 매도",
+  };
+  return map[o.kind] ?? "";
+}
+
 
 export default function PortfolioPageWrapper() {
   return <Suspense fallback={null}><MarketKeyed /></Suspense>;
@@ -539,7 +569,7 @@ function PortfolioPage() {
 
       {/* 오늘의 주문표 (2026-08-28 지시 — 실전매매 중간 섹션) */}
       <Card className="mb-4">
-        <CardTitle right={<Link href={`/signals${market === "US" ? "?market=US" : ""}`} className="text-[13.5px] font-semibold normal-case text-accent">전체 주문표 →</Link>}>
+        <CardTitle>
           {(() => {
             const today = new Date().toISOString().slice(0, 10);
             const ed = signal?.exec_day;
@@ -617,8 +647,34 @@ function PortfolioPage() {
               </tbody>
             </table>
             {signal.gap_cancel_below && (
-              <p className="mt-2 text-[13px] text-faint">⚠️ 시가 {fpx(signal.gap_cancel_below)} 이하 출발 시 그리드 전량 취소 — 상세는 전체 주문표 참조</p>
+              <p className="mt-2 text-[13px] text-faint">⚠️ 시가 {fpx(signal.gap_cancel_below)} 이하 출발 시 그리드 전량 취소</p>
             )}
+            {/* 계산 근거 — 구 주문표 페이지 이관 (2026-09-05): 주문별 실행 조건 + 지표값 */}
+            <details className="mt-3 border-t border-line pt-2">
+              <summary className="cursor-pointer text-[13px] font-semibold text-muted">▸ 계산 근거 (실행 조건 · 지표값)</summary>
+              <div className="mt-2 grid gap-4 lg:grid-cols-2">
+                <div className="grid gap-1 text-[13px] text-muted">
+                  {signal.orders!.map((o, i) => {
+                    const desc = orderCondDesc(o, signal.indicators);
+                    return desc ? (
+                      <div key={i}><b className="text-ink">{ORDER_KIND_KO[o.kind] ?? o.kind}</b> — {desc}</div>
+                    ) : null;
+                  })}
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[13px]">
+                  {IND_LABELS.map(([key, label, kind]) => {
+                    const v = signal.indicators?.[key];
+                    if (v === undefined || v === null) return null;
+                    return (
+                      <span key={key} className="flex justify-between gap-2 text-muted">
+                        <span>{label}</span>
+                        <b className="text-ink">{kind === "price" ? fpx(Math.round(v)) : `${(v * 100).toFixed(2)}%`}</b>
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            </details>
           </div>
         ) : (
           <p className="text-[14px] text-faint">
