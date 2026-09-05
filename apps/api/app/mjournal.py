@@ -7,7 +7,9 @@
 """
 from __future__ import annotations
 
-from datetime import date
+import logging
+import re
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -15,10 +17,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import current_user_id
+from app.broker import _mask, humanize_kis_error
 from app.db import get_session
-from app.models import ManualJournal, ManualJournalEntry
+from app.models import BrokerCredential, ManualJournal, ManualJournalEntry
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+KST = timezone(timedelta(hours=9))
+
+
+def _norm(s: str) -> str:
+    """종목명 매칭 키 — 대소문자·공백 무시 ('kodex 200' ≡ 'KODEX 200'). 검토 문서 2-2."""
+    return re.sub(r"\s+", "", s or "").lower()
 
 
 def _owned(session: Session, jid: int, user_id: int) -> ManualJournal:
@@ -86,19 +96,20 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
         sym = (e.symbol or j.symbol).strip()
         lots = lots_by.setdefault(sym, [])
         amount = e.qty * e.price
+        base = {"source": "broker" if e.broker_ref else "manual", "code": e.code}  # 증권사 가져오기 표시 (0018)
         if e.side == "buy":
             cost = round(amount * fee)
             lots.append({"qty": e.qty, "price": e.price, "date": e.trade_date})
             total_buy += amount
             total_cost += cost
-            rows.append({"id": e.id, "symbol": sym, "side": "buy", "buy_date": e.trade_date.isoformat(),
+            rows.append({**base, "id": e.id, "symbol": sym, "side": "buy", "buy_date": e.trade_date.isoformat(),
                          "sell_date": None, "hold_days": None, "realized": None, "return_pct": None,
                          "price": e.price, "qty": e.qty, "cost": cost, "amount": amount,
                          "reason": e.reason})
         else:
             held = sum(l["qty"] for l in lots)
             if e.qty > held:
-                rows.append({"id": e.id, "symbol": sym, "side": "sell", "buy_date": None,
+                rows.append({**base, "id": e.id, "symbol": sym, "side": "sell", "buy_date": None,
                              "sell_date": e.trade_date.isoformat(), "hold_days": None,
                              "realized": None, "return_pct": None, "price": e.price, "qty": e.qty,
                              "cost": None, "amount": amount, "reason": e.reason,
@@ -126,7 +137,7 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
             realized_by[sym] = realized_by.get(sym, 0) + realized
             matched_by[sym] = matched_by.get(sym, 0) + matched_cost
             series_by.setdefault(sym, {})[e.trade_date.isoformat()] = realized_by[sym]
-            rows.append({"id": e.id, "symbol": sym, "side": "sell",
+            rows.append({**base, "id": e.id, "symbol": sym, "side": "sell",
                          "buy_date": first_date.isoformat() if first_date else None,
                          "sell_date": e.trade_date.isoformat(),
                          "hold_days": (e.trade_date - first_date).days if first_date else None,
@@ -165,6 +176,7 @@ def get_journal(jid: int, user_id: int = Depends(current_user_id),
                               .where(ManualJournalEntry.journal_id == jid)).all()
     return {"id": j.id, "name": j.name, "symbol": j.symbol, "broker": j.broker,
             "fee_rate": float(j.fee_rate), "tax_rate": float(j.tax_rate),
+            "linked_account": _linked_out(session, j),
             **_compute(j, entries)}
 
 
@@ -201,3 +213,136 @@ def delete_entry(jid: int, eid: int, user_id: int = Depends(current_user_id),
     session.delete(e)
     session.commit()
     return {"deleted": True}
+
+
+# ── 증권사 계좌 연결 + 체결 가져오기 (0018, 2026-09-05 지시) ───────────────────────────────
+# 검토: THROUGHLINE/docs/mjournal-broker-link-review-20260905.md
+# 원칙: 조회 전용(주문 TR 미사용), 수동 기록 자동 수정 금지 — 경고만. 가져온 행은 broker_ref 로 표시하고 삭제 가능.
+
+
+def _linked_out(session: Session, j: ManualJournal) -> dict | None:
+    if not j.broker_credential_id:
+        return None
+    c = session.get(BrokerCredential, j.broker_credential_id)
+    if c is None or c.user_id != j.user_id:
+        return None
+    return {"id": c.id, "label": c.label or _mask(c.account_no),
+            "account_no": f"{_mask(c.account_no, 4, 2)}-{c.acnt_prdt_cd}", "env": c.env}
+
+
+class BrokerLinkIn(BaseModel):
+    credential_id: int | None = None  # None = 연결 해제
+
+
+@router.get("/mjournals/{jid}/broker")
+def journal_broker(jid: int, user_id: int = Depends(current_user_id),
+                   session: Session = Depends(get_session)) -> dict:
+    j = _owned(session, jid, user_id)
+    acct = _linked_out(session, j)
+    return {"linked": acct is not None, "account": acct}
+
+
+@router.put("/mjournals/{jid}/broker")
+def link_journal_broker(jid: int, body: BrokerLinkIn, user_id: int = Depends(current_user_id),
+                        session: Session = Depends(get_session)) -> dict:
+    """설정에 등록된 계좌를 일지에 연결/해제 — 일지 1 : 계좌 1 (한 계좌를 여러 일지에 연결하는 것은 허용)."""
+    j = _owned(session, jid, user_id)
+    if body.credential_id is None:
+        j.broker_credential_id = None
+    else:
+        c = session.get(BrokerCredential, body.credential_id)
+        if c is None or c.user_id != user_id:
+            raise HTTPException(status_code=404, detail="account not found")
+        j.broker_credential_id = c.id
+    session.commit()
+    acct = _linked_out(session, j)
+    return {"linked": acct is not None, "account": acct}
+
+
+@router.post("/mjournals/{jid}/import-fills")
+def import_journal_fills(jid: int, days: int = 30, dry_run: bool = True,
+                         user_id: int = Depends(current_user_id),
+                         session: Session = Depends(get_session)) -> dict:
+    """연결 계좌의 체결을 일지 항목으로 가져온다 (기본은 미리보기).
+
+    - 종목 매칭 3단계(검토 2-2): 기존 행의 종목코드 → 정규화 종목명(대소문자·공백 무시) → KIS 종목명으로 새 종목
+    - 멱등: broker_ref="주문번호:일자" 가 이미 있으면 건너뜀
+    - 경고만(검토 2-3·2-6): 해당일 보유 초과 매도, 같은 날 같은 종목·수량·단가의 수동 기록 → 등록은 하되 경고 표시
+    - 비용은 일지 요율로 추정(검토 2-4) — 체결 응답에 수수료·세금이 없다
+    """
+    from app.services.kis_auth import KisAuth
+    from app.services.kis_client import KisTradingClient
+
+    j = _owned(session, jid, user_id)
+    cred = session.get(BrokerCredential, j.broker_credential_id) if j.broker_credential_id else None
+    if cred is None or cred.user_id != user_id:
+        raise HTTPException(status_code=409, detail="이 일지에 연결된 증권사 계좌가 없습니다 — 아래에서 계좌를 연결하세요")
+    end = datetime.now(KST).date()
+    start = end - timedelta(days=max(1, min(days, 365)) - 1)
+    try:
+        auth = KisAuth(cred.app_key, cred.app_secret, cred.env, wait_on_rate_limit=False)
+        execs = KisTradingClient(auth, cano=cred.account_no, acnt_prdt_cd=cred.acnt_prdt_cd) \
+            .fetch_executions(start, end)
+    except Exception as exc:  # noqa: BLE001 — 자격·유량 등 사유를 그대로 안내
+        logger.warning("journal import-fills failed jid=%s: %s", jid, exc)
+        raise HTTPException(status_code=502, detail=f"증권사 조회 실패 — {humanize_kis_error(str(exc)[:200])}")
+
+    entries = session.scalars(select(ManualJournalEntry)
+                              .where(ManualJournalEntry.journal_id == jid)).all()
+
+    def sym_of(e: ManualJournalEntry) -> str:
+        return (e.symbol or j.symbol).strip()
+
+    known = {e.broker_ref for e in entries if e.broker_ref}
+    by_code = {e.code: sym_of(e) for e in entries if e.code}
+    by_norm = {_norm(x): x for x in ({sym_of(e) for e in entries} | {j.symbol.strip()})}
+    manual_keys = {(e.trade_date, _norm(sym_of(e)), e.side, e.qty, e.price) for e in entries if not e.broker_ref}
+    batch: list[tuple[str, date, int]] = []  # 이번 배치에서 (미리보기 포함) 반영된 수량 — 보유 초과 판정용
+
+    def position(sym: str, d: date) -> int:
+        pos = sum((e.qty if e.side == "buy" else -e.qty) for e in entries
+                  if sym_of(e) == sym and e.trade_date <= d)
+        return pos + sum(q for (sy, dd, q) in batch if sy == sym and dd <= d)
+
+    items, added, skipped, new_syms = [], 0, 0, set()
+    for e in sorted(execs, key=lambda x: (x.trade_date, x.order_no)):
+        ref = f"{e.order_no}:{e.trade_date.isoformat()}"
+        if e.code in by_code:
+            sym, how = by_code[e.code], "코드"
+        elif _norm(e.name) in by_norm:
+            sym, how = by_norm[_norm(e.name)], "이름"
+        else:
+            sym, how = (e.name.strip() or e.code), "새 종목"
+        row = {"broker_ref": ref, "date": e.trade_date.isoformat(), "code": e.code, "name": e.name,
+               "symbol": sym, "match": how, "side": e.side, "qty": e.filled_qty, "price": e.avg_price,
+               "amount": e.filled_qty * e.avg_price, "warnings": []}
+        if ref in known:
+            row["status"] = "이미 등록됨"
+            skipped += 1
+            items.append(row)
+            continue
+        if e.side == "sell":
+            pos = position(sym, e.trade_date)
+            if e.filled_qty > pos:
+                row["warnings"].append(f"해당일 보유({max(pos, 0)}주)보다 많은 매도 — 가져오기 이전 매수분이 있으면 "
+                                       "기초 보유(매수 1건)를 먼저 등록하세요")
+        if (e.trade_date, _norm(sym), e.side, e.filled_qty, e.avg_price) in manual_keys:
+            row["warnings"].append("같은 날 같은 종목·수량·단가의 수동 기록이 있습니다 — 중복이면 둘 중 하나를 삭제하세요")
+        if how == "새 종목":
+            new_syms.add(sym)
+        row["status"] = "등록 예정" if dry_run else "등록됨"
+        if not dry_run:
+            session.add(ManualJournalEntry(journal_id=j.id, side=e.side, trade_date=e.trade_date,
+                                           qty=e.filled_qty, price=e.avg_price, symbol=sym, code=e.code,
+                                           broker_ref=ref, reason="증권사 자동 가져오기"))
+            added += 1
+        batch.append((sym, e.trade_date, e.filled_qty if e.side == "buy" else -e.filled_qty))
+        by_code.setdefault(e.code, sym)
+        by_norm.setdefault(_norm(sym), sym)
+        items.append(row)
+    if not dry_run:
+        cred.last_import_at = datetime.now(KST)
+        session.commit()
+    return {"range": [start.isoformat(), end.isoformat()], "dry_run": dry_run,
+            "fetched": len(execs), "added": added, "skipped": skipped,
+            "new_symbols": sorted(new_syms), "items": items}

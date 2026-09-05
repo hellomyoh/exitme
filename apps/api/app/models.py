@@ -328,6 +328,9 @@ class ManualJournal(TimestampMixin, Base):
     broker: Mapped[str] = mapped_column(Text, nullable=False, default="")
     fee_rate: Mapped[float] = mapped_column(Numeric, nullable=False, default=0.00015)
     tax_rate: Mapped[float] = mapped_column(Numeric, nullable=False, default=0.0023)
+    # 증권사 계좌 연결 (0018, 2026-09-05 지시) — 설정에 등록한 계좌 중 하나; 계좌가 삭제되면 NULL
+    broker_credential_id: Mapped[int | None] = mapped_column(
+        ForeignKey("broker_credentials.id", ondelete="SET NULL"), nullable=True)
 
 
 class ManualJournalEntry(TimestampMixin, Base):
@@ -342,6 +345,8 @@ class ManualJournalEntry(TimestampMixin, Base):
     price: Mapped[int] = mapped_column(BigInteger, nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     symbol: Mapped[str | None] = mapped_column(Text, nullable=True)  # NULL = 일지 기본 종목 (0015)
+    broker_ref: Mapped[str | None] = mapped_column(Text, nullable=True)  # "주문번호:일자" — 가져오기 멱등 (0018)
+    code: Mapped[str | None] = mapped_column(Text, nullable=True)        # 종목코드 6자리 — 코드 정확 매칭 (0018)
 
 
 class AppSetting(TimestampMixin, Base):

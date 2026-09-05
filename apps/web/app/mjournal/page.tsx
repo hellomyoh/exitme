@@ -8,6 +8,7 @@
  *  (예전 '전체 현황'은 전 일지 합산이라 새 일지에 다른 일지 종목이 보이는 것처럼 오해를 낳았다). */
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { createChart, IChartApi, LineSeries } from "lightweight-charts";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { Card, CardTitle, EmptyState, PageTitle, Stat } from "../../components/ui";
@@ -18,13 +19,115 @@ type Row = {
   id: number; symbol: string; side: "buy" | "sell"; buy_date: string | null; sell_date: string | null;
   hold_days: number | null; realized: number | null; return_pct: number | null;
   price: number; qty: number; cost: number | null; amount: number; reason: string | null; error?: string;
+  source: "manual" | "broker"; code: string | null;   // 증권사 가져오기 표시 (0018)
 };
+type Acct = { id: number; label: string; account_no: string; acnt_prdt_cd: string; env: string };
+type ImportItem = { broker_ref: string; date: string; code: string; name: string; symbol: string; match: string;
+  side: "buy" | "sell"; qty: number; price: number; amount: number; status: string; warnings: string[] };
+type ImportResult = { range: [string, string]; dry_run: boolean; fetched: number; added: number; skipped: number;
+  new_symbols: string[]; items: ImportItem[] };
 type Detail = JournalMeta & {
   fee_rate: number; tax_rate: number; rows: Row[]; symbols: string[];
   summary: { realized: number; sell_amount: number; buy_amount: number; cost: number; return_pct: number | null };
   holdings: Holding[];
   series: Record<string, { date: string; value: number }[]>;   // 종목별 누적 실현손익 (이 일지만)
+  linked_account: { id: number; label: string; account_no: string; env: string } | null;   // 연결 계좌 (0018)
 };
+
+/** 증권사 체결 가져오기 (0018, 2026-09-05 지시) — 검토 문서 권고안.
+ *  계좌는 설정에서 등록한 것 중 선택해 연결하고, 체결은 미리보기(종목 매칭·경고 확인) → 등록 두 단계.
+ *  조회 전용이며 수동 기록을 자동으로 고치지 않는다 — 보유 초과 매도·수동 중복은 경고만. */
+function BrokerImport({ detail, accts, onChanged }: { detail: Detail; accts: Acct[]; onChanged: () => void }) {
+  const [days, setDays] = useState(30);
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<ImportResult | null>(null);
+  const [err, setErr] = useState("");
+  useEffect(() => { setRes(null); setErr(""); }, [detail.id]);
+
+  async function link(id: number | null) {
+    setErr("");
+    const r = await apiFetch(`/mjournals/${detail.id}/broker`, { method: "PUT", body: JSON.stringify({ credential_id: id }) });
+    if (r.ok) { setRes(null); onChanged(); }
+    else setErr(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `연결 실패 (${r.status})`);
+  }
+  async function run(dry: boolean) {
+    setBusy(true); setErr("");
+    const r = await apiFetch(`/mjournals/${detail.id}/import-fills?days=${days}&dry_run=${dry}`, { method: "POST" });
+    const body = (await r.json().catch(() => ({}))) as ImportResult & { detail?: string };
+    setBusy(false);
+    if (!r.ok) { setErr(body.detail ?? `조회 실패 (${r.status})`); return; }
+    setRes(body);
+    if (!dry) onChanged();
+  }
+  const pending = res?.dry_run ? res.items.filter((i) => i.status === "등록 예정").length : 0;
+  const linked = detail.linked_account;
+  return (
+    <Card className="mb-4">
+      <CardTitle>증권사 체결 가져오기 <span className="normal-case text-faint">
+        · 조회 전용 · 수동 기록은 고치지 않고 경고만 표시 · 수수료·세금은 일지 요율로 추정</span></CardTitle>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="grid gap-1 text-[12.5px] text-faint">연결 계좌
+          <select className="input !py-2" value={linked?.id ?? ""}
+            onChange={(e) => void link(e.target.value ? Number(e.target.value) : null)}>
+            <option value="">연결 안 함</option>
+            {accts.map((a) => (
+              <option key={a.id} value={a.id}>{a.label} · {a.account_no}-{a.acnt_prdt_cd}{a.env === "vps" ? " · 모의" : ""}</option>
+            ))}
+          </select></label>
+        {accts.length === 0 && (
+          <span className="pb-2 text-[12.5px] text-faint">등록된 계좌가 없습니다 —{" "}
+            <Link href="/settings?tab=broker" className="font-semibold text-accent">일반 설정 › 증권사 계좌</Link>에서 먼저 등록하세요.</span>
+        )}
+        {linked && (<>
+          <label className="grid gap-1 text-[12.5px] text-faint">기간
+            <select className="input !py-2" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+              {[7, 30, 90, 180, 365].map((d) => <option key={d} value={d}>최근 {d}일</option>)}
+            </select></label>
+          <button className="btn !py-2" disabled={busy} onClick={() => void run(true)}>{busy ? "조회 중…" : "미리보기"}</button>
+          <button className="btn btn-primary !py-2" disabled={busy || pending === 0} title={pending === 0 ? "먼저 미리보기로 확인하세요" : ""}
+            onClick={() => void run(false)}>등록{pending > 0 ? ` (${pending}건)` : ""}</button>
+        </>)}
+      </div>
+      {err && <p className="mt-2 text-[13.5px] text-up">{err}</p>}
+      {res && (
+        <div className="mt-3">
+          <p className="text-[13px] text-muted">
+            {res.range[0]} ~ {res.range[1]} · 조회 {res.fetched}건 · {res.dry_run ? `등록 예정 ${pending}건` : `등록됨 ${res.added}건`} · 이미 등록 {res.skipped}건
+            {res.new_symbols.length > 0 && <> · 새 종목: <b className="text-ink">{res.new_symbols.join(", ")}</b></>}
+          </p>
+          {res.items.length === 0 ? (
+            <p className="mt-1 text-[13.5px] text-faint">이 기간에 체결이 없습니다.</p>
+          ) : (
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full whitespace-nowrap text-[13px]">
+                <thead><tr className="border-b border-line text-left text-[12px] text-faint">
+                  <th className="pb-1.5 font-medium">일자</th><th className="pb-1.5 font-medium">종목 (일지 기준)</th>
+                  <th className="pb-1.5 font-medium">구분</th><th className="pb-1.5 text-right font-medium">수량</th>
+                  <th className="pb-1.5 text-right font-medium">단가</th><th className="pb-1.5 pl-3 font-medium">상태</th>
+                  <th className="pb-1.5 pl-3 font-medium">경고</th>
+                </tr></thead>
+                <tbody>
+                  {res.items.map((i) => (
+                    <tr key={i.broker_ref} className="border-b border-line/50 last:border-0">
+                      <td className="py-1.5">{i.date}</td>
+                      <td className="py-1.5 font-semibold">{i.symbol}
+                        {i.match !== "코드" && <span className="ml-1 text-[11.5px] font-normal text-faint">← {i.name} ({i.code}){i.match === "새 종목" ? " · 새 종목" : ""}</span>}</td>
+                      <td className={`py-1.5 font-bold ${i.side === "buy" ? "text-up" : "text-down"}`}>{i.side === "buy" ? "매수" : "매도"}</td>
+                      <td className="table-num py-1.5">{i.qty.toLocaleString()}</td>
+                      <td className="table-num py-1.5">{i.price.toLocaleString()}</td>
+                      <td className={`py-1.5 pl-3 ${i.status === "이미 등록됨" ? "text-faint" : "text-ink"}`}>{i.status}</td>
+                      <td className="py-1.5 pl-3 text-[12.5px] text-up">{i.warnings.map((w, k) => <div key={k}>⚠ {w}</div>)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
 
 const fm = (v: number) => `${v.toLocaleString()}원`;
 const OV_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
@@ -175,10 +278,15 @@ function MJournalPage() {
   const [ef, setEf] = useState({ side: "buy", symbol: "", newSymbol: "", qty: "", price: "",
     date: new Date().toISOString().slice(0, 10), reason: "" });
   const [msg, setMsg] = useState("");
+  const [accts, setAccts] = useState<Acct[]>([]);          // 설정에 등록된 증권사 계좌 (0018)
+  const [showImport, setShowImport] = useState(false);
 
   const load = useCallback(async (selected: number | null) => {
     const r = await apiFetch("/mjournals");
     if (!r.ok) return;
+    void apiFetch("/broker/accounts").then(async (a) => {
+      if (a.ok) setAccts(((await a.json()) as { items: Acct[] }).items);
+    });
     const items = ((await r.json()) as { items: JournalMeta[] }).items;
     setList(items);
     const id = selected ?? items[0]?.id ?? null;
@@ -192,6 +300,8 @@ function MJournalPage() {
       }
     } else setDetail(null);
   }, []);
+
+  useEffect(() => { setShowImport(detail?.linked_account != null); }, [detail?.id, detail?.linked_account]);
 
   useEffect(() => {
     // 서브메뉴(?jid=)·새 일지(?new=1) 파라미터 반영 — 메뉴 클릭 시마다 리로드 (2026-09-05)
@@ -306,16 +416,19 @@ function MJournalPage() {
           <Overview detail={detail} />
 
           <Card className="mb-4">
-            <CardTitle right={
+            <CardTitle right={<span className="flex items-center gap-3">
+              <button className="text-[12.5px] font-normal normal-case text-accent transition-colors hover:underline"
+                onClick={() => setShowImport(!showImport)}>{showImport ? "증권사 연동 닫기" : "🔗 증권사 연동"}</button>
               <button className="text-[12.5px] font-normal normal-case text-faint transition-colors hover:text-down"
                 onClick={() => void (async () => {
                   if (!window.confirm(`'${detail.name}' 일지를 삭제할까요? 기록이 모두 삭제됩니다.`)) return;
                   const r = await apiFetch(`/mjournals/${detail.id}`, { method: "DELETE" });
                   if (r.ok) void load(null);
                 })()}>🗑 일지 삭제</button>
-            }>
+            </span>}>
               오늘 입력 <span className="normal-case text-faint">
-                · {detail.broker || "증권사 미지정"} · 수수료 {(detail.fee_rate * 100).toFixed(3)}% · 제세금 {(detail.tax_rate * 100).toFixed(2)}%</span>
+                · {detail.broker || "증권사 미지정"} · 수수료 {(detail.fee_rate * 100).toFixed(3)}% · 제세금 {(detail.tax_rate * 100).toFixed(2)}%
+                {detail.linked_account && <> · 연결 계좌 <b className="text-ink">{detail.linked_account.label}</b></>}</span>
             </CardTitle>
             <div className="flex flex-wrap items-end gap-2">
               <div className="flex overflow-hidden rounded-lg border border-line-strong">
@@ -353,6 +466,8 @@ function MJournalPage() {
             {msg && <p className="mt-2 text-[13.5px] text-up">{msg}</p>}
           </Card>
 
+          {showImport && <BrokerImport detail={detail} accts={accts} onChanged={() => void load(detail.id)} />}
+
           <Card>
             <CardTitle>기록 ({detail.rows.length}건)</CardTitle>
             {detail.rows.length === 0 ? (
@@ -378,7 +493,9 @@ function MJournalPage() {
                   <tbody>
                     {detail.rows.map((r) => (
                       <tr key={r.id} className="border-b border-line/50 last:border-0">
-                        <td className="py-2 font-semibold">{r.symbol}</td>
+                        <td className="py-2 font-semibold">{r.symbol}
+                          {r.source === "broker" && <span className="ml-1 rounded bg-raised px-1 py-0.5 text-[10.5px] font-medium text-faint"
+                            title={`증권사 체결 가져오기${r.code ? ` · ${r.code}` : ""}`}>증권사</span>}</td>
                         <td className={`py-2 font-bold ${r.side === "buy" ? "text-up" : "text-down"}`}>{r.side === "buy" ? "매수" : "매도"}</td>
                         <td className="py-2">{r.buy_date ?? "—"}</td>
                         <td className="py-2">{r.sell_date ?? ""}</td>
