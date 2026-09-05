@@ -241,8 +241,9 @@ function MJournalPage() {
       <PageTitle title="주식 매매일지" sub="종목별 수동 매매 기록 — 실현손익·수익률·보유기간·비용은 자동 계산됩니다 (종목별 FIFO)" />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
+        {/* 탭 선택 시 생성 폼 닫기 — 폼이 열린 채 본문이 계속 숨어 화면이 깨져 보이던 문제 (2026-09-05) */}
         {list.map((j) => (
-          <button key={j.id} onClick={() => void load(j.id)}
+          <button key={j.id} onClick={() => { setShowNew(false); router.replace(`/mjournal?jid=${j.id}`); void load(j.id); }}
             className={`rounded-lg border px-3.5 py-2 text-[14px] transition-colors ${
               jid === j.id ? "border-line bg-surface font-semibold text-ink shadow-sm"
                            : "border-transparent bg-raised text-muted hover:text-ink"}`}>
