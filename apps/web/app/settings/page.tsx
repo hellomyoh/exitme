@@ -76,8 +76,8 @@ export default function SettingsPage() {
 
   const forcePw = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("force_pw") === "1";
   return (
-    <main>
-      <PageTitle title="일반 설정" sub="계정·세션 관리" />
+    <main className="mx-auto max-w-4xl">
+      <PageTitle title="일반 설정" sub="계정·세션·챗봇 관리" />
       {forcePw && (
         <Callout icon="🔐">
           <b className="text-ink">첫 로그인입니다 — 비밀번호를 변경해야 다른 메뉴를 사용할 수 있습니다.</b>{" "}
@@ -85,22 +85,22 @@ export default function SettingsPage() {
         </Callout>
       )}
       <div className="mb-4" />
-      <Card className="mb-4 max-w-xl">
+      <Card className="mb-4">
         <CardTitle>비밀번호 변경</CardTitle>
-        <div className="grid max-w-sm gap-3">
+        <div className="grid gap-3 sm:grid-cols-3">
           <label className="grid gap-1 text-[13px] text-faint">현재 비밀번호
-            <input type="password" className="input" value={cur} onChange={(e) => setCur(e.target.value)} /></label>
+            <input type="password" className="input w-full min-w-0" value={cur} onChange={(e) => setCur(e.target.value)} /></label>
           <label className="grid gap-1 text-[13px] text-faint">새 비밀번호 (8자 이상)
-            <input type="password" className="input" value={pw1} onChange={(e) => setPw1(e.target.value)} /></label>
+            <input type="password" className="input w-full min-w-0" value={pw1} onChange={(e) => setPw1(e.target.value)} /></label>
           <label className="grid gap-1 text-[13px] text-faint">새 비밀번호 확인
-            <input type="password" className="input" value={pw2} onChange={(e) => setPw2(e.target.value)} /></label>
-          <div className="flex items-center gap-3">
-            <button className="btn btn-primary" onClick={() => void changePw()}>변경</button>
-            {msg && <span className="text-[13.5px] text-muted">{msg}</span>}
-          </div>
+            <input type="password" className="input w-full min-w-0" value={pw2} onChange={(e) => setPw2(e.target.value)} /></label>
+        </div>
+        <div className="mt-3 flex items-center gap-3">
+          <button className="btn btn-primary" onClick={() => void changePw()}>변경</button>
+          {msg && <span className="text-[13.5px] text-muted">{msg}</span>}
         </div>
       </Card>
-      <Card className="mb-4 max-w-xl">
+      <Card className="mb-4">
         <CardTitle>세션</CardTitle>
         <p className="mb-3 text-[14px] leading-relaxed text-muted">
           로그인 세션은 <b className="text-ink">마지막 활동 후 3시간</b> 유지됩니다(활동 시 자동 연장).
@@ -108,7 +108,7 @@ export default function SettingsPage() {
         </p>
         <button className="btn" onClick={logout}>로그아웃</button>
       </Card>
-      <Card className="mb-4 max-w-xl">
+      <Card className="mb-4">
         <CardTitle>챗봇 추가 지침</CardTitle>
         <p className="mb-2 text-[13.5px] leading-relaxed text-muted">
           매매 도우미의 기본 지침(전략 지식·데이터 근거 규칙) <b className="text-ink">뒤에 덧붙는</b> 나만의 지침입니다.
@@ -124,7 +124,7 @@ export default function SettingsPage() {
         </div>
       </Card>
       {isAdmin && (
-        <Card className="mb-4 max-w-3xl">
+        <Card className="mb-4">
           <CardTitle right={<span className="text-[12px] font-normal normal-case text-faint">
             {sysUsingDefault ? "내장 기본 사용 중" : "⚠️ 교체본 사용 중 — 이후 전략 개정이 자동 반영되지 않음"}</span>}>
             챗봇 시스템 프롬프트 (관리자)
