@@ -110,3 +110,36 @@ def test_account_number_normalization():
     # 자릿수 부족 → 422
     assert c.put(f"/portfolio/{pid}/broker", json={**base, "account_no": "123456"},
                  headers=h).status_code == 422
+
+
+def test_probe_account_finds_product_code(monkeypatch):
+    """계좌 확인 (2026-09-05): 상품코드 미지정 시 후보를 훑어 유효한 계좌만 돌려준다."""
+    from app.services import kis_client as kc
+
+    c, h = _client()
+    calls = []
+
+    def fake_probe(self, prdt=None):
+        cd = prdt or self.acnt_prdt_cd
+        calls.append(cd)
+        if cd != "22":
+            raise kc.KisError(f"KIS error rt_cd=1 msg=계좌없음({cd})")
+        return {"ok": True, "holdings": 2, "deposit": 1000000, "total_eval": 5000000}
+
+    monkeypatch.setattr(kc.KisTradingClient, "probe_balance", fake_probe)
+    monkeypatch.setattr(kc.KisAuth, "access_token", lambda self, session=None: "tok")
+
+    body = {"app_key": "PS" + "k" * 18, "app_secret": "S" * 42, "account_no": "12345678-"}
+    r = c.post("/broker/probe", json=body, headers=h)
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert [a["label"] for a in j["accounts"]] == ["12345678-22"]
+    assert j["accounts"][0]["deposit"] == 1000000 and j["accounts"][0]["holdings"] == 2
+    assert calls[0] == "01"  # 후보 순서대로 시도
+
+    # 전부 실패 → 502
+    monkeypatch.setattr(kc.KisTradingClient, "probe_balance",
+                        lambda self, prdt=None: (_ for _ in ()).throw(kc.KisError("계좌없음")))
+    assert c.post("/broker/probe", json=body, headers=h).status_code == 502
+    # 미인증 차단
+    assert TestClient(app, base_url="https://testserver").post("/broker/probe", json=body).status_code == 401

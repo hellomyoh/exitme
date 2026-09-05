@@ -129,6 +129,9 @@ function PortfolioPage() {
   const [bf, setBf] = useState({ app_key: "", app_secret: "", account_no: "", acnt_prdt_cd: "01", env: "prod" });
   const [imp, setImp] = useState<{ items: ImportRow[]; added: number; skipped: number; unknown_codes: string[] } | null>(null);
   const [impMsg, setImpMsg] = useState("");
+  type ProbeAcct = { account_no: string; acnt_prdt_cd: string; label: string; holdings: number; deposit: number; total_eval: number };
+  const [probe, setProbe] = useState<ProbeAcct[] | null>(null);
+  const [probeMsg, setProbeMsg] = useState("");
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("");
   const [entryOpen, setEntryOpen] = useState(false);  // 체결 입력 폼 펼침 (2026-08-29 일지 개편)
@@ -428,16 +431,50 @@ function PortfolioPage() {
                 <input className="input w-full min-w-0" value={bf.app_key} onChange={(e) => setBf({ ...bf, app_key: e.target.value })} /></label>
               <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱시크릿(App Secret)
                 <input type="password" className="input w-full min-w-0" value={bf.app_secret} onChange={(e) => setBf({ ...bf, app_secret: e.target.value })} /></label>
-              <label className="grid min-w-0 gap-1 text-[13px] text-faint">계좌번호 (예: 12345678-01)
-                <input className="input w-full min-w-0" value={bf.account_no} onChange={(e) => setBf({ ...bf, account_no: e.target.value })} /></label>
+              <label className="grid min-w-0 gap-1 text-[13px] text-faint">계좌번호 (앞 8자리 · 상품코드는 조회로 확인)
+                <input className="input w-full min-w-0" placeholder="12345678" value={bf.account_no}
+                  onChange={(e) => setBf({ ...bf, account_no: e.target.value })} /></label>
               <div className="grid grid-cols-2 gap-3">
-                <label className="grid min-w-0 gap-1 text-[13px] text-faint">상품코드
-                  <input className="input w-full min-w-0" value={bf.acnt_prdt_cd} onChange={(e) => setBf({ ...bf, acnt_prdt_cd: e.target.value })} /></label>
                 <label className="grid min-w-0 gap-1 text-[13px] text-faint">환경
                   <select className="input w-full min-w-0" value={bf.env} onChange={(e) => setBf({ ...bf, env: e.target.value })}>
                     <option value="prod">실전</option><option value="vps">모의투자</option>
                   </select></label>
+                <div className="grid content-end">
+                  {/* KIS 는 '계좌 목록' API 가 없어(요청마다 계좌번호 필수) 입력한 계좌를 실제 조회해 확인한다 */}
+                  <button className="btn !py-2" disabled={!(bf.app_key && bf.app_secret && bf.account_no)}
+                    onClick={() => void (async () => {
+                      setProbeMsg("조회 중…"); setProbe(null);
+                      const r = await apiFetch("/broker/probe", { method: "POST", body: JSON.stringify({
+                        app_key: bf.app_key, app_secret: bf.app_secret, account_no: bf.account_no, env: bf.env }) });
+                      if (r.ok) { const j = await r.json(); setProbe(j.accounts); setProbeMsg(""); }
+                      else { setProbe(null); setProbeMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `조회 실패 (${r.status})`); }
+                    })()}>계좌 조회</button>
+                </div>
               </div>
+              {(probe || probeMsg) && (
+                <div className="sm:col-span-2">
+                  {probeMsg && <p className="text-[13px] text-up">{probeMsg}</p>}
+                  {probe && probe.length > 0 && (
+                    <>
+                      <div className="mb-1 text-[12.5px] text-faint">확인된 계좌 — 하나를 선택하면 그 계좌로 저장됩니다</div>
+                      <div className="grid gap-1.5">
+                        {probe.map((a) => (
+                          <button key={a.label}
+                            onClick={() => setBf({ ...bf, account_no: a.account_no, acnt_prdt_cd: a.acnt_prdt_cd })}
+                            className={`flex flex-wrap items-center gap-x-4 rounded-lg border px-3 py-2 text-left text-[13.5px] transition-colors ${
+                              bf.acnt_prdt_cd === a.acnt_prdt_cd && bf.account_no === a.account_no
+                                ? "border-accent bg-accent-dim font-semibold" : "border-line bg-inset hover:border-line-strong"}`}>
+                            <span className="font-semibold">{a.label}</span>
+                            <span className="text-muted">보유 {a.holdings}종목</span>
+                            <span className="text-muted">예수금 {a.deposit.toLocaleString()}원</span>
+                            <span className="text-muted">평가 {a.total_eval.toLocaleString()}원</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
               <div className="flex items-center gap-3 sm:col-span-2">
                 <button className="btn btn-primary" onClick={() => void (async () => {
                   const r = await apiFetch(`/portfolio/${sum.portfolio.id}/broker`, { method: "PUT", body: JSON.stringify(bf) });
