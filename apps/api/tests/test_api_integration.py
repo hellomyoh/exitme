@@ -39,7 +39,10 @@ def test_health():
     client = TestClient(app)
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "ok"
+    body = resp.json()
+    assert body["status"] == "ok"
+    # 배포 확인용 정보 (2026-09-05): app/VERSION 파일 기반 버전, alembic 리비전, 빌드 시각(개발 환경은 None 허용)
+    assert body["version"].startswith("v0.") and "db_revision" in body and "build_time" in body
 
 
 def test_upsert_idempotent_and_validated(session):

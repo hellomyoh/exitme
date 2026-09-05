@@ -35,8 +35,8 @@ services:
     env_file: .env
     environment:
       - SERVICE_ROLE=api
-      # 배포 확인용 버전 (2026-09-05) — 업데이트 시 APP_VERSION=$(git describe --tags --always) 로 넘긴다 (README "업데이트")
-      - APP_VERSION=${APP_VERSION:-dev}
+      # 선택: 지정하면 app/VERSION 파일 대신 이 값을 /health 에 표시 (기본은 파일 + 이미지 빌드 시각)
+      - APP_VERSION=${APP_VERSION:-}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]

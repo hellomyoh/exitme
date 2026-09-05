@@ -43,15 +43,19 @@ docker compose run --rm api python -m scripts.seed --years 10
 
 ```bash
 git pull origin main
-APP_VERSION=$(git describe --tags --always) \
-  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build   # api/worker/scheduler/web 재빌드
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build   # api/worker/scheduler/web 재빌드
 docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api alembic upgrade head   # 새 이미지 안에서 마이그레이션
-curl -s http://localhost:12010/api/health   # {"status":"ok","version":"v0.1.0","db_revision":"0019"} 이면 반영 완료
+curl -s http://localhost:12010/api/health
+# {"status":"ok","version":"v0.1.0","build_time":"2026-09-05T10:30:12Z","db_revision":"0019"}
 ```
 
+`version` 은 `apps/api/app/VERSION`(태그와 함께 갱신), `build_time` 은 **이미지를 만든 시각(UTC)**, `db_revision` 은 alembic 리비전입니다.
+`build_time` 이 방금 시각으로 바뀌지 않았으면 이미지가 재빌드되지 않은 것입니다(`restart` 만 한 경우). 화면 왼쪽 아래에도
+`v0.1.0 · db 0019 · 빌드 09-05 19:30` 으로 같은 정보가 보입니다.
+
 개발 구성(override 기본 적용, 소스 bind mount)에서는 `git pull` 후 `docker compose exec api alembic upgrade head` 와
-`docker compose restart api worker scheduler web` 만으로 반영됩니다. 반영 여부는 화면 왼쪽 아래의 버전 표시
-(`v0.1.0 · db 0019`)와 `/health` 응답으로 확인합니다. 버전 규칙은 [AGENTS.md](AGENTS.md) "버저닝과 태그" 참조.
+`docker compose restart api worker scheduler web` 만으로 반영되며, 빌드 시각 대신 "개발(bind mount)" 로 표시됩니다.
+버전 규칙은 [AGENTS.md](AGENTS.md) "버저닝과 태그" 참조.
 
 KIS 앱키는 [KIS Developers 포털](https://apiportal.koreainvestment.com)에서 발급합니다.
 구현은 [공식 예제 저장소](https://github.com/koreainvestment/open-trading-api)의 인증·시세 패턴을 따릅니다.
