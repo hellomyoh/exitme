@@ -11,6 +11,12 @@
 #   운영 구성(docker-compose.prod.yml)은 소스를 이미지에 넣어 실행하므로 `restart` 만으로는 반영되지 않는다.
 #   이 스크립트는 반드시 `up -d --build` 로 다시 만들고, 새 이미지 안에서 alembic 을 돌린 뒤
 #   /api/health 의 version(app/VERSION)·build_time(이미지 빌드 시각)·db_revision 으로 반영 여부를 검증한다.
+
+# `sh deploy.sh` 로 실행돼도 bash 로 넘어간다 — 우분투의 sh(dash)는 `set -o pipefail`·[[ ]] 를 모른다 (2026-09-05 원격 오류)
+if [ -z "${BASH_VERSION:-}" ]; then
+  command -v bash >/dev/null 2>&1 || { echo "bash 가 필요합니다: apt-get install -y bash" >&2; exit 1; }
+  exec bash "$0" "$@"
+fi
 set -euo pipefail
 
 # 저장소 위치: 스크립트가 저장소 안(scripts/)에 있으면 그 상위, 아니면(복사본 실행) 현재 디렉터리
