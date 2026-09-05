@@ -59,7 +59,7 @@ export default function AlgoSettingsPage() {
   const groups = Array.from(new Set(items.map((i) => i.group)));
 
   return (
-    <main>
+    <main className="mx-auto max-w-4xl">
       <PageTitle title="알고리즘 설정" sub="RAVG v2.5 전략 상수 — 항목에 마우스를 올리면 설명이 표시됩니다" />
       {note && <Callout icon="🎯"><span className="text-[13.5px]">{note}</span></Callout>}
       {groups.map((g) => (

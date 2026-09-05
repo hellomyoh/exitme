@@ -2,6 +2,7 @@
 
 /** 계정 관리 (관리자 전용) — 계정 발급·목록 (2026-09-01 지시). 발급 계정은 첫 로그인에서 비밀번호 변경 강제. */
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiFetch, ensureSession, fetchMe } from "../../../lib/api";
 import { Callout, Card, CardTitle, PageTitle } from "../../../components/ui";
@@ -44,13 +45,20 @@ export default function AccountsPage() {
     } else setMsg(((await res.json()) as { detail?: string }).detail ?? `발급 실패 (${res.status})`);
   }
 
+  // 권한 확인 전에는 화면을 그리지 않는다 — 비관리자에게 관리 UI 가 잠깐 노출되던 문제 (2026-09-05 지시)
+  if (allowed === null) return <main className="mx-auto max-w-4xl" />;
   if (allowed === false) {
-    return <main><PageTitle title="계정 관리" sub="" /><Callout icon="⛔">관리자 전용 메뉴입니다.</Callout></main>;
+    return (
+      <main className="mx-auto max-w-4xl">
+        <PageTitle title="계정 관리" sub="" />
+        <Callout icon="⛔">관리자 전용 메뉴입니다 — <Link href="/settings" className="font-semibold text-accent">일반 설정</Link>으로 이동하세요.</Callout>
+      </main>
+    );
   }
   return (
-    <main>
+    <main className="mx-auto max-w-4xl">
       <PageTitle title="계정 관리" sub="계정을 직접 발급해 전달합니다 — 발급 계정은 첫 로그인에서 비밀번호를 변경해야 합니다" />
-      <Card className="mb-4 max-w-2xl">
+      <Card className="mb-4">
         <CardTitle>새 계정 발급</CardTitle>
         <div className="flex flex-wrap items-end gap-3">
           <label className="grid gap-1 text-xs text-faint">아이디
@@ -61,7 +69,7 @@ export default function AccountsPage() {
         </div>
         {msg && <p className="mt-3 text-[13.5px] text-muted">{msg}</p>}
       </Card>
-      <Card className="max-w-2xl">
+      <Card>
         <CardTitle>계정 목록 <span className="normal-case text-faint">· {rows.length}명</span></CardTitle>
         <div className="overflow-x-auto">
           <table className="w-full text-[14px]">
