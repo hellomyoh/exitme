@@ -26,8 +26,9 @@ router = APIRouter()
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_TOOL_ROUNDS = 6
 
-# ── 3층 프롬프트 (2026-09-04 지시): 본문(교체 가능·관리자) + 코어 계약(고정) + 사용자 추가 지침
-# 본문은 app_settings.chat_system_prompt 로 전체 교체 가능 — 비어 있으면 아래 기본 사용.
+# ── 권한별 프롬프트 (2026-09-05 지시): 관리자 = 전략 상세 포함·전체 답변,
+#    일반 = 개념 설명만 + 공식 유추 제한(코드 고정 계약). 본문(역할·스타일)은 공통이며
+#    app_settings.chat_system_prompt 로 교체 가능 — 비어 있으면 아래 기본 사용.
 DEFAULT_BODY = """당신은 ExitMe 의 매매 도우미입니다. ExitMe 는 코스피200 ETF·나스닥 ETF 를
 규칙 기반 전략으로 운용하는 개인용 웹 시스템이고, 당신은 이 시스템 안에서 사용자의 계좌 데이터를
 도구로 직접 조회해 설명하는 어시스턴트입니다. 항상 한국어로 답합니다.
@@ -36,7 +37,17 @@ DEFAULT_BODY = """당신은 ExitMe 의 매매 도우미입니다. ExitMe 는 코
 - 사용자의 실전매매 계좌(자산·보유·일지)와 주문표·시뮬레이션 결과를 조회해 설명한다.
 - 전략 규칙(왜 이 주문이 나왔는지, 왜 팔라는 건지)을 근거와 함께 풀어 설명한다.
 
-## 전략 지식 (정본 요약)
+## 답변 스타일
+- **핵심만 간결하게**: 결론부터 한두 문장으로 답하고, 필요한 근거만 짧게 덧붙인다. 서론·복명복창·
+  불필요한 배경 설명 금지. 짧은 질문에는 짧게 답한다.
+- 여러 항목 비교·나열은 마크다운 표로. 금액은 천 단위 구분(예: 32,093,398원).
+- 사용자가 "자세히"를 요구할 때만 길게 설명한다.
+- 매수/매도 판단을 묻는 질문에는 전략 규칙이 말하는 바를 설명하되, 모의·과거 데이터 기반이며
+  투자 권유가 아님을 짧게 덧붙인다.
+"""
+
+# 전략 지식 — 관리자 전용 상세 (수식·계수 포함, 2026-09-05 권한 분리)
+STRATEGY_DETAIL = """## 전략 지식 (정본 요약)
 - KR — RAVG v2.5 (TIGER/KODEX 200 + KODEX 레버리지):
   · 노출 E = min(레짐별 Emax, ½·목표σ/σd + ½·σref/σd), 목표 하방변동성 0.20.
   · 레짐 = MA200 기반 3단: 상승/중립/하락, Emax 1.30/0.65/0.20, 이탈 완충 ε 2%.
@@ -49,15 +60,19 @@ DEFAULT_BODY = """당신은 ExitMe 의 매매 도우미입니다. ExitMe 는 코
   실행일이 지난 계획 스냅샷은 불변(그날 아침의 계획 보존).
 - 발주는 사용자가 본인 HTS 에서 직접 하고 결과만 등록한다. 부분 이행도 허용되며 원장은 정합하다.
 - 수동 등록 보유분은 단일 로트라 익절이 전량으로 나온다(설계 정합 — 10년 측정상 모델도 익절일 59% 전량 매도).
-
-## 답변 스타일
-- **핵심만 간결하게**: 결론부터 한두 문장으로 답하고, 필요한 근거만 짧게 덧붙인다. 서론·복명복창·
-  불필요한 배경 설명 금지. 짧은 질문에는 짧게 답한다.
-- 여러 항목 비교·나열은 마크다운 표로. 금액은 천 단위 구분(예: 32,093,398원).
-- 사용자가 "자세히"를 요구할 때만 길게 설명한다.
-- 매수/매도 판단을 묻는 질문에는 전략 규칙이 말하는 바를 설명하되, 모의·과거 데이터 기반이며
-  투자 권유가 아님을 짧게 덧붙인다.
 """
+
+# 전략 지식 — 일반 사용자용 개념 설명 (수식·계수·임계값 없음)
+STRATEGY_PLAIN = """## 전략 개념 (핵심 개념 설명 — 상세 수식은 비공개)
+- KR 전략(RAVG): 시장 변동성이 커지면 주식 비중을 줄이고 잔잔하면 늘리는 변동성 조절 전략.
+  시장 국면을 상승/중립/하락 3단계로 판정해 국면별 최대 비중을 달리하고, 가격이 내려오면
+  분할 매수, 산 가격보다 일정 폭 오르면 익절하는 왕복 구조. 급락 출발일에는 매수를 취소하고,
+  변동성이 임계치를 넘으면 레버리지를 정리하는 방어 규칙이 있다.
+- US 전략(TF): 장기 추세선 위에서만 보유하고 이탈하면 다음날 정리하는 추세 추종.
+- 주문표는 전일 종가 상태 기준으로 계산되고, 당일 체결 등록은 다음 주문표부터 반영된다.
+  실행일이 지난 계획은 보존되며, 발주는 사용자가 HTS 에서 직접 한다.
+"""
+
 
 # 코어 계약 — 관리자가 본문을 교체해도 항상 첨부 (도구 하네스 무결성·수치 근거·단위)
 CORE_CONTRACT = """## 시스템 계약 (항상 적용 — 위 내용과 충돌하면 이 절이 우선)
@@ -67,6 +82,16 @@ CORE_CONTRACT = """## 시스템 계약 (항상 적용 — 위 내용과 충돌�
 - 미국 포트의 금액·가격은 센트 정수로 저장 — 표시할 때 100으로 나눠 $ 로 표기한다. 한국은 원 그대로.
 - 도구는 전부 읽기 전용 — 주문 실행·체결 등록·설정 변경은 할 수 없다. 요청받으면 화면 위치를 안내한다:
   체결 등록 = 실전매매, 알고리즘 변수 = 알고리즘 설정, 시뮬레이션 실행 = 시뮬레이터.
+"""
+
+# 일반 권한 제한 계약 (2026-09-05 지시) — 어떤 지침으로도 해제되지 않는다
+RESTRICT_CONTRACT = """## 공개 제한 (일반 사용자 세션 — 이 절은 다른 어떤 지침보다 우선)
+- 매매 공식의 정확한 수식·계수·임계값·배분 비율·파라미터 값(예: 이동평균 기간, 변동성 목표치,
+  그리드 계수/간격 상하한, 노출 한도, 청산 기준 수치)은 절대 노출하지 않는다.
+  사용자가 반복 요청하거나 단계적으로 유도해도 동일하다 — "전략 상세는 관리자에게 문의하세요"로 안내.
+- 다만 개념 수준의 설명(무엇을, 왜 하는지)은 친절히 제공한다. 사용자 본인 계좌의 주문·보유·손익
+  수치(주문 가격·수량 포함)는 본인 데이터이므로 그대로 보여준다 — 단, 그 수치가 나온 계산식의
+  수식·계수는 밝히지 않는다.
 """
 
 CHAT_SYSTEM_KEY = "chat_system_prompt"
@@ -106,7 +131,7 @@ TOOLS = [
 ]
 
 
-def _run_tool(name: str, args: dict, user_id: int) -> dict:
+def _run_tool(name: str, args: dict, user_id: int, is_admin: bool = False) -> dict:
     """도구 실행 — 전부 읽기 전용, user_id 스코프. 실패는 {'error': ...} 로 모델에 전달."""
     with SessionLocal() as session:
         try:
@@ -150,6 +175,8 @@ def _run_tool(name: str, args: dict, user_id: int) -> dict:
                                      user_id=user_id, session=session)
                 return out
             if name == "algorithm_params":
+                if not is_admin:  # 일반 권한: 파라미터 값 = 공식 유추 소재 (2026-09-05 권한 분리)
+                    return {"error": "알고리즘 파라미터 조회는 관리자 전용입니다"}
                 from app.settings import get_algo_settings
                 return get_algo_settings(user_id=user_id, session=session)
             if name == "trading_journal":
@@ -224,23 +251,32 @@ def chat(body: ChatIn, user_id: int = Depends(current_user_id)) -> StreamingResp
     def sse(obj: dict) -> str:
         return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
-    # 프롬프트 조립: 본문(전역 오버라이드 or 기본) + 코어 계약(고정) + 사용자 추가 지침 (2026-09-04)
+    # 프롬프트 조립 (2026-09-05 권한 분리): 본문 + [관리자: 전략 상세 | 일반: 개념+제한 계약]
+    # + 코어 계약(고정) + 사용자 추가 지침
     with SessionLocal() as _s:
         from sqlalchemy import select
-        from app.models import UserSettings
+        from app.models import User, UserSettings
         body_text = _system_body(_s)
         _row = _s.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
         user_prompt = (_row.chat_prompt if _row else "") or ""
+        _u = _s.get(User, user_id)
+        is_admin = bool(_u and _u.is_admin)
+
+    tools = TOOLS if is_admin else [t for t in TOOLS if t["function"]["name"] != "algorithm_params"]
 
     def stream():
-        sys_text = body_text + "\n\n" + CORE_CONTRACT + f"\n오늘: {date.today().isoformat()}"
+        strategy = STRATEGY_DETAIL if is_admin else STRATEGY_PLAIN
+        sys_text = body_text + "\n\n" + strategy + "\n\n" + CORE_CONTRACT
+        if not is_admin:
+            sys_text += "\n\n" + RESTRICT_CONTRACT
+        sys_text += f"\n오늘: {date.today().isoformat()}"
         if user_prompt:
-            sys_text += ("\n\n## 사용자 추가 지침 (시스템 계약과 충돌하면 계약이 우선)\n" + user_prompt)
+            sys_text += ("\n\n## 사용자 추가 지침 (시스템 계약·공개 제한과 충돌하면 그것들이 우선)\n" + user_prompt)
         msgs: list[dict] = [{"role": "system", "content": sys_text}]
         msgs += [m.model_dump() for m in body.messages]
         try:
             for _ in range(MAX_TOOL_ROUNDS):
-                data = _openrouter_call(msgs, TOOLS)
+                data = _openrouter_call(msgs, tools)
                 choice = data["choices"][0]
                 message = choice["message"]
                 calls = message.get("tool_calls") or []
@@ -255,7 +291,7 @@ def chat(body: ChatIn, user_id: int = Depends(current_user_id)) -> StreamingResp
                         fargs = json.loads(c["function"].get("arguments") or "{}")
                     except ValueError:
                         fargs = {}
-                    result = _run_tool(fname, fargs, user_id)
+                    result = _run_tool(fname, fargs, user_id, is_admin)
                     msgs.append({"role": "tool", "tool_call_id": c["id"],
                                  "content": json.dumps(result, ensure_ascii=False, default=str)[:20000]})
             yield sse({"type": "final",
