@@ -101,9 +101,7 @@ export default function DashboardPage() {
   const [loadError, setLoadError] = useState("");
   const [dash, setDash] = useState<Dash | null>(null);
   const [signal, setSignal] = useState<Signal | null>(null);
-  const [calendar, setCalendar] = useState<CalItem[]>([]);
   const [range, setRange] = useState("3M");
-  const [form, setForm] = useState({ name: "", category: "예금", value: "" });
   const [trendLegend, setTrendLegend] = useState<{ name: string; color: string }[]>([]);
   const trendRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
@@ -114,9 +112,6 @@ export default function DashboardPage() {
     else setLoadError(`대시보드 데이터를 불러오지 못했습니다 (HTTP ${d.status}) — 서버 로그·마이그레이션 상태를 확인하세요.`);
     const s = await apiFetch("/signals/daily");
     if (s.ok) setSignal((await s.json()) as Signal);
-    const month = new Date().toISOString().slice(0, 7);
-    const c = await apiFetch(`/portfolio/calendar?month=${month}`);
-    if (c.ok) setCalendar(((await c.json()) as { items: CalItem[] }).items);
   }, []);
 
   const disposeChart = useCallback(() => {
@@ -176,13 +171,6 @@ export default function DashboardPage() {
     return () => disposeChart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  async function addManual() {
-    if (!form.name || !form.value) return;
-    await apiFetch("/manual-assets", { method: "POST", body: JSON.stringify({ name: form.name, category: form.category, value: Number(form.value) }) });
-    setForm({ name: "", category: form.category, value: "" });
-    void load();
-  }
 
   const donut = dash && dash.total > 0
     ? `conic-gradient(var(--color-accent) 0 ${(dash.stock / dash.total) * 360}deg, var(--color-down) ${(dash.stock / dash.total) * 360}deg ${((dash.stock + dash.cash) / dash.total) * 360}deg, #7c3aed ${((dash.stock + dash.cash) / dash.total) * 360}deg 360deg)`
@@ -248,6 +236,47 @@ export default function DashboardPage() {
           ) : <p className="text-[13px] text-faint">{signal?.status ?? "—"} — 시딩·배치 후 표시됩니다</p>}
         </Card>
 
+        {/* 자산 추이 */}
+        <Card className="md:col-span-4">
+          <CardTitle right={
+            <span className="flex gap-1">
+              {["1M", "3M", "6M", "1Y", "ALL"].map((r) => (
+                <button key={r} onClick={() => { setRange(r); void loadTrend(r); }}
+                  className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${r === range ? "bg-raised text-ink" : "text-faint hover:text-ink"}`}>
+                  {r}
+                </button>
+              ))}
+            </span>
+          }>자산 추이</CardTitle>
+          <div ref={trendRef} className="h-52" />
+          {trendLegend.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-muted">
+              {/* 이름은 중복 가능(예: '내 계좌' 2개) — 위치 기반 키 (2026-09-05 중복 키 오류) */}
+              {trendLegend.map((l, i) => (
+                <span key={i} className="inline-flex items-center gap-1.5">
+                  <i className="inline-block h-2 w-2 rounded-full" style={{ background: l.color }} />{l.name}
+                </span>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        {/* 자산 구성 */}
+        <Card className="md:col-span-2">
+          <CardTitle>자산 구성</CardTitle>
+          <div className="flex items-center gap-5">
+            <div className="relative h-24 w-24 shrink-0 rounded-full" style={{ background: donut }}>
+              <div className="absolute inset-3.5 rounded-full bg-surface" />
+            </div>
+            <div className="grid gap-2 text-[14.5px]">
+              <span><i className="mr-2 inline-block h-2 w-2 rounded-full bg-accent" />주식 <b>{dash ? fmtWon(dash.stock) : "—"}</b></span>
+              <span><i className="mr-2 inline-block h-2 w-2 rounded-full bg-down" />현금 <b>{dash ? fmtWon(dash.cash) : "—"}</b></span>
+              <span><i className="mr-2 inline-block h-2 w-2 rounded-full" style={{ background: "#7c3aed" }} />기타 <b>{dash ? fmtWon(dash.other) : "—"}</b></span>
+            </div>
+          </div>
+        </Card>
+
+
         {/* 계좌별 현황 — 도넛 → 순위 테이블 (2026-09-05 지시, Zenith 'Top Selling' 스타일) */}
         {(dash?.portfolios?.length ?? 0) > 0 && (
           <Card className="md:col-span-6">
@@ -295,90 +324,6 @@ export default function DashboardPage() {
           </Card>
         )}
 
-        {/* 자산 추이 */}
-        <Card className="md:col-span-4">
-          <CardTitle right={
-            <span className="flex gap-1">
-              {["1M", "3M", "6M", "1Y", "ALL"].map((r) => (
-                <button key={r} onClick={() => { setRange(r); void loadTrend(r); }}
-                  className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${r === range ? "bg-raised text-ink" : "text-faint hover:text-ink"}`}>
-                  {r}
-                </button>
-              ))}
-            </span>
-          }>자산 추이</CardTitle>
-          <div ref={trendRef} className="h-52" />
-          {trendLegend.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-muted">
-              {/* 이름은 중복 가능(예: '내 계좌' 2개) — 위치 기반 키 (2026-09-05 중복 키 오류) */}
-              {trendLegend.map((l, i) => (
-                <span key={i} className="inline-flex items-center gap-1.5">
-                  <i className="inline-block h-2 w-2 rounded-full" style={{ background: l.color }} />{l.name}
-                </span>
-              ))}
-            </div>
-          )}
-        </Card>
-
-        {/* 자산 구성 */}
-        <Card className="md:col-span-2">
-          <CardTitle>자산 구성</CardTitle>
-          <div className="flex items-center gap-5">
-            <div className="relative h-24 w-24 shrink-0 rounded-full" style={{ background: donut }}>
-              <div className="absolute inset-3.5 rounded-full bg-surface" />
-            </div>
-            <div className="grid gap-2 text-[14.5px]">
-              <span><i className="mr-2 inline-block h-2 w-2 rounded-full bg-accent" />주식 <b>{dash ? fmtWon(dash.stock) : "—"}</b></span>
-              <span><i className="mr-2 inline-block h-2 w-2 rounded-full bg-down" />현금 <b>{dash ? fmtWon(dash.cash) : "—"}</b></span>
-              <span><i className="mr-2 inline-block h-2 w-2 rounded-full" style={{ background: "#7c3aed" }} />기타 <b>{dash ? fmtWon(dash.other) : "—"}</b></span>
-            </div>
-          </div>
-        </Card>
-
-        {/* 손익 캘린더 */}
-        <Card className="md:col-span-3">
-          <CardTitle>이번 달 일간 손익</CardTitle>
-          {calendar.length > 0 ? (
-            <div className="grid grid-cols-10 gap-1.5">
-              {calendar.map((c) => (
-                // 기본 title 툴팁은 ~1초 정지해야 뜨고 환경에 따라 미표시 — 앱 공통 group-hover 패턴으로 즉시 표시 (2026-09-02)
-                <div key={c.date} className="group relative">
-                  <div role="img" aria-label={`${c.date} ${fmtWon(c.pnl)}`}
-                    className="aspect-square rounded-[5px]"
-                    style={{
-                      background: c.pnl > 0 ? "var(--color-up)" : c.pnl < 0 ? "var(--color-down)" : "var(--color-raised)",
-                      opacity: c.pnl === 0 ? 0.6 : Math.min(Math.abs(c.pnl) / 500000 + 0.3, 1),
-                    }} />
-                  <span className="pointer-events-none invisible absolute bottom-full left-1/2 z-30 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12.5px] tabular-nums text-ink opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100">
-                    {c.date} · <b className={c.pnl > 0 ? "text-up" : c.pnl < 0 ? "text-down" : ""}>{c.pnl > 0 ? "+" : ""}{fmtWon(c.pnl)}</b>
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : <p className="text-[13px] text-faint">일별 스냅샷이 쌓이면 표시됩니다.</p>}
-        </Card>
-
-        {/* 기타 자산 */}
-        <Card className="md:col-span-3">
-          <CardTitle>기타 자산 (수동 등록)</CardTitle>
-          <div className="flex flex-wrap items-center gap-2">
-            {dash?.manual_assets.map((m) => (
-              <span key={m.id} className="inline-flex items-center gap-1.5 rounded-lg bg-raised px-3 py-1.5 text-[13px]">
-                <span className="text-faint">{m.category}</span> {m.name} <b>{fmtWon(m.value)}</b>
-                <button className="ml-1 text-faint transition-colors hover:text-up"
-                  onClick={() => void apiFetch(`/manual-assets/${m.id}`, { method: "DELETE" }).then(() => load())}>✕</button>
-              </span>
-            ))}
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <input className="input w-28" placeholder="이름" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            <select className="input" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
-              {["예금", "채권", "펀드", "금", "코인", "부동산", "기타"].map((c) => <option key={c}>{c}</option>)}
-            </select>
-            <input className="input w-32" placeholder="평가액(원)" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} />
-            <button className="btn" onClick={() => void addManual()}>추가</button>
-          </div>
-        </Card>
       </div>
     </main>
   );
