@@ -220,6 +220,17 @@ def test_account(aid: int, user_id: int = Depends(current_user_id),
                     continue
                 suggest = {"acnt_prdt_cd": cd, "holdings": ok["holdings"], "deposit": ok["deposit"]}
                 break
+        # 같은 앱키가 다른 계좌에도 등록돼 있으면 그것이 원인일 가능성이 가장 크다 (2026-09-05 실사례:
+        # 연금계좌용 앱키로 위탁계좌를 조회 → 모든 상품코드에서 INVALID_CHECK_ACNO). KIS 앱키는 발급 시 고른 계좌에만 유효.
+        if suggest is None and ("ACNO" in msg or "계좌" in msg):
+            twin = next((o for o in session.scalars(select(BrokerCredential)
+                                                    .where(BrokerCredential.user_id == user_id,
+                                                           BrokerCredential.id != row.id)).all()
+                         if o.app_key == row.app_key and o.account_no != row.account_no), None)
+            if twin is not None:
+                msg = (f"이 앱키는 '{twin.label}'({_mask(twin.account_no, 4, 2)}-{twin.acnt_prdt_cd})에 등록된 것과 같습니다. "
+                       "KIS 앱키는 발급할 때 고른 계좌 하나에만 유효하므로, 이 계좌용 앱키·시크릿을 "
+                       "KIS Developers 에서 따로 발급해 입력하세요. " + msg)
         return {"ok": False, "message": msg, "suggest": suggest}
     return {"ok": True, "holdings": info["holdings"], "deposit": info["deposit"],
             "total_eval": info["total_eval"]}
