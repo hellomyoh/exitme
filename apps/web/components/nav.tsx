@@ -35,7 +35,7 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
   const sp = useSearchParams();
   const [loggedIn, setLoggedIn] = useState(false);
   const [me, setMe] = useState<Me | null>(null);
-  const [journals, setJournals] = useState<{ id: number; name: string }[]>([]);
+  const [journals, setJournals] = useState<{ id: number; name: string; closed_at?: string | null }[]>([]);
   // 배포 확인용 버전 표시 (2026-09-05 지시) — /health 의 version(git describe)·db_revision(alembic)
   const [ver, setVer] = useState<{ version: string; db_revision: string | null; build_time?: string | null } | null>(null);
   const fmtBuild = (iso: string) => {  // UTC → 브라우저 로컬(KST) "MM-DD HH:mm"
@@ -49,7 +49,8 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
       if (ok) {
         setMe(await fetchMe());
         const r = await apiFetch("/mjournals");
-        if (r.ok) setJournals(((await r.json()) as { items: { id: number; name: string }[] }).items);
+        // 청산 일지는 서브메뉴에서 제외 — 일지 화면 탭에서는 계속 볼 수 있다 (2026-09-05 지시)
+        if (r.ok) setJournals(((await r.json()) as { items: { id: number; name: string; closed_at?: string | null }[] }).items.filter((j) => !j.closed_at));
       }
       const h = await apiFetch("/health").catch(() => null);
       if (h?.ok) setVer((await h.json()) as { version: string; db_revision: string | null; build_time?: string | null });

@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { apiFetch, fetchMe, logout as apiLogout } from "../../lib/api";
+import { apiFetch, fetchMe, logout as apiLogout, type Me } from "../../lib/api";
 import { Callout, Card, CardTitle, PageTitle } from "../../components/ui";
 
 /** 증권사 자격 입력 (2026-09-05 지시) — 저장값을 중간 마스킹으로 필드 안에 보여주고 브라우저 자동완성을 막는다.
@@ -89,12 +89,32 @@ export default function SettingsPage() {
 
   // 챗봇 시스템 프롬프트 — 전역·관리자 전용 (2026-09-04). 빈 값 저장 = 기본 복귀.
   const [isAdmin, setIsAdmin] = useState(false);
+  const [me, setMe] = useState<Me | null>(null);   // 자산 초기화 확인용 로그인 아이디
+  // 자산 전체 초기화 (2026-09-05 지시) — 되돌릴 수 없어 아이디 입력 확인
+  const [rsScopes, setRsScopes] = useState<Record<string, boolean>>({ portfolios: true, journals: true, manual_assets: true, snapshots: true });
+  const [rsConfirm, setRsConfirm] = useState("");
+  const [rsMsg, setRsMsg] = useState("");
+  const [rsBusy, setRsBusy] = useState(false);
+  async function resetAssets() {
+    if (!me) return;
+    if (!window.confirm("정말 초기화할까요? 선택한 항목의 데이터가 모두 삭제되며 되돌릴 수 없습니다.")) return;
+    setRsBusy(true); setRsMsg("");
+    const r = await apiFetch("/account/reset-assets", { method: "POST", body: JSON.stringify({
+      confirm: rsConfirm.trim(), scopes: Object.entries(rsScopes).filter(([, v]) => v).map(([k]) => k) }) });
+    const j = (await r.json().catch(() => ({}))) as { deleted?: Record<string, number>; detail?: string };
+    setRsBusy(false);
+    if (!r.ok) { setRsMsg(j.detail ?? `실패 (${r.status})`); return; }
+    const d = j.deleted ?? {};
+    setRsMsg(`초기화 완료 — 실전매매 ${d.portfolios ?? 0}개 · 매매일지 ${d.journals ?? 0}개 · 기타 자산 ${d.manual_assets ?? 0}건 · 자산 추이 ${d.snapshots ?? 0}일`);
+    setRsConfirm("");
+  }
   const [sysPrompt, setSysPrompt] = useState("");
   const [sysDefault, setSysDefault] = useState("");
   const [sysUsingDefault, setSysUsingDefault] = useState(true);
   const [sysMsg, setSysMsg] = useState("");
   useEffect(() => {
     void fetchMe().then((me) => {
+      setMe(me);
       if (!me?.is_admin) return;
       setIsAdmin(true);
       void apiFetch("/settings/chat-system").then(async (r) => {
@@ -184,6 +204,31 @@ export default function SettingsPage() {
           만료되면 로그인 화면으로 안내됩니다.
         </p>
         <button className="btn" onClick={logout}>로그아웃</button>
+      </Card>
+      {/* 자산 전체 초기화 (2026-09-05 지시) — 계정·증권사 계좌 자격·설정은 유지, 자산 데이터만 삭제 */}
+      <Card className="mb-4 border-down/30">
+        <CardTitle>자산 전체 초기화 <span className="normal-case text-faint">· 되돌릴 수 없습니다</span></CardTitle>
+        <p className="mb-3 text-[13.5px] leading-relaxed text-muted">
+          이 계정의 자산 데이터를 처음 상태로 되돌립니다. 계정·비밀번호·증권사 계좌 등록·설정은 남습니다.
+          증권사에 접수된 예약주문은 취소되지 않으니 필요하면 HTS 에서 먼저 정리하세요.
+        </p>
+        <div className="mb-3 grid gap-1.5 text-[13.5px] sm:grid-cols-2">
+          {([["portfolios", "실전매매 포트 전체 — 거래·보유·주문표·예약주문 기록"], ["journals", "매매일지 전체 — 기록 포함"],
+             ["manual_assets", "기타 자산(수동 입력)"], ["snapshots", "자산 추이(일별 스냅샷)"]] as const).map(([k, label]) => (
+            <label key={k} className="inline-flex items-center gap-2">
+              <input type="checkbox" className="h-4 w-4" checked={rsScopes[k]} onChange={(e) => setRsScopes({ ...rsScopes, [k]: e.target.checked })} />
+              {label}
+            </label>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="grid gap-1 text-[13px] text-faint">확인을 위해 로그인 아이디 입력{me ? ` (${me.login})` : ""}
+            <input className="input w-64 min-w-0" autoComplete="off" value={rsConfirm} onChange={(e) => setRsConfirm(e.target.value)} placeholder={me?.login ?? ""} /></label>
+          <button className="btn !border-down !text-down hover:!bg-down hover:!text-white"
+            disabled={rsBusy || !me || rsConfirm.trim() !== me.login || !Object.values(rsScopes).some(Boolean)}
+            onClick={() => void resetAssets()}>{rsBusy ? "초기화 중…" : "자산 초기화"}</button>
+          {rsMsg && <span className="text-[13.5px] text-muted">{rsMsg}</span>}
+        </div>
       </Card>
       </>)}
 

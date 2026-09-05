@@ -361,6 +361,8 @@ class ManualJournal(TimestampMixin, Base):
     # 증권사 계좌 연결 (0018, 2026-09-05 지시) — 설정에 등록한 계좌 중 하나; 계좌가 삭제되면 NULL
     broker_credential_id: Mapped[int | None] = mapped_column(
         ForeignKey("broker_credentials.id", ondelete="SET NULL"), nullable=True)
+    # 청산 (0020, 2026-09-05 지시) — 전량 매도했거나 더 이상 거래하지 않는 일지. 대시보드·총자산에서 제외
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ManualJournalEntry(TimestampMixin, Base):
@@ -429,6 +431,7 @@ class AssetSnapshot(Base):
     stock: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)   # 🔒
     cash: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)    # 🔒
     other: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)   # 🔒
+    journal: Mapped[int | None] = mapped_column(EncryptedBigInt, nullable=True)  # 🔒 매매일지 자산(취득원가), NULL=0 (0020)
 
 
 class PortfolioSnapshot(Base):

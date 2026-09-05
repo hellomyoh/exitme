@@ -13,7 +13,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { Card, CardTitle, EmptyState, PageTitle, Stat } from "../../components/ui";
 
-type JournalMeta = { id: number; name: string; symbol: string; broker: string };
+type JournalMeta = { id: number; name: string; symbol: string; broker: string; closed_at?: string | null };
 type Holding = { symbol: string; qty: number; avg_price: number; cost: number; realized: number; matched: number; return_pct: number | null };
 type Row = {
   id: number; symbol: string; side: "buy" | "sell"; buy_date: string | null; sell_date: string | null;
@@ -32,6 +32,7 @@ type Detail = JournalMeta & {
   holdings: Holding[];
   series: Record<string, { date: string; value: number }[]>;   // 종목별 누적 실현손익 (이 일지만)
   linked_account: { id: number; label: string; account_no: string; env: string } | null;   // 연결 계좌 (0018)
+  closed_at?: string | null;   // 청산 시각 (0020) — 있으면 기록 추가 불가, 대시보드 제외
 };
 
 /** 증권사 체결 가져오기 (0018, 2026-09-05 지시) — 검토 문서 권고안.
@@ -342,12 +343,13 @@ function MJournalPage() {
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         {/* 탭 선택 시 생성 폼 닫기 — 폼이 열린 채 본문이 계속 숨어 화면이 깨져 보이던 문제 (2026-09-05) */}
-        {list.map((j) => (
+        {list.slice().sort((a, b) => Number(!!a.closed_at) - Number(!!b.closed_at)).map((j) => (
           <button key={j.id} onClick={() => { setShowNew(false); router.replace(`/mjournal?jid=${j.id}`); void load(j.id); }}
             className={`rounded-lg border px-3.5 py-2 text-[14px] transition-colors ${
               jid === j.id ? "border-line bg-surface font-semibold text-ink shadow-sm"
-                           : "border-transparent bg-raised text-muted hover:text-ink"}`}>
+                           : "border-transparent bg-raised text-muted hover:text-ink"} ${j.closed_at ? "opacity-70" : ""}`}>
             {j.name} <span className="text-[12px] text-faint">{j.symbol}</span>
+            {j.closed_at && <span className="ml-1.5 rounded bg-raised px-1.5 py-0.5 text-[10.5px] font-semibold text-faint">청산</span>}
           </button>
         ))}
         <button className="btn btn-primary !py-2 text-[13.5px]" onClick={() => setShowNew(!showNew)}>＋ 새 매매일지</button>
@@ -447,8 +449,17 @@ function MJournalPage() {
 
           <Card className="mb-4">
             <CardTitle right={<span className="flex items-center gap-3">
-              <button className="text-[12.5px] font-normal normal-case text-accent transition-colors hover:underline"
-                onClick={() => setShowImport(!showImport)}>{showImport ? "증권사 연동 닫기" : "🔗 증권사 연동"}</button>
+              {/* 청산 (2026-09-05 지시) — 전량 매도했거나 더 이상 거래하지 않는 일지. 기록은 남고 대시보드에서 빠진다 */}
+              <button className="text-[12.5px] font-normal normal-case text-muted transition-colors hover:text-ink"
+                onClick={() => void (async () => {
+                  const closing = !detail.closed_at;
+                  if (closing && !window.confirm(`'${detail.name}' 일지를 청산 처리할까요?\n기록은 남지만 새 기록을 받지 않고, 대시보드·총자산에서 제외됩니다.${detail.holdings.length > 0 ? `\n\n※ 보유 ${detail.holdings.length}종목이 남아 있습니다 — 실제로 전량 매도했다면 매도 기록을 먼저 넣는 것이 정확합니다.` : ""}`)) return;
+                  const r = await apiFetch(`/mjournals/${detail.id}/${closing ? "close" : "reopen"}`, { method: "POST" });
+                  if (r.ok) void load(detail.id);
+                  else setMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `실패 (${r.status})`);
+                })()}>{detail.closed_at ? "↩ 다시 열기" : "✔ 청산 처리"}</button>
+              {!detail.closed_at && <button className="text-[12.5px] font-normal normal-case text-accent transition-colors hover:underline"
+                onClick={() => setShowImport(!showImport)}>{showImport ? "증권사 연동 닫기" : "🔗 증권사 연동"}</button>}
               <button className="text-[12.5px] font-normal normal-case text-faint transition-colors hover:text-down"
                 onClick={() => void (async () => {
                   if (!window.confirm(`'${detail.name}' 일지를 삭제할까요? 기록이 모두 삭제됩니다.`)) return;
@@ -460,6 +471,12 @@ function MJournalPage() {
                 · {detail.broker || "증권사 미지정"} · 수수료 {(detail.fee_rate * 100).toFixed(3)}% · 제세금 {(detail.tax_rate * 100).toFixed(2)}%
                 {detail.linked_account && <> · 연결 계좌 <b className="text-ink">{detail.linked_account.label}</b></>}</span>
             </CardTitle>
+            {detail.closed_at ? (
+              <p className="text-[13.5px] text-muted">
+                <b className="text-ink">청산된 일지입니다</b> ({detail.closed_at.slice(0, 10)}) — 기록은 보존되며 대시보드·총자산에서 제외됩니다.
+                다시 거래하려면 오른쪽 위 &quot;다시 열기&quot;를 누르세요.
+              </p>
+            ) : (
             <div className="flex flex-wrap items-end gap-2">
               <div className="flex overflow-hidden rounded-lg border border-line-strong">
                 {(["buy", "sell"] as const).map((s) => (
@@ -493,10 +510,11 @@ function MJournalPage() {
               <button className="btn btn-primary !py-2.5" disabled={!(Number(ef.qty) > 0 && Number(ef.price) > 0)}
                 onClick={() => void addEntry()}>등록</button>
             </div>
+            )}
             {msg && <p className="mt-2 text-[13.5px] text-up">{msg}</p>}
           </Card>
 
-          {showImport && <BrokerImport detail={detail} accts={accts} onChanged={() => void load(detail.id)} />}
+          {showImport && !detail.closed_at && <BrokerImport detail={detail} accts={accts} onChanged={() => void load(detail.id)} />}
 
           <Card>
             <CardTitle>기록 ({detail.rows.length}건)</CardTitle>

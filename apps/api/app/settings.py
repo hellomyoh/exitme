@@ -166,3 +166,52 @@ def reset_algo_settings(_admin=Depends(require_admin), user_id: int = Depends(cu
     row.algo_params = {}
     session.commit()
     return {"reset": True}
+
+
+# ── 계정 자산 전체 초기화 (2026-09-05 지시) ───────────────────────────────────────────
+# 실전매매 포트(거래·로트·계획·예약주문·스냅샷), 매매일지, 기타 자산, 자산 추이 스냅샷을 지운다.
+# 계정·비밀번호·증권사 계좌 자격·설정은 남긴다. 되돌릴 수 없어 로그인 아이디를 그대로 입력해야 실행된다.
+
+RESET_SCOPES = ("portfolios", "journals", "manual_assets", "snapshots")
+
+
+class ResetAssetsIn(BaseModel):
+    confirm: str = Field(min_length=1, max_length=200)          # 로그인 아이디(이메일) 그대로
+    scopes: list[str] = Field(default_factory=lambda: list(RESET_SCOPES))
+
+
+@router.post("/account/reset-assets")
+def reset_assets(body: ResetAssetsIn, user_id: int = Depends(current_user_id),
+                 session: Session = Depends(get_session)) -> dict:
+    from sqlalchemy import delete, select
+
+    from app.models import (AssetSnapshot, BrokerOrder, ManualAsset, ManualJournal, ManualJournalEntry,
+                            PortfolioPlan, PortfolioSnapshot, PositionLot, PositionMeta, TradePortfolio,
+                            TradeTransaction, User)
+
+    u = session.get(User, user_id)
+    if u is None or body.confirm.strip() != u.email:
+        raise HTTPException(status_code=400, detail="확인 문구가 로그인 아이디와 다릅니다 — 아이디를 그대로 입력하세요")
+    scopes = {s for s in body.scopes if s in RESET_SCOPES}
+    if not scopes:
+        raise HTTPException(status_code=422, detail="초기화할 항목을 하나 이상 선택하세요")
+    out: dict = {}
+    if "portfolios" in scopes:
+        pids = list(session.scalars(select(TradePortfolio.id).where(TradePortfolio.user_id == user_id)).all())
+        if pids:
+            for model in (BrokerOrder, PortfolioPlan, PositionMeta, PositionLot, TradeTransaction, PortfolioSnapshot):
+                session.execute(delete(model).where(model.portfolio_id.in_(pids)))
+            session.execute(delete(TradePortfolio).where(TradePortfolio.id.in_(pids)))
+        out["portfolios"] = len(pids)
+    if "journals" in scopes:
+        jids = list(session.scalars(select(ManualJournal.id).where(ManualJournal.user_id == user_id)).all())
+        if jids:
+            session.execute(delete(ManualJournalEntry).where(ManualJournalEntry.journal_id.in_(jids)))
+            session.execute(delete(ManualJournal).where(ManualJournal.id.in_(jids)))
+        out["journals"] = len(jids)
+    if "manual_assets" in scopes:
+        out["manual_assets"] = session.execute(delete(ManualAsset).where(ManualAsset.user_id == user_id)).rowcount
+    if "snapshots" in scopes:
+        out["snapshots"] = session.execute(delete(AssetSnapshot).where(AssetSnapshot.user_id == user_id)).rowcount
+    session.commit()
+    return {"reset": True, "deleted": out}
