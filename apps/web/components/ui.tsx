@@ -27,16 +27,17 @@ export function CardTitle({ children, right }: { children: ReactNode; right?: Re
   );
 }
 
-export function Stat({ label, value, tone = "default", hint, tip, spark, sparkColor, sub, size = "md" }: {
+export function Stat({ label, value, tone = "default", hint, tip, spark, sparkColor, sub, size = "md", className = "" }: {
   label: string; value: ReactNode; tone?: "default" | "up" | "down" | "accent"; hint?: string; tip?: ReactNode;
   spark?: number[] | null; sparkColor?: string;  // 카드 하단 미니 추세 (2026-09-05, Zenith 스타일)
   sub?: ReactNode;          // 값 아래 보조 정보 한 줄 (예: 구성·세부 손익) — 카드 수를 줄이기 위한 2차 정보 (2026-09-05)
   size?: "md" | "lg";       // lg = 상단 핵심 카드 (값 24px)
+  className?: string;       // 그리드 배치용 (h-full·col-span) — 래퍼 div 를 두면 카드 높이가 칸을 못 채운다 (2026-09-06)
 }) {
   const color = { default: "text-ink", up: "text-up", down: "text-down", accent: "text-accent" }[tone];
   const labelEl = tip ? <Tip tip={tip}><span>{label}</span><span className="text-faint">ⓘ</span></Tip> : label;
   return (
-    <div className={`card px-4 ${size === "lg" ? "py-4" : "py-3.5"}`}>
+    <div className={`card px-4 ${size === "lg" ? "py-4" : "py-3.5"} ${className}`}>
       <div className="text-[13px] text-faint">{labelEl}</div>
       {/* nowrap 금지 — 긴 값(금액+%)은 공백에서 줄바꿈되어 카드 밖으로 넘치지 않게 (2026-09-02) */}
       <div className={`mt-1 break-keep font-bold leading-snug ${size === "lg" ? "text-[24px]" : "text-[19px]"} ${color}`}>{value}</div>
