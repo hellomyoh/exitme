@@ -27,20 +27,23 @@ export function CardTitle({ children, right }: { children: ReactNode; right?: Re
   );
 }
 
-export function Stat({ label, value, tone = "default", hint, tip, spark, sparkColor, sub, size = "md", className = "" }: {
-  label: string; value: ReactNode; tone?: "default" | "up" | "down" | "accent"; hint?: string; tip?: ReactNode;
+export function Stat({ label, value, tone = "default", hint, tip, spark, sparkColor, sub, size = "md", className = "", hero = false }: {
+  label: ReactNode; value: ReactNode; tone?: "default" | "up" | "down" | "accent"; hint?: string; tip?: ReactNode;
   spark?: number[] | null; sparkColor?: string;  // 카드 하단 미니 추세 (2026-09-05, Zenith 스타일)
   sub?: ReactNode;          // 값 아래 보조 정보 한 줄 (예: 구성·세부 손익) — 카드 수를 줄이기 위한 2차 정보 (2026-09-05)
-  size?: "md" | "lg";       // lg = 상단 핵심 카드 (값 24px)
+  size?: "md" | "lg";       // lg = 값 24px (hero 가 아닌 큰 카드 — 현재는 hero 로 통일)
   className?: string;       // 그리드 배치용 (h-full·col-span) — 래퍼 div 를 두면 카드 높이가 칸을 못 채운다 (2026-09-06)
+  hero?: boolean;           // 페이지의 핵심 카드 — 값 24px 굵게 + 왼쪽 주황 선·옅은 배경(.card-hero). 페이지당 하나 (2026-09-06 카드 위계 규칙)
 }) {
+  const big = hero || size === "lg";
   const color = { default: "text-ink", up: "text-up", down: "text-down", accent: "text-accent" }[tone];
-  const labelEl = tip ? <Tip tip={tip}><span>{label}</span><span className="text-faint">ⓘ</span></Tip> : label;
+  const labelEl = tip ? <Tip tip={tip}><span className="inline-flex items-center gap-1.5">{label}</span><span className="text-faint">ⓘ</span></Tip>
+    : <span className="inline-flex items-center gap-1.5">{label}</span>;
   return (
-    <div className={`card px-4 ${size === "lg" ? "py-4" : "py-3.5"} ${className}`}>
+    <div className={`card px-4 ${big ? "py-4" : "py-3.5"} ${hero ? "card-hero" : ""} ${className}`}>
       <div className="text-[13px] text-faint">{labelEl}</div>
       {/* nowrap 금지 — 긴 값(금액+%)은 공백에서 줄바꿈되어 카드 밖으로 넘치지 않게 (2026-09-02) */}
-      <div className={`mt-1 break-keep font-bold leading-snug ${size === "lg" ? "text-[24px]" : "text-[19px]"} ${color}`}>{value}</div>
+      <div className={`mt-1 break-keep leading-snug ${big ? "text-[24px] font-extrabold tracking-tight" : "text-[19px] font-bold"} ${color}`}>{value}</div>
       {sub && <div className="mt-1 text-[12.5px] leading-relaxed text-muted">{sub}</div>}
       {hint && <div className="mt-0.5 text-[11px] text-faint">{hint}</div>}
       {spark && spark.length >= 2 && <Spark data={spark} color={sparkColor} />}

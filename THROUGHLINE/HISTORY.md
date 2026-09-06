@@ -405,4 +405,11 @@
 
 - 검토: "계좌 평가금액만 붉은색, 나머지 검정" 안은 붉/파가 이익·손실 부호인 이 화면의 규칙을 깨고(손실이 나도 검정) 잔액에 붉은색을 써 "올랐다"로 읽힐 수 있어 반대. 대신 색이 아닌 **크기·배경**으로 위계를 만드는 안을 제안하고 채택됨.
 - 작업 내용: 계좌 평가금액 카드 값 24px(`size="lg"`) + 강조색 주황(`tone="accent"`, 손익 부호에 쓰지 않는 색) + 옅은 주황 배경·테두리. 총 손익·평가손익·실현손익은 부호색(붉/파) 그대로, 크기 19px 유지. 괄호 수익률(+84.9%)은 옅은 색(`text-muted`)으로 낮춰 금액이 먼저 읽히게.
-- Git commit: change: journal cards — emphasize account value by size and accent, keep P&L sign colors
+- Git commit: change: journal cards — emphasize account value by size and accent, keep P&L sign colors (#125)
+
+## [2026-09-06] change | 카드 위계 규칙 — 네 페이지(대시보드·실전매매·시뮬레이터·매매일지) 공통 (사용자 검토 요청 → 제안 채택)
+
+- 검토: 매매일지만 배경색·주황 숫자를 써 대시보드와 분위기가 달랐고, 실전매매는 카드 셋이 모두 24px 라 핵심이 없었으며, 시뮬레이터는 총수익률이 다른 지표와 같은 크기였다.
+- 규칙: ① 페이지마다 **핵심 카드 하나**(총자산·총자산·총수익률·계좌 평가금액) — 값 24px 굵게, 첫 자리. ② 핵심 표시는 숫자 색이 아니라 **카드 장식**(`.card-hero`: 왼쪽 3px 주황 선 + 주황 5% 배경 + 옅은 주황 테두리). 숫자는 검정 또는 손익 부호색만 — '숫자 색 = 손익 부호' 규칙을 네 페이지에서 동일하게. ③ 나머지 카드 19px(대시보드 한국·미국 20→19, 실전매매 순손익·수익률 24→19). ④ 라벨 13px·보조 12.5px·안내 11px 통일.
+- 구현: `Stat` 에 `hero` 옵션(+ label ReactNode) 추가, 대시보드 상단 카드 3개를 수제 마크업에서 공용 Stat 으로 교체(같은 타이포·간격), 실전매매·시뮬레이터·매매일지에 hero 지정. 매매일지의 임시 `!bg-accent-dim`·주황 숫자는 제거.
+- Git commit: change: unify card hierarchy — one hero card per page, sign colors only on P&L

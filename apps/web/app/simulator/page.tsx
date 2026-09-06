@@ -483,7 +483,8 @@ function SimulatorPage() {
           })()}
           {job.stale && <Callout icon="⚠️">시세 데이터가 갱신되었습니다(stale) — 재실행을 권장합니다.</Callout>}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
-            <Stat label="총수익률" value={fmtPct(kpi?.total_return)} tone={(kpi?.total_return ?? 0) >= 0 ? "up" : "down"}
+            {/* 카드 위계 규칙 (2026-09-06): 결과의 핵심 카드는 총수익률 */}
+            <Stat hero label="총수익률" value={fmtPct(kpi?.total_return)} tone={(kpi?.total_return ?? 0) >= 0 ? "up" : "down"}
               tip="기간 전체 누적 수익률 — (최종 평가액 ÷ 투입 자본) − 1. 비용(수수료·슬리피지·세금) 반영"
               spark={job.equity?.map((e) => e.equity)} />
             <Stat label="CAGR" value={kpi?.cagr === null ? "1년 미만" : fmtPct(kpi?.cagr)}

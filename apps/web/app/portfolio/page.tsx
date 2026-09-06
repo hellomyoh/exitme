@@ -694,13 +694,14 @@ function PortfolioPage() {
           총자산(현금·주식 구성) · 순손익(실현·평가 세부) · 수익률 TWR(XIRR 보조). 그래프는 바로 아래. */}
       {sum && (
         <div className="mb-3 grid gap-3 md:grid-cols-3">
-          <Stat size="lg" label="총자산" value={fm(sum.total_equity)} spark={curve.map((c) => c.equity)}
+          {/* 카드 위계 규칙 (2026-09-06): 총자산만 핵심 카드, 순손익·수익률은 19px */}
+          <Stat hero label="총자산" value={fm(sum.total_equity)} spark={curve.map((c) => c.equity)}
             tip={<span>현금 + 보유 주식 평가액(최근 종가 기준)의 합.<br />현금 = 입금 − 출금 − 매수금액 + 매도금액의 원장 잔액, 주식 = 보유 수량 × 최근 종가(지연 시세).</span>}
             sub={<span className="flex flex-wrap gap-x-3">
               <span>현금 <b className="text-ink">{fm(sum.cash)}</b></span>
               <span>주식 <b className="text-ink">{fm(sum.stock_value)}</b>{sum.total_equity > 0 && <span className="text-faint"> ({(sum.stock_value / sum.total_equity * 100).toFixed(0)}%)</span>}</span>
             </span>} />
-          <Stat size="lg" label={`순손익${includeCosts ? " (비용차감)" : ""}`} value={withPct(fm(net), netPct)} tone={pnlTone(net)}
+          <Stat label={`순손익${includeCosts ? " (비용차감)" : ""}`} value={withPct(fm(net), netPct)} tone={pnlTone(net)}
             // 손익 추이(평가액 − 납입 원금, 비용 차감 전) — 세 카드 모두 하단 미니 그래프로 일관 (2026-09-05 지시)
             spark={curve.map((c) => c.pnl ?? 0)} sparkColor={net > 0 ? "#d92f45" : net < 0 ? "#2563eb" : "#9aa1ad"}
             tip={<span>실현손익 + 평가손익 − 추정 수수료(체크 시). %는 납입 원금(입금−출금) 대비 — 원금 이상 출금 시 %는 표시하지 않습니다.<br />
@@ -709,7 +710,7 @@ function PortfolioPage() {
               <span>실현 <b className={toneCls[pnlTone(sum.realized_pnl)]}>{fm(sum.realized_pnl)}</b></span>
               <span>평가 <b className={toneCls[pnlTone(sum.unrealized_pnl)]}>{withPct(fm(sum.unrealized_pnl), evalPct)}</b></span>
             </span>} />
-          <Stat size="lg" label="수익률 (TWR)" value={fmtPct(sum.twr, 2)} tone={pnlTone(sum.twr ?? 0)} spark={curve.map((c) => c.index)} sparkColor="#2a78d6"
+          <Stat label="수익률 (TWR)" value={fmtPct(sum.twr, 2)} tone={pnlTone(sum.twr ?? 0)} spark={curve.map((c) => c.index)} sparkColor="#2a78d6"
             tip={<span>시간가중수익률 — 입출금 시점의 영향을 제거한 운용 성과. 펀드 수익률과 같은 방식이며, 입금이 많아도 왜곡되지 않습니다.<br />
               XIRR = 내부수익률(연환산) — 입출금 현금흐름과 현재 평가액으로 계산한 &apos;내 돈 기준&apos; 연 수익률.</span>}
             sub={<span>XIRR(연환산) <b className="text-ink">{fmtPct(sum.xirr, 2)}</b></span>} />
