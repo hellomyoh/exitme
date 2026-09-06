@@ -379,4 +379,14 @@ def daily_asset_snapshot() -> dict:
         for u in users:
             compute_user_snapshot(session, u.id, kst_today())
         session.commit()
-        return {"users": len(users)}
+        # 텔레그램 '일일 현황' (2026-09-07 지시) — 항목을 체크한 사용자에게 스냅샷 요약
+        from app.notify import send_daily_status
+
+        sent = 0
+        for u in users:
+            try:
+                sent += 1 if send_daily_status(session, u.id, kst_today()) else 0
+            except Exception:  # noqa: BLE001
+                logger.warning("daily status notify failed user=%s", u.id)
+        session.commit()
+        return {"users": len(users), "notified": sent}

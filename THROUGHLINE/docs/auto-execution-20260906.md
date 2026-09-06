@@ -45,6 +45,7 @@
 | 워커 | `worker.py` | `auto-exec-open` 09:01 mon–fri, `max_retries=0`, 휴장일 스킵 · `preopen-gap-cancel` 08:57 mon–fri (2026-09-06 밤) |
 | 완전 무인 | `app/autoapprove.py` `run_auto_approve`, `PUT /portfolio/{pid}/auto-exec/auto-approve`, `POST /portfolio/{pid}/orders/cancel-all`, `worker.py` `auto-approve-plan` 16:45 | 포트별 자동 승인(기본 꺼짐)·시장가 예약 접수 옵션(기본 켬)·하루 매수 상한 `daily_buy_cap_pct`(총자산 대비 %, 기본 20, 0 = 없음). 전량 취소(승인·예약·발주) + stop 이면 정지·자동 승인 끔. 상태는 `auto_exec_view` 의 `auto_approve`·`auto_approve_last` |
 | 사전 갭 취소 | `app/preopen.py` `run_preopen_cancel`, `services/kis_client.py` `fetch_expected`(FHKST01010200)·`list_open_orders`(TTTC0084R 실전 전용) | 예상체결가 ≤ 기준 → 그리드 가격과 같은 200 ETF 매수 미체결 취소. `BrokerOrder.status=gap_cancelled`, `params.preopen_cancel.last_run`. 설정 `auto_exec.preopen_cancel` 기본 켜짐 |
+| 알림 | `app/notify.py` `notify_event`(활동 로그 훅)·`notify_trade`·`send_daily_status`, `GET/PUT /settings/notify`, `POST /settings/notify/test`, `user_settings.telegram_bot_token`(🔒)·`telegram_chat_id`·`notify`(0023) | 텔레그램 Bot API sendMessage/getUpdates. 카테고리 9종(기본: 결과·경고 켬, 주문·체결 등록 꺼짐). 실패는 `notify.failed` 로그만 — 본 작업 계속 |
 | 로그 | `app/activity.py` `log_event`, `GET /logs`, `models.ActivityLog`(0022) | 거래(원장)·주문(BrokerOrder)·이벤트(ActivityLog) 병합. 기록 지점: 무인 실행 요약·정지·승인, 예약주문 접수·취소, 사전 갭 취소, 장 마감 동기화 결과·오류, 예수금 대조 경고·보정, 거래 삭제 |
 | 웹 | `portfolio/page.tsx`, `settings/page.tsx`, `logs/page.tsx` | 승인 버튼·확인창·상태·배너·사전 갭 확인 한 줄 / 무인 실행 탭(매수·매도·사전 갭 취소 스위치) / 매매 로그(기간·유형·수준·포트·검색 필터) |
 

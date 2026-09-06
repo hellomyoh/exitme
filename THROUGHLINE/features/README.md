@@ -8,3 +8,6 @@
 | RAVG v2.5 전략 엔진 | [feature-strategy-engine.md](feature-strategy-engine.md) | 진행 중 (코드·테스트 완료 — 실데이터 배치 검증 = 키 대기) | Phase 4 | [ADR-005](../adr/005-strategy-single-source.md), [ADR-006](../adr/006-ravg-v2-adoption.md), [ADR-007](../adr/007-ravg-v25-adoption.md) |
 | 실전매매 기록 | [feature-portfolio.md](feature-portfolio.md) | 완료 (마커·음영은 TODO) | Phase 5 | [ADR-003](../adr/003-auth-jwt.md), [ADR-008](../adr/008-portfolio-snapshots.md) |
 | 자산 대시보드 | [feature-dashboard.md](feature-dashboard.md) | 완료 (2026-09-02 자산 구분·포트별 추이 확장) | Phase 6 | [ADR-003](../adr/003-auth-jwt.md), [ADR-008](../adr/008-portfolio-snapshots.md) |
+| 미국 TF / LTM 공식 | [feature-us-trendfilter.md](feature-us-trendfilter.md), [feature-us-ltm.md](feature-us-ltm.md) | 완료 (포트별 공식 선택, 가이드) | 후속 | [ADR-005](../adr/005-strategy-single-source.md) |
+| 매매 도우미 챗봇 | [feature-chatbot.md](feature-chatbot.md) | 완료 (2026-09-07 운영 지식·상태 도구 보강) | 후속 | — |
+| 증권사 연동·무인 실행·완전 무인·알림 | [docs/auto-execution-20260906.md](../docs/auto-execution-20260906.md), [docs/broker-reserved-orders-20260905.md](../docs/broker-reserved-orders-20260905.md), [feature-portfolio.md §5·§8](feature-portfolio.md) | 완료 (v0.5.0~v0.9.0 — 실계좌 첫 주 관찰 항목은 TODO) | 후속 | [ADR-008](../adr/008-controlled-auto-execution.md) |

@@ -142,6 +142,7 @@ export default function SettingsPage() {
     { key: "account", label: "계정", desc: "비밀번호 · 세션" },
     { key: "broker", label: "증권사 계좌", desc: "체결 자동 가져오기 연동" },
     { key: "auto", label: "무인 실행", desc: "무인 발주 · 장 시작 전 갭 취소" },
+    { key: "notify", label: "알림", desc: "텔레그램 봇 · 보낼 항목" },
     { key: "chat", label: "챗봇", desc: "시스템 프롬프트 (관리자)", adminOnly: true },
   ] as const;
   type TabKey = (typeof TABS_ALL)[number]["key"];
@@ -183,6 +184,7 @@ export default function SettingsPage() {
       </div>
 
       {tab === "auto" && <AutoExecSettings />}
+      {tab === "notify" && <NotifySettings />}
 
       {tab === "account" && (<>
       <Card className="mb-4">
@@ -500,3 +502,107 @@ function AutoExecSettings() {
     </Card>
   );
 }
+
+/** 텔레그램 알림 (2026-09-07 지시) — 봇 토큰(암호화 저장·마스킹 표시)·채팅 ID('연결 확인'으로 자동)·켬/끔·보낼 항목 체크.
+ *  발송 지점은 서버의 활동 로그(무인 실행·자동 승인·사전 갭 취소·정지·동기화·예수금 대조·주문), 거래 등록, 16:40 일일 현황. */
+type NotifyCfg = {
+  enabled: boolean; has_token: boolean; token_masked: string; chat_id: string; ready: boolean; events: Record<string, boolean>;
+  categories: { key: string; label: string; desc: string; default: boolean }[];
+};
+function NotifySettings() {
+  const [cfg, setCfg] = useState<NotifyCfg | null>(null);
+  const [token, setToken] = useState("");
+  const [chatId, setChatId] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    const r = await apiFetch("/settings/notify");
+    if (r.ok) { const j = (await r.json()) as NotifyCfg; setCfg(j); setChatId(j.chat_id); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+  async function save(patch: Record<string, unknown>, okMsg = "저장되었습니다") {
+    setBusy(true); setMsg("");
+    const r = await apiFetch("/settings/notify", { method: "PUT", body: JSON.stringify(patch) });
+    const j = (await r.json().catch(() => ({}))) as Partial<NotifyCfg> & { detail?: string };
+    setBusy(false);
+    if (!r.ok) { setMsg(j.detail ?? `저장 실패 (${r.status})`); return false; }
+    setCfg((prev) => (prev ? { ...prev, ...j, categories: prev.categories } : prev));
+    setMsg(okMsg);
+    return true;
+  }
+  async function saveCreds() {
+    const ok = await save({ bot_token: token.trim() || undefined, chat_id: chatId.trim() }, "봇 정보를 저장했습니다 — 아래 '연결 확인'으로 테스트 메시지를 보내 보세요");
+    if (ok) setToken("");
+  }
+  async function test() {
+    setBusy(true); setMsg("연결 확인 중…");
+    const r = await apiFetch("/settings/notify/test", { method: "POST" });
+    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; chat_id?: string; chat_title?: string | null; detail?: string };
+    setBusy(false);
+    if (!r.ok) { setMsg(j.detail ?? `연결 확인 실패 (${r.status})`); return; }
+    setMsg(`✅ 테스트 메시지를 보냈습니다 — 채팅 ${j.chat_title ? `${j.chat_title} ` : ""}(${j.chat_id})`);
+    void load();
+  }
+  function toggleEvent(k: string, v: boolean) {
+    if (!cfg) return;
+    setCfg({ ...cfg, events: { ...cfg.events, [k]: v } });
+    void save({ events: { [k]: v } });
+  }
+  if (!cfg) return <Card className="mb-4"><CardTitle>텔레그램 알림</CardTitle><p className="text-[13px] text-faint">불러오는 중…</p></Card>;
+  return (
+    <>
+      <Card className="mb-4">
+        <CardTitle right={
+          <span className={`rounded-md px-2 py-0.5 text-[12px] font-semibold ${cfg.ready ? "bg-accent-dim text-accent" : "bg-raised text-faint"}`}>
+            {cfg.ready ? "알림 켜짐" : cfg.has_token && cfg.chat_id ? "연결됨 · 알림 꺼짐" : "미연결"}</span>}>
+          텔레그램 봇 연결 <span className="normal-case text-faint">· 매매 결과·현황을 텔레그램으로 받습니다</span>
+        </CardTitle>
+        <ol className="mb-3 grid gap-1 text-[13px] leading-relaxed text-muted">
+          <li>① 텔레그램에서 <b className="text-ink">@BotFather</b> 에게 <code>/newbot</code> 을 보내 봇을 만들고 토큰(예: <code>123456789:AAH…</code>)을 복사합니다.</li>
+          <li>② 아래에 토큰을 붙여넣고 저장합니다. 토큰은 암호화되어 저장되고 화면에는 마스킹으로만 보입니다.</li>
+          <li>③ 텔레그램에서 방금 만든 봇을 찾아 <b className="text-ink">아무 메시지</b>나 보낸 뒤 <b className="text-ink">연결 확인</b>을 누르면 채팅 ID가 자동으로 채워지고 테스트 메시지가 옵니다.</li>
+        </ol>
+        <div className="grid gap-3 sm:grid-cols-[2fr_1fr]">
+          <label className="grid gap-1 text-[13px] text-faint">봇 토큰
+            <CredentialInput name="tg_token" value={token} onChange={setToken} stored={cfg.has_token ? cfg.token_masked : undefined} placeholder="123456789:AAH…" /></label>
+          <label className="grid gap-1 text-[13px] text-faint">채팅 ID <span className="text-[11.5px]">(비워 두면 연결 확인이 채움)</span>
+            <input className="input" value={chatId} onChange={(e) => setChatId(e.target.value)} placeholder="자동" /></label>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-[13.5px]">
+          <button className="btn btn-primary !py-1.5" disabled={busy || (!token.trim() && !cfg.has_token)} onClick={() => void saveCreds()}>저장</button>
+          <button className="btn !py-1.5" disabled={busy || !cfg.has_token} onClick={() => void test()}>연결 확인 · 테스트 메시지</button>
+          <label className="ml-2 flex items-center gap-2">
+            <input type="checkbox" className="h-4 w-4 accent-[#c2410c]" checked={cfg.enabled} disabled={busy}
+              onChange={(e) => void save({ enabled: e.target.checked }, e.target.checked ? "알림을 켰습니다" : "알림을 껐습니다")} />
+            <span className="font-semibold text-ink">알림 보내기</span>
+          </label>
+          {cfg.has_token && (
+            <button className="text-[12.5px] text-faint hover:text-down" disabled={busy}
+              onClick={() => { if (window.confirm("저장된 봇 토큰을 삭제할까요? 알림이 중단됩니다.")) void save({ clear_token: true, enabled: false }, "토큰을 삭제했습니다"); }}>토큰 삭제</button>
+          )}
+          {msg && <span className="text-muted">{msg}</span>}
+        </div>
+      </Card>
+      <Card className="mb-4">
+        <CardTitle>보낼 메시지 항목 <span className="normal-case text-faint">· 체크한 항목만 발송됩니다 — 알림이 켜져 있고 연결이 끝난 뒤부터</span></CardTitle>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {cfg.categories.map((c) => (
+            <label key={c.key} className="flex items-start gap-3 rounded-xl border border-line bg-inset p-3">
+              <input type="checkbox" className="mt-1 h-4 w-4 accent-[#c2410c]" checked={!!cfg.events[c.key]} disabled={busy}
+                onChange={(e) => toggleEvent(c.key, e.target.checked)} />
+              <span className="grid gap-0.5">
+                <span className="text-[14px] font-semibold text-ink">{c.label}</span>
+                <span className="text-[12.5px] leading-relaxed text-muted">{c.desc}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <p className="mt-3 text-[12px] leading-relaxed text-faint">
+          메시지는 서버가 기록을 남기는 시점에 바로 보냅니다(무인 실행 09:01, 사전 갭 취소 08:57, 장 마감 동기화 15:45, 자동 승인 16:45, 일일 현황 16:40).
+          전송 실패는 매매 로그에 "알림 전송 실패"로 남고 본 작업은 계속됩니다.
+        </p>
+      </Card>
+    </>
+  );
+}
+
