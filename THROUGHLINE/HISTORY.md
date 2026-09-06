@@ -399,4 +399,10 @@
 - 원인: 2026-09-05 규칙 "일지가 실전매매 포트와 같은 증권사 계좌면 총자산에서 일지 제외"가, 포트가 **현금만** 들고 있고 주식은 일지에 있는 실데이터에서 일지 주식 4,202,945원을 통째로 누락시켰다(대시보드 매매일지 0원). 범례의 "취득원가"도 고정 문구여서 현재가 평가와 어긋났다.
 - 수정: `journal_assets` 가 같은 계좌 포트의 **실제 보유 종목**(잔여 로트 > 0, 코드 → 정규화 이름 매칭)만 일지에서 빼고 나머지 종목 가치는 총자산에 넣는다(`value` = 포함분, `excluded` 목록, `counted` = 전부 겹칠 때만 False). 대시보드 표는 "포함 / 일부 포함 — 제외 종목 / 제외", 범례는 "평가액 / 일부 취득원가 / 취득원가"를 상태별로.
 - 테스트: `test_journal_same_account_as_portfolio_dedupes_by_instrument`(현금만 → 전부 포함, 같은 종목 보유 → 그 종목만 제외·이름 매칭, 전부 겹침 → 제외). 기존 계좌 단위 테스트를 대체.
-- Git commit: fix: dashboard journal assets — exclude only instruments the linked portfolio actually holds
+- Git commit: fix: dashboard journal assets — exclude only instruments the linked portfolio actually holds (#124)
+
+## [2026-09-06] change | 매매일지 카드 위계 — 계좌 평가금액을 크기·강조색으로, 손익 부호색은 유지 (사용자 검토 요청 → 제안 채택)
+
+- 검토: "계좌 평가금액만 붉은색, 나머지 검정" 안은 붉/파가 이익·손실 부호인 이 화면의 규칙을 깨고(손실이 나도 검정) 잔액에 붉은색을 써 "올랐다"로 읽힐 수 있어 반대. 대신 색이 아닌 **크기·배경**으로 위계를 만드는 안을 제안하고 채택됨.
+- 작업 내용: 계좌 평가금액 카드 값 24px(`size="lg"`) + 강조색 주황(`tone="accent"`, 손익 부호에 쓰지 않는 색) + 옅은 주황 배경·테두리. 총 손익·평가손익·실현손익은 부호색(붉/파) 그대로, 크기 19px 유지. 괄호 수익률(+84.9%)은 옅은 색(`text-muted`)으로 낮춰 금액이 먼저 읽히게.
+- Git commit: change: journal cards — emphasize account value by size and accent, keep P&L sign colors
