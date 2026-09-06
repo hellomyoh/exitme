@@ -355,4 +355,11 @@
 - 검토 결론(실데이터): ① TF 는 실제로 보유보다 덜 번다(5년 구간 승률 1%) — 그래프 왜곡이 아니라 사실. RAVG·LTM 은 보유보다 높은데 로그 축에서 겹쳐 보였다. ② 2008 제외 시 TF 의 MDD 우위는 21%p→10%p 로 줄고(2009-07 이후 −24.5% vs −35%), 2020 같은 급락은 못 피하며(−24.5% vs −29%) 횡보장(2015~16)엔 보유보다 더 빠진다. LTM 은 2008 제외 시 MDD(−40.5%) 가 QQQ 보유(−35%)보다 크다 → "낙폭이 작다" 문구 삭제. RAVG 는 2008 없이도 위기마다 절반 이하(2020 −17% vs −38%, 2022 −14% vs −36%), −20% 아래 체류 0.2% vs 34%. ③ 낙폭이 그래프에 안 보임 → 낙폭(수면 아래) 그래프 도입. ④ 보유 대신 **같은 최대 낙폭으로 맞춘 보유**(비중 축소)와 비교 — RAVG 15.9% vs 7.8%, TF 13.1% vs 8.4%, LTM 19.8% vs 14.7%(QQQ)/13.4%(QLD).
 - 작업 내용: `components/guide-chart.tsx` 에 `DrawdownChart`(고점 대비 낙폭, 월중 최저, 면 겹침, 최저점 라벨, 호버)·`YearStrip`(연도별 수익 띠, 5%p 이상 우위 굵게) 추가, 자산곡선·낙폭 그래프에 위기 구간 음영(보유 −20% 이상 하락 국면, 고점→저점). 개요 페이지 블록을 ① 같은 낙폭에서의 수익 헤드라인 → ② 자산곡선 → ③ 낙폭 그래프 → ④ 위기 구간 표(보유/공식 낙폭·회복 기간) → ⑤ −20% 아래 체류 시간·낙폭 대비 수익 → ⑥ 연도별 띠 → 장점/단점/선택 순으로 재구성. 데이터 `compare-data.ts` v2(월말 곡선 + 월중 최저 낙폭 + 위기 표 + 체류 시간 + 위험 등가 + 연도별). TF 페이지 약점에 급락·횡보·5년 승률 명시 + "느린 하락장 보험, 보험료 연 4%p"; LTM 페이지에 "강점은 낙폭이 아니라 수익" 단락.
 - 테스트: tsc·헤드리스(그래프 6개·헤드라인·표·호버·모바일 폭) — 커밋 메시지 참조.
-- Git commit: change: guide comparison — drawdown charts, crisis table, risk-equal return headline
+- Git commit: change: guide comparison — drawdown charts, crisis table, risk-equal return headline (#115)
+
+## [2026-09-06] fix | 시뮬레이터 지난 결과에 LTM 잡이 안 보이던 결함 (사용자 보고 "실행하고 지난결과에 등록이 안되는거 같은데")
+
+- 원인: 지난 결과 목록의 시장 판정이 `etf.startsWith("QQQ")` 였다 → `LTM_QLD`/`LTM_TQQQ` 잡은 한국으로 분류되어 미국 목록에서 사라지고 한국 목록에 섞였다. 잡 자체는 정상 저장·완료(DB #140~142 DONE). 부수: 8건을 먼저 자른 뒤 시장을 걸러 다른 시장 잡이 많으면 목록이 비었고, 완료 직후 목록을 다시 읽지 않아 메뉴로 돌아오면 새 결과가 빠져 있었다.
+- 수정: 시장 판정을 `ETF_INFO[etf].market` 기준으로, 시장 필터 후 8건 자르기, 결과 표시 시 `loadHistory()` 재호출, 뱃지를 짧은 이름(TF / LTM·QLD / LTM·TQQQ / RAVG·QLD(구))으로.
+- 테스트: tsc, 헤드리스(미국 목록에 #142 LTM·QLD 표시·한국 목록에 LTM 없음·실행 후 재진입 시 새 잡이 첫 항목) — 커밋 메시지 참조.
+- Git commit: fix: simulator past results — classify LTM jobs as US, filter before slicing, refresh after run
