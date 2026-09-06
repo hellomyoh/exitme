@@ -334,4 +334,10 @@
 
 - 작업 내용: LTM 에서 고친 것과 같은 결함이 TF 에도 있었다(전량 매수 뒤 일할 보수 0.20% 를 현금에서 차감 → 장기 보유 시 음수). `TF_CASH_RESERVE` 1% 를 두어 매수 수량을 현금의 99% 로 산정 — 백테스트 엔진(체결·계획)과 실전 주문표(`_tf_portfolio_orders`) 동일. 추가로 TF·LTM 두 엔진 모두 현금이 바닥나면 보수를 **이연(fee_due)** 해 다음 매도 대금에서 정산하도록 바꿔(평가액에는 차감 반영) 현금 곡선이 구조적으로 음수가 되지 않게 했다 — 여유 1% 만으로는 급등 장기 보유(합성 상승장 테스트)에서 보수가 여유를 넘어섰기 때문. 실데이터 TF QQQ 2007~2026: CAGR 11.9% / MDD −24.5% / 거래 29회, 최소 현금 +$6,494.
 - 테스트: `test_tf_cash_never_negative_on_long_hold`(1,500봉 상승장 보유 — 현금 최소 ≥ 0, 잔여 < 2%), LTM 상승장 테스트에도 현금 ≥ 0 단언 추가. 전체 스위트 결과는 커밋 메시지 참조.
-- Git commit: fix: keep a 1% cash reserve in TF sizing as well; bump version to 0.3.1
+- Git commit: fix: keep a 1% cash reserve in TF sizing as well; bump version to 0.3.1 (#112)
+
+## [2026-09-06] feat | 가이드 메뉴 신설 — 매매 공식별 설명 페이지 (사용자 지시 "수식 제외, 설명만, 읽기 쉽게")
+
+- 작업 내용: 사이드바에 "📖 가이드" 그룹(매매 공식 개요 · RAVG · TF · LTM) 추가 — 매매일지 그룹 뒤, 설정 앞. `/guide`(세 공식 비교표·공통 원칙·시뮬레이터→실전 흐름·용어), `/guide/ravg`(레짐·노출·그리드·매도·레버리지 두 트랙·안전장치·하루 흐름·주문표 라벨), `/guide/tf`(두 줄 규칙·2% 완충·200일선 이유·실측), `/guide/ltm`(세 층 구조·안전장치 4종·라벨·실측·KOSPI 미적용 이유). 공용 조각 `components/guide.tsx`(GuideShell 탭·Section·Lead·Steps·Bullets·Table·ProsCons·Labels). 수식·계수는 쓰지 않고 '무엇을 왜 하는지'만 서술. 실측 숫자는 당일 로컬 DB 결과(TF 11.9%/−24.5%/29회, LTM 18.7%/−40.5%, 18.8%/−36.9%)만 인용.
+- 테스트: tsc 클린, 헤드리스로 4 페이지 렌더·탭 활성·사이드바 그룹 순서 확인 (아래 커밋 기준).
+- Git commit: feat: add guide menu with plain-language pages for RAVG, TF and LTM
