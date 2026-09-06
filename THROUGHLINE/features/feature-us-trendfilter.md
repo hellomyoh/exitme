@@ -19,7 +19,8 @@
 - 엔진 `app/strategy/trendfilter.py` — `BacktestResult` 를 그대로 채워 시뮬레이터·일지·전환 재사용
 - 디스패치 `backtests.run_engine` — `etf == "QQQ_TF"` 면 TF, 그 외 RAVG. 잡·저널·전환·워커 공통
 - 신호 `_live_us_model`·`_tf_portfolio_orders` — 미국 주문표는 TF 기준 (전량 매수/전량 현금/유지)
-- 시뮬레이터 미국 옵션: 기본 "QQQ 추세 필터", RAVG 페어(QQQ_QLD/QQQ_TQQQ)는 비교용 레거시(신규 선택 불가, 기존 기록 표시 유지)
+- 시뮬레이터 미국 옵션 (2026-09-06 개정): 기본은 LTM(`LTM_QLD`, [feature-us-ltm.md](feature-us-ltm.md)), TF 는 `QQQ_TF` "QQQ 추세 필터 (TF · 1배)" 로 유지. RAVG 페어(QQQ_QLD/QQQ_TQQQ)는 삭제 — 신규 잡 422, 기존 기록 라벨만 유지
+- 미국 포트 주문표는 포트 `params.etf` 로 분기(`_us_portfolio_orders`): `LTM_*` → LTM, 그 외(QQQ_TF·구형 포트) → TF
 
 ## 검증
 

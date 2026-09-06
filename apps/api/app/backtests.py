@@ -28,9 +28,11 @@ CANCEL_KEY = "backtests:cancel:{id}"
 ETF_PAIRS = {
     "KODEX": ("069500", "122630"),
     "TIGER": ("102110", "122630"),
-    "QQQ_QLD": ("QQQ", "QLD"),      # 미국 — 센트 단위 (2026-08-31, 레거시 비교용)
+    "QQQ_QLD": ("QQQ", "QLD"),      # 미국 RAVG 이식 실험 (2026-08-31) — 신규 선택 불가, 기존 기록 해석용 (2026-09-06 삭제)
     "QQQ_TQQQ": ("QQQ", "TQQQ"),
-    "QQQ_TF": ("QQQ", "QQQ"),       # 미국 기본 — TF(추세 필터 보유) 전략 (2026-08-31 승인)
+    "QQQ_TF": ("QQQ", "QQQ"),       # 미국 — TF(추세 필터 보유, 1배) (2026-08-31 승인)
+    "LTM_QLD": ("QQQ", "QLD"),      # 미국 기본 — LTM(추세+모멘텀 레버리지) QQQ+QLD (2026-09-06 채택)
+    "LTM_TQQQ": ("QQQ", "TQQQ"),    # 미국 — LTM QQQ+TQQQ (노출 2.0 = 50/50)
 }
 CODE_200, CODE_LEV = ETF_PAIRS["KODEX"]  # 기본값 (전략 정본 기준)
 
@@ -55,7 +57,7 @@ class BacktestIn(BaseModel):
     capital: int = Field(gt=1_000_000, le=100_000_000_000)
     date_from: date
     date_to: date
-    etf: str = Field(default="KODEX", pattern="^(KODEX|TIGER|QQQ_QLD|QQQ_TQQQ|QQQ_TF)$")
+    etf: str = Field(default="KODEX", pattern="^(KODEX|TIGER|QQQ_TF|LTM_QLD|LTM_TQQQ)$")  # 미국 RAVG 쌍은 2026-09-06 제거
     algo: dict[str, float] | None = None            # 알고리즘 변수 수동 오버라이드 (2026-09-02)
     holdings: list[dict] | None = None              # 보유 상태로 시작: [{leg: K200|LEV, qty, price}]
     costs: Costs = Costs()
@@ -101,7 +103,8 @@ def pair_from_params(params: dict) -> tuple[str, str]:
     return ETF_PAIRS.get(params.get("etf", "KODEX"), ETF_PAIRS["KODEX"])
 
 
-US_ETFS = {"QQQ_QLD", "QQQ_TQQQ", "QQQ_TF"}
+US_ETFS = {"QQQ_QLD", "QQQ_TQQQ", "QQQ_TF", "LTM_QLD", "LTM_TQQQ"}
+LTM_ETFS = {"LTM_QLD", "LTM_TQQQ"}
 
 
 def market_of_etf(etf: str) -> str:
@@ -114,17 +117,23 @@ def base_costs_for(etf: str) -> dict:
         return {}
     return {
         "tick": 1, "commission": 0.001, "slippage_market": 0.001, "lev_tax": 0.0,
-        "fee_200": 0.002, "fee_lev": 0.0084 if etf == "QQQ_TQQQ" else 0.0095,
-        "lev_multiple": 3.0 if etf == "QQQ_TQQQ" else 2.0,
+        "fee_200": 0.002, "fee_lev": 0.0084 if etf.endswith("TQQQ") else 0.0095,
+        "lev_multiple": 3.0 if etf.endswith("TQQQ") else 2.0,
     }
 
 
 def run_engine(p: dict, bars_200, bars_lev, capital: float, params,
                start_index=None, collect_plans=False, progress_cb=None, plan_final=False):
-    """전략 디스패처 — 미국 QQQ_TF 는 TF(추세 필터) 엔진, 그 외는 RAVG (2026-08-31 시장별 분리)."""
+    """전략 디스패처 — 미국 QQQ_TF 는 TF, LTM_* 는 LTM, 그 외(한국·구 미국 RAVG 기록)는 RAVG."""
     from app.strategy.backtest import run_backtest
 
     holdings = p.get("holdings") or None
+    if p.get("etf") in LTM_ETFS:
+        from app.strategy.ltm import params_for, run_ltm_backtest
+
+        lev_code = ETF_PAIRS[p["etf"]][1]
+        return run_ltm_backtest(bars_200, bars_lev, capital, params_for(lev_code), start_index=start_index,
+                                progress_cb=progress_cb, initial_lots=holdings)
     if p.get("etf") == "QQQ_TF":
         from app.strategy.trendfilter import run_tf_backtest
 

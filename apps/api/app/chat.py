@@ -157,14 +157,14 @@ def _run_tool(name: str, args: dict, user_id: int, is_admin: bool = False) -> di
                 if pid:
                     # 실제 주문표 엔드포인트와 동일 디스패치: US 포트 → TF, KR 포트 → RAVG (signals 참조)
                     from app.models import TradePortfolio
-                    from app.signals import _live_us_model, _portfolio_orders, _tf_portfolio_orders
+                    from app.signals import _live_us_model, _portfolio_orders, _us_portfolio_orders
                     pf_row = session.get(TradePortfolio, int(pid))
                     if pf_row is None or pf_row.user_id != user_id:
                         return {"error": "portfolio not found"}
                     if pf_row.market == "US":
                         base = _live_us_model(session, user_id)
                         if base.get("status") == "OK":
-                            base.update(_tf_portfolio_orders(session, pf_row, int(pid)))
+                            base.update(_us_portfolio_orders(session, pf_row, int(pid)))
                         return base
                     return _portfolio_orders(session, int(pid), user_id)
                 if args.get("market") == "US":
