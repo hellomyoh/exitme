@@ -430,16 +430,19 @@ def reconcile_plan(planned: list[dict], fills: list[dict]) -> list[dict]:
     ko = {"K200": "200 ETF", "LEV": "레버리지"}
     side_ko = {"buy": "매수", "sell": "매도"}
     out: list[dict] = []
+    # kind (2026-09-06): missing(계획 있고 체결 없음) · unplanned(계획 없고 체결) · short(부분·미달) · excess(초과).
+    # level·text 는 종전과 동일(수동 검토 배너 호환). 무인 자동 정지는 unplanned·excess(위험)만 본다 — short(정상 부분체결)는 정지하지 않는다.
     for k in sorted(set(plan_by) | set(fill_by)):
         p, f = plan_by.get(k, 0), fill_by.get(k, 0)
         leg, side = k
         label = f"{ko.get(leg, leg)} {side_ko.get(side, side)}"
         if p and not f:
-            out.append({"level": "info", "text": f"{label} 계획 {p}주 — 등록된 체결 없음(미이행 또는 미등록)"})
+            out.append({"level": "info", "kind": "missing", "text": f"{label} 계획 {p}주 — 등록된 체결 없음(미이행 또는 미등록)"})
         elif f and not p:
-            out.append({"level": "warn", "text": f"{label} {f}주 등록 — 이날 계획에 없던 거래"})
+            out.append({"level": "warn", "kind": "unplanned", "text": f"{label} {f}주 등록 — 이날 계획에 없던 거래"})
         elif p != f:
-            out.append({"level": "warn", "text": f"{label} 계획 {p}주 ≠ 등록 {f}주 ({f - p:+d}주)"})
+            out.append({"level": "warn", "kind": "excess" if f > p else "short",
+                        "text": f"{label} 계획 {p}주 ≠ 등록 {f}주 ({f - p:+d}주)"})
     return out
 
 
@@ -654,9 +657,10 @@ def reserve_broker_orders(pid: int, body: ReserveIn, user_id: int = Depends(curr
         raise HTTPException(status_code=404, detail="이 실행일의 주문표 스냅샷이 없습니다 — 주문표를 먼저 조회하세요")
     plan_lines = {line_key(o): o for o in (plan.payload or {}).get("orders", [])}
     code_200, code_lev = _resolve_codes(session, pf)
+    # 예약·무인 활성 상태를 모두 중복으로 본다 — 같은 줄이 예약주문(09:00 동시호가)과 무인(09:01)으로 이중 발주되지 않게 (2026-09-06 검토)
     active = {r.line_key for r in session.scalars(
         select(BrokerOrder).where(BrokerOrder.portfolio_id == pid, BrokerOrder.plan_date == body.date,
-                                  BrokerOrder.status == "reserved")).all()}
+                                  BrokerOrder.status.in_(("reserved", "approved", "submitted", "partial")))).all()}
     client = _client(cred)
     items, ok, failed = [], 0, 0
     for ln in body.lines:

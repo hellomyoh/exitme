@@ -161,14 +161,15 @@ def test_execution_no_gap_cash_limit_and_fail_streak_pauses(monkeypatch):
     c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
     monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
     c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": LINES[:3]}, headers=h)
-    # 갭 없음(시가 100,000) · 예수금 부족(매수 합계 5×99,000+3×98,000=789,000 > 500,000) → 매수 생략, 매도는 보유 0주라 생략
+    # 갭 없음(시가 100,000) · 예수금 500,000: 얕은 그리드부터 — grid1(5×99,000=495,000) 발주, grid2(+294,000) 는 한도 초과로 생략,
+    # 매도(tp)는 보유 0주라 생략 (2차 검증 Fix B: 전부 생략 → 순차 발주)
     fake = FakeKis(open_px=100000, deposit=500_000, holdings={})
     with SessionLocal() as s:
         out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
     rec = out["portfolios"][0]
-    assert rec["submitted"] == 0 and rec["skipped"] == 3 and rec["skipped_gap"] == 0 and fake.placed == []
+    assert rec["submitted"] == 1 and rec["skipped"] == 2 and rec["skipped_gap"] == 0 and fake.placed == [("069500", "buy", 5, 99000)]
     msgs = {i["kind"]: i["message"] for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]}
-    assert "예수금 부족" in msgs["grid1"] and "잔고 부족" in msgs["tp"]
+    assert "예수금 한도" in msgs["grid2"] and "잔고 부족" in msgs["tp"]
 
     # 다음 날: 발주 2건 연속 실패 → 자동 정지, 이후 승인 거절, 다시 켜기로 해제
     c2, h2 = _client()
@@ -201,6 +202,8 @@ def test_us_portfolio_and_pause_on_reconcile_warning():
     with SessionLocal() as s:
         from app.models import TradePortfolio
         pf = s.scalar(ae.select(TradePortfolio).where(TradePortfolio.id == us))
-        assert ae.pause_if_reconcile_warns(s, pf, {"date": "2026-09-06", "items": [{"level": "warn", "text": "미이행 grid1"}]}) is True
-        assert ae.pf_auto_state(pf)["paused"] is True and "대조 경고" in ae.pf_auto_state(pf)["paused_reason"]
-        assert ae.pause_if_reconcile_warns(s, pf, {"items": [{"level": "info", "text": "ok"}]}) is False
+        # 부분체결(short)·미이행(missing) 은 정지하지 않고, 계획에 없던 거래(unplanned) 만 정지 (2차 검증 Fix C)
+        assert ae.pause_if_reconcile_warns(s, pf, {"date": "2026-09-06", "items": [{"level": "warn", "kind": "short", "text": "계획 8 ≠ 등록 5"}]}) is False
+        assert ae.pause_if_reconcile_warns(s, pf, {"date": "2026-09-06", "items": [{"level": "warn", "kind": "unplanned", "text": "레버리지 매수 3주 등록 — 이날 계획에 없던 거래"}]}) is True
+        assert ae.pf_auto_state(pf)["paused"] is True and "계획에 없던" in ae.pf_auto_state(pf)["paused_reason"]
+        assert ae.pause_if_reconcile_warns(s, pf, {"items": [{"level": "info", "kind": "missing", "text": "ok"}]}) is False
