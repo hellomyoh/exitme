@@ -31,6 +31,7 @@ class LTMParams:
     shock_days: int = 20
     e_max: float = 2.0
     band: float = 0.10
+    cash_reserve: float = 0.01   # 목표 수량 산정 시 남기는 현금 비율 — 일할 보수(연 ≤0.95%)로 현금이 음수가 되지 않게 (2026-09-06 e2e 결함)
     commission: float = 0.001
     slippage: float = 0.0005
     fee_1x: float = 0.002
@@ -204,8 +205,9 @@ def run_ltm_backtest(bars_1x: list[dict], bars_lev: list[dict], capital: float,
             switched = prev is None or prev["on"] != st["on"] or (prev["e_target"] > 1.0) != (e_t > 1.0)
             if switched or abs(e_t - e_now) >= p.band * max(e_t, 0.5):
                 w1, wL = target_weights(e_t, L)
-                t1 = int(w1 * v / c1[nxt]) if c1[nxt] > 0 else 0
-                tL = int(wL * v / cL[nxt]) if (wL > 0 and cL[nxt] > 0) else 0
+                v_inv = v * (1 - p.cash_reserve)
+                t1 = int(w1 * v_inv / c1[nxt]) if c1[nxt] > 0 else 0
+                tL = int(wL * v_inv / cL[nxt]) if (wL > 0 and cL[nxt] > 0) else 0
                 kind = ("ltm_exit" if not st["on"] else
                         "ltm_entry" if (prev is None or not prev["on"]) else
                         "ltm_lever_on" if (e_t > 1.0 and not (prev["e_target"] > 1.0)) else

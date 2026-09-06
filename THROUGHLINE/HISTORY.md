@@ -326,4 +326,6 @@
 
 - 작업 내용: features/feature-us-ltm.md 참조. 연구(docs/ltv-strategy-study-20260906.md)에서 채택한 LTM 을 제품 엔진으로 옮김 — `app/strategy/ltm.py`(`ltm_states` 규칙 단일 구현: MA200 게이트·2% 이탈, 12M 모멘텀>0 ∧ 20일 내 −3% 급락 없음 → 노출 2.0, 아니면 1.0, OFF 현금; 밴드 10%; 다음날 시가 시장가; 정수 주; `BacktestResult` 반환). 시뮬레이터 미국 옵션 = `LTM_QLD`(기본)·`LTM_TQQQ`·`QQQ_TF`, **RAVG 미국 쌍(QQQ_QLD/QQQ_TQQQ) 삭제**(신규 잡 422, 기존 기록은 라벨만). `run_engine` 디스패치(잡·일지·전환·워커 공통), 미국 포트 주문표를 포트 `params.etf` 로 TF/LTM 분기(`_us_portfolio_orders`, 챗봇 order_sheet 동일), LTM 주문 종류 라벨·설명·레버리지 종목명(QLD/TQQQ) 표기. 한국은 RAVG 유지(연구 §10).
 - 테스트: `tests/test_ltm.py`(비중·게이트·급락 브레이커·상승장 레버리지·TQQQ 50/50·하락장 현금·보유 시작) + `tests/test_ltm_api.py`(구 쌍 422, LTM 잡 완주·일지 종류, 실전 전환 → `/signals/daily` 전략 LTM) — 전체 스위트 결과는 아래 Git commit 시점 기록 참조.
-- Git commit: feat: adopt LTM as the US trading formula, drop US RAVG pairs (keep TF)
+- Git commit: feat: adopt LTM as the US trading formula, drop US RAVG pairs (keep TF) (#109)
+- 후속 수정(같은 날): 실데이터 e2e(LTM_QLD 2015~2026 잡 → 전환)에서 시드 현금이 −$388 로 나옴 — 전액 투자 후 일할 보수가 현금을 음수로 밀던 결함. 목표 수량을 평가액의 99% 로 산정(`cash_reserve` 1%, 엔진·주문표 동일). 실데이터 대조 QQQ+QLD CAGR 18.7% / MDD −40.5% / Sharpe 0.80. (TF 엔진도 같은 방식으로 보수를 현금에서 차감하나 이번 범위 밖 — 별도 검토 대상)
+- Git commit: fix: keep a 1% cash reserve in LTM sizing so fees cannot drive cash negative
