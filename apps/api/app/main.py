@@ -16,6 +16,7 @@ from app.charts import router as charts_router
 from app.dashboard import router as dashboard_router
 from app.portfolios import router as portfolios_router
 from app.quotes import router as quotes_router
+from app.autoexec import router as autoexec_router
 from app.broker import router as broker_router
 from app.chat import router as chat_router
 from app.mjournal import router as mjournal_router
@@ -94,6 +95,7 @@ app.include_router(signals_router)
 app.include_router(portfolios_router)
 app.include_router(dashboard_router)
 app.include_router(settings_router)
+app.include_router(autoexec_router)
 app.include_router(chat_router)
 app.include_router(mjournal_router)
 app.include_router(broker_router)

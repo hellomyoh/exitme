@@ -480,7 +480,9 @@ def reconcile_for_portfolio(session: Session, pid: int, market: str = "KR") -> d
 #       화면에 등록완료 표시 → 장 시작 시 KIS 가 주문 → 15:45 배치가 체결 가져오기 + 상태(체결/미체결) 확정.
 
 STATUS_KO = {"reserved": "등록완료", "cancelled": "취소됨", "filled": "체결", "partial": "일부 체결",
-             "unfilled": "미체결", "failed": "접수 실패", "duplicate": "이미 접수됨", "mismatch": "주문표 불일치"}
+             "unfilled": "미체결", "failed": "접수 실패", "duplicate": "이미 접수됨", "mismatch": "주문표 불일치",
+             # 무인 실행 (2026-09-06)
+             "approved": "무인 승인", "submitted": "무인 발주", "skipped_gap": "갭 취소 생략", "skipped": "생략"}
 
 
 def reservation_window(now: datetime | None = None, session: Session | None = None) -> dict:
@@ -537,7 +539,7 @@ def _order_out(o: BrokerOrder) -> dict:
             "instrument": o.instrument, "kind": o.kind, "side": o.side, "otype": o.otype,
             "qty": o.qty, "price": o.price, "rsvn_ord_seq": o.rsvn_ord_seq, "order_no": o.order_no,
             "filled_qty": o.filled_qty, "status": o.status, "status_ko": STATUS_KO.get(o.status, o.status),
-            "message": o.message,
+            "message": o.message, "mode": getattr(o, "mode", "reserve") or "reserve",
             "created_at": o.created_at.isoformat() if o.created_at else None}
 
 
@@ -613,9 +615,16 @@ def list_broker_orders(pid: int, date_: date | None = Query(default=None, alias=
     rows = session.scalars(q.order_by(BrokerOrder.id)).all()
     if refresh and pf.broker_credential_id:
         cred = session.get(BrokerCredential, pf.broker_credential_id)
-        if cred is not None and cred.user_id == user_id and sync_orders(session, cred, rows, kst_today()):
-            session.commit()
-    return {"window": reservation_window(session=session), "items": [_order_out(r) for r in rows]}
+        if cred is not None and cred.user_id == user_id:
+            from app.autoexec import sync_auto_orders
+
+            changed = sync_orders(session, cred, rows, kst_today()) + sync_auto_orders(session, cred, rows, kst_today())
+            if changed:
+                session.commit()
+    from app.autoexec import auto_exec_view
+
+    return {"window": reservation_window(session=session), "items": [_order_out(r) for r in rows],
+            "auto_exec": auto_exec_view(session, pf)}
 
 
 @router.post("/portfolio/{pid}/orders/reserve")
@@ -696,11 +705,26 @@ def reserve_broker_orders(pid: int, body: ReserveIn, user_id: int = Depends(curr
 @router.post("/portfolio/{pid}/orders/{oid}/cancel")
 def cancel_broker_order(pid: int, oid: int, user_id: int = Depends(current_user_id),
                         session: Session = Depends(get_session)) -> dict:
-    """접수된 예약주문 취소 (정정은 없음 — 취소 후 재접수)."""
+    """접수된 예약주문 취소 (정정은 없음 — 취소 후 재접수). 무인 승인 줄은 승인 철회, 발주된 줄은 정규 주문 취소."""
     _owned(session, pid, user_id)
     row = session.get(BrokerOrder, oid)
     if row is None or row.portfolio_id != pid:
         raise HTTPException(status_code=404, detail="order not found")
+    if (getattr(row, "mode", "reserve") or "reserve") == "auto":
+        if row.status == "approved":
+            row.status, row.message = "cancelled", "승인 철회"
+            session.commit()
+            return _order_out(row)
+        if row.status not in ("submitted", "partial"):
+            raise HTTPException(status_code=409, detail=f"취소할 수 없는 상태입니다 ({STATUS_KO.get(row.status, row.status)})")
+        cred = _cred(session, pid, user_id)
+        try:
+            r = _client(cred).cancel_order(row.order_no or "", orgno=str(((row.response or {}).get("order") or {}).get("KRX_FWDG_ORD_ORGNO") or ""))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"주문 취소 실패 — {humanize_kis_error(str(exc)[:200])}")
+        row.status, row.message = "cancelled", r["msg"] or "취소됨"
+        session.commit()
+        return _order_out(row)
     if row.status not in ("reserved", "partial"):
         raise HTTPException(status_code=409, detail=f"취소할 수 없는 상태입니다 ({STATUS_KO.get(row.status, row.status)})")
     cred = _cred(session, pid, user_id)
@@ -742,8 +766,13 @@ def run_post_close_sync(session: Session, now: datetime | None = None) -> dict:
             rec["error"] = str(exc)[:200]
         try:
             rows = session.scalars(select(BrokerOrder).where(
-                BrokerOrder.portfolio_id == pf.id, BrokerOrder.status.in_(("reserved", "partial")))).all()
-            rec["orders_changed"] = sync_orders(session, cred, rows, today, now)
+                BrokerOrder.portfolio_id == pf.id, BrokerOrder.status.in_(("reserved", "partial", "submitted")))).all()
+            from app.autoexec import pause_if_reconcile_warns, sync_auto_orders
+
+            rec["orders_changed"] = (sync_orders(session, cred, [r for r in rows if r.mode != "auto"], today, now)
+                                     + sync_auto_orders(session, cred, rows, today, now))
+            # 무인 실행 자동 정지 — 계획·체결 불일치 경고가 있으면 다음 날 발주를 멈춘다 (ADR-008 ⑥)
+            rec["auto_exec_paused"] = pause_if_reconcile_warns(session, pf, reconcile_for_portfolio(session, pf.id), now)
             session.commit()
         except Exception as exc:  # noqa: BLE001
             session.rollback()

@@ -145,8 +145,11 @@ function PortfolioPage() {
   // 예약주문 (2026-09-05 지시) — 장 마감 후 주문표에서 버튼으로 접수, 줄별 등록/체결 상태 표시
   type BrokerOrderRow = { id: number | null; plan_date: string; line_key: string; code: string; instrument: string; kind: string; side: string;
     otype: string; qty: number; price: number | null; rsvn_ord_seq: string | null; order_no: string | null; filled_qty: number;
-    status: string; status_ko: string; message: string | null };
-  type BrokerOrders = { window: { open: boolean; reason: string }; items: BrokerOrderRow[] };
+    status: string; status_ko: string; message: string | null; mode?: string };
+  // 무인 실행 상태 (2026-09-06, ADR-008) — 설정 허용 스위치 + 포트 정지 상태 + 마지막 실행 요약
+  type AutoExec = { allowed: { buy: boolean; sell: boolean }; paused: boolean; paused_reason: string | null; paused_at: string | null;
+    fail_streak: number; last_run: { date: string; at: string; open: number | null; gap_hit: boolean; submitted: number; skipped_gap: number; skipped: number; failed: number; note?: string } | null };
+  type BrokerOrders = { window: { open: boolean; reason: string }; items: BrokerOrderRow[]; auto_exec?: AutoExec };
   const [bo, setBo] = useState<BrokerOrders | null>(null);
   const [boConfirm, setBoConfirm] = useState(false);
   const [boBusy, setBoBusy] = useState(false);
@@ -162,7 +165,7 @@ function PortfolioPage() {
 
   // ── 예약주문 헬퍼 (2026-09-05) ──
   const lineKey = (o: OrderRow) => `${o.kind}:${o.instrument}:${o.side}:${o.otype}:${o.price ? Math.round(o.price) : "mkt"}`;
-  const ACTIVE = ["reserved", "filled", "partial"];
+  const ACTIVE = ["reserved", "filled", "partial", "approved", "submitted"];  // 무인 승인·발주 줄도 '접수됨'으로 취급
   const boFor = (o: OrderRow): BrokerOrderRow | null => {
     if (!bo) return null;
     const same = bo.items.filter((i) => i.line_key === lineKey(o));
@@ -187,9 +190,33 @@ function PortfolioPage() {
     setBoMsg(`${j.reserved ?? 0}건 접수${(j.failed ?? 0) > 0 ? ` · ${j.failed}건 실패 — 아래 표의 ✗ 를 확인하세요` : ""}`);
     void load(pid);
   }
+  // 무인 실행 승인 (2026-09-06) — 선택한 지정가 줄을 09:01 시가 확인 후 자동 발주 대상으로 등록
+  const ae = bo?.auto_exec ?? null;
+  const aeAllowedFor = (o: OrderRow) => !!ae && o.otype === "limit" && (o.side === "buy" ? ae.allowed.buy : ae.allowed.sell);
+  const aeEligible = selectedLines.filter(aeAllowedFor);
+  const aeBlocked = selectedLines.filter((o) => !aeAllowedFor(o));
+  const [aeConfirm, setAeConfirm] = useState(false);
+  async function approveSelected() {
+    if (!sum || !signal?.exec_day || aeEligible.length === 0) return;
+    setBoBusy(true); setBoMsg("");
+    const lines = aeEligible.map((o) => ({ instrument: o.instrument, kind: o.kind, side: o.side, otype: o.otype, qty: o.qty, price: o.price ?? null }));
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/orders/approve`, { method: "POST", body: JSON.stringify({ date: signal.exec_day, lines }) });
+    const j = (await r.json().catch(() => ({}))) as { approved?: number; failed?: number; detail?: string };
+    setBoBusy(false); setAeConfirm(false);
+    if (!r.ok) { setBoMsg(j.detail ?? `승인 실패 (${r.status})`); return; }
+    setBoMsg(`${j.approved ?? 0}건 무인 실행 승인${(j.failed ?? 0) > 0 ? ` · ${j.failed}건 실패 — 아래 표를 확인하세요` : ""} — 실행일 09:01 시가 확인 후 발주됩니다`);
+    void load(pid);
+  }
+  async function resumeAutoExec() {
+    if (!sum) return;
+    if (!window.confirm("무인 실행 정지를 해제할까요? 정지 사유를 확인하고 계좌·기록이 맞는지 점검한 뒤 켜세요.")) return;
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/auto-exec/resume`, { method: "POST" });
+    if (r.ok) { setBoMsg("무인 실행을 다시 켰습니다"); void load(pid); }
+  }
   async function cancelOrder(b: BrokerOrderRow) {
     if (!sum || b.id === null) return;
-    if (!window.confirm(`예약주문 #${b.rsvn_ord_seq ?? b.id} (${b.side === "buy" ? "매수" : "매도"} ${b.qty}주)를 취소할까요?`)) return;
+    const what = b.mode === "auto" ? (b.status === "approved" ? "무인 실행 승인" : `무인 발주 #${b.order_no ?? b.id}`) : `예약주문 #${b.rsvn_ord_seq ?? b.id}`;
+    if (!window.confirm(`${what} (${b.side === "buy" ? "매수" : "매도"} ${b.qty}주)를 취소할까요?`)) return;
     setBoBusy(true);
     const r = await apiFetch(`/portfolio/${sum.portfolio.id}/orders/${b.id}/cancel`, { method: "POST" });
     setBoBusy(false);
@@ -843,6 +870,25 @@ function PortfolioPage() {
         {signal?.snapshot_missing && (
           <p className="mb-2 text-[12.5px] text-faint">ⓘ 장 마감 배치 스냅샷이 아직 없어 시세로 직접 계산한 주문표입니다 — 배치(16:05) 이후 확정 표기로 바뀝니다.</p>
         )}
+        {/* 무인 실행 정지 배너 (ADR-008 ⑥) — 사유 확인 후 사용자가 다시 켠다 */}
+        {market === "KR" && ae?.paused && (
+          <div className="mb-3 rounded-lg border border-down/40 bg-down/5 px-3.5 py-2.5 text-[13px]">
+            <div className="font-bold text-down">⏸ 무인 실행 정지 — {ae.paused_reason}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-3 text-muted">
+              <span>{ae.paused_at ? `${ae.paused_at.slice(0, 16).replace("T", " ")}부터 ` : ""}승인·발주가 멈춰 있습니다. 계좌와 기록을 맞춘 뒤 다시 켜세요.</span>
+              <button className="btn !py-1" disabled={boBusy} onClick={() => void resumeAutoExec()}>다시 켜기</button>
+            </div>
+          </div>
+        )}
+        {market === "KR" && ae?.last_run && ae.last_run.date === (signal?.exec_day ?? "") && (
+          <p className="mb-2 text-[12.5px] text-muted">
+            🤖 무인 실행 {ae.last_run.at.slice(11, 16)} — 발주 <b className="text-ink">{ae.last_run.submitted}</b>건
+            {ae.last_run.skipped_gap > 0 && <> · 갭 취소 생략 <b className="text-ink">{ae.last_run.skipped_gap}</b>건</>}
+            {ae.last_run.skipped > 0 && <> · 생략 <b className="text-ink">{ae.last_run.skipped}</b>건</>}
+            {ae.last_run.failed > 0 && <> · <b className="text-down">실패 {ae.last_run.failed}건</b></>}
+            {ae.last_run.open != null && <span className="text-faint"> · 시가 {fpx(ae.last_run.open)}{ae.last_run.gap_hit ? " (갭 취소 발동)" : ""}</span>}
+          </p>
+        )}
         {/* 예약주문 접수 (2026-09-05 지시) — 장 마감 후 버튼으로 KIS 예약주문, 사용자가 확인한 뒤에만 */}
         {market === "KR" && signal?.status === "OK" && signal.orders && signal.orders.length > 0 && (
           <div className="mb-3 flex flex-wrap items-center gap-2 text-[13px]">
@@ -854,6 +900,16 @@ function PortfolioPage() {
                   onClick={() => setBoConfirm(true)}>
                   선택 주문 등록하기{selectedLines.length > 0 ? ` (${selectedLines.length}/${pendingLines.length}건)` : pendingLines.length > 0 ? ` (0/${pendingLines.length}건)` : ""}
                 </button>
+                {/* 무인 실행 승인 (2026-09-06, ADR-008) — 설정에서 허용한 방향의 지정가 줄만 */}
+                {ae && (ae.allowed.buy || ae.allowed.sell) && (
+                  <button className="btn !py-1.5" disabled={boBusy || aeEligible.length === 0 || ae.paused}
+                    title={ae.paused ? "무인 실행이 정지되어 있습니다 — 배너에서 다시 켜세요"
+                      : aeEligible.length === 0 ? (selectedLines.length === 0 ? "표에서 승인할 줄을 체크하세요" : "선택한 줄이 모두 무인 실행 대상이 아닙니다 (시장가 또는 허용 안 된 방향)")
+                      : "선택한 지정가 줄을 실행일 09:01 시가 확인 후 자동 발주"}
+                    onClick={() => setAeConfirm(true)}>
+                    🤖 무인 실행 승인{aeEligible.length > 0 ? ` (${aeEligible.length}건)` : ""}
+                  </button>
+                )}
                 {pendingLines.length > 0 && (
                   <button className="text-[12.5px] text-accent hover:underline" disabled={boBusy}
                     onClick={() => setSel(selectedLines.length === pendingLines.length ? new Set() : new Set(pendingLines.map(lineKey)))}>
@@ -869,6 +925,39 @@ function PortfolioPage() {
               <span className="text-faint">예약주문을 접수하려면 아래 <b className="text-ink">증권사 연동</b>에서 계좌를 연결하세요.</span>
             )}
             {boMsg && <span className="text-muted">{boMsg}</span>}
+          </div>
+        )}
+        {aeConfirm && signal?.orders && ae && (
+          <div className="mb-3 rounded-lg border border-accent/40 bg-accent-dim/40 p-3.5 text-[13px]">
+            <div className="mb-2 text-[13.5px] font-bold">
+              🤖 무인 실행 승인 {aeEligible.length}건 — {broker?.label} ({broker?.account_no}-{broker?.acnt_prdt_cd}) · 실행일 {signal.exec_day} 09:01
+            </div>
+            <ul className="mb-2 grid gap-1">
+              {aeEligible.map((o, i) => (
+                <li key={i} className="flex flex-wrap items-center gap-2">
+                  <Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge>
+                  <span>{instName(o)}</span>
+                  <b className={o.side === "buy" ? "text-up" : "text-down"}>{o.side === "buy" ? "매수" : "매도"}</b>
+                  <span className="table-num">{o.qty.toLocaleString()}주</span>
+                  <span className="table-num">지정가 {fpx(o.price ?? 0)}</span>
+                  <span className="text-faint">≈ {fm(o.qty * (o.price ?? 0))}</span>
+                </li>
+              ))}
+            </ul>
+            {aeBlocked.length > 0 && (
+              <p className="mb-2 text-warn">선택 중 {aeBlocked.length}건은 제외됩니다 — 시장가 줄이거나 설정에서 그 방향의 무인 실행이 꺼져 있습니다. 필요하면 예약주문으로 접수하세요.</p>
+            )}
+            <p className="mb-2 leading-relaxed text-muted">
+              실행일 <b className="text-ink">09:01</b>에 당일 시가를 확인합니다. 시가가 갭 취소 기준{signal.gap_cancel_below ? `(${fpx(signal.gap_cancel_below)})` : ""} 이하면
+              그리드 매수는 발주하지 않고 생략으로 기록합니다. 그 외 줄은 위 지정가로 정규 주문을 냅니다.
+              예수금·잔고가 부족하면 발주하지 않고, 발주가 2회 연속 실패하거나 장 마감 대조에서 불일치가 나오면 이 포트의 무인 실행은 자동으로 멈춥니다.
+              승인은 실행일 09:00 전까지 아래 표에서 취소할 수 있습니다.
+            </p>
+            <div className="flex gap-2">
+              <button className="btn btn-primary !py-1.5" disabled={boBusy || aeEligible.length === 0} onClick={() => void approveSelected()}>
+                {boBusy ? "승인 중…" : `${aeEligible.length}건 승인하기`}</button>
+              <button className="btn !py-1.5" disabled={boBusy} onClick={() => setAeConfirm(false)}>닫기</button>
+            </div>
           </div>
         )}
         {boConfirm && signal?.orders && (

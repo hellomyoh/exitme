@@ -287,6 +287,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
         PortfolioPlan.portfolio_id == pid, PortfolioPlan.trade_date == exec_day))
     payload = {"regime": regime.value, "signal_date": base_day.isoformat(),
                "orders": out["orders"], "gap_cancel_below": p.gap_cancel_below,
+               "gap_cancel_exact": p.gap_cancel_exact,  # 무인 실행의 시가 판정은 정확값 (2026-09-06)
                "account": out["account"], "e_target": p.e_target}
     from app.dashboard import kst_today
     if row is None:
