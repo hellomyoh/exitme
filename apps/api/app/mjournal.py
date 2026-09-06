@@ -395,16 +395,31 @@ def reopen_journal(jid: int, user_id: int = Depends(current_user_id),
     return {"closed_at": None}
 
 
+def _port_holdings_by_cred(session: Session, user_id: int) -> dict[int, dict[str, str]]:
+    """증권사 계좌(자격)별로, 그 계좌를 연결한 실전매매 포트가 **실제 보유 중인** 종목 {code: name} (2026-09-06)."""
+    from app.models import Instrument, PositionLot, TradePortfolio
+
+    out: dict[int, dict[str, str]] = {}
+    ports = session.scalars(select(TradePortfolio).where(TradePortfolio.user_id == user_id,
+                                                         TradePortfolio.broker_credential_id.is_not(None))).all()
+    for p in ports:
+        held = out.setdefault(p.broker_credential_id, {})
+        for lot in session.scalars(select(PositionLot).where(PositionLot.portfolio_id == p.id)).all():
+            if lot.qty_open > 0:
+                inst = session.get(Instrument, lot.instrument_id)
+                if inst is not None:
+                    held[inst.code] = inst.name
+    return out
+
+
 def journal_assets(session: Session, user_id: int) -> list[dict]:
-    """대시보드용 매매일지 자산 (2026-09-05 지시 ②) — 진행 중 일지만, 보유는 **취득원가** 평가(시세 미연동).
+    """대시보드용 매매일지 자산 (2026-09-05 지시 ②, 2026-09-06 종목 단위 중복 제외) — 진행 중 일지만.
 
-    같은 증권사 계좌가 실전매매 포트에도 연결돼 있으면 두 번 세지 않도록 counted=False 로 표시만 한다.
+    같은 증권사 계좌를 실전매매 포트도 쓰고 있으면 **그 포트가 실제로 보유한 종목만** 일지에서 빼고 나머지는
+    총자산에 넣는다. 계좌 단위로 통째로 빼던 이전 규칙은 포트가 현금만 들고 있을 때 일지의 주식 전부를
+    누락시켰다(2026-09-06 발견: 매매일지 0원). 같은 주식을 두 번 세는 일은 종목 매칭(코드 → 정규화 이름)으로 막는다.
     """
-    from app.models import TradePortfolio
-
-    linked_by_ports = {p.broker_credential_id for p in session.scalars(
-        select(TradePortfolio).where(TradePortfolio.user_id == user_id,
-                                     TradePortfolio.broker_credential_id.is_not(None))).all()}
+    port_held = _port_holdings_by_cred(session, user_id)
     out = []
     for j in session.scalars(select(ManualJournal).where(ManualJournal.user_id == user_id,
                                                          ManualJournal.closed_at.is_(None))
@@ -413,18 +428,32 @@ def journal_assets(session: Session, user_id: int) -> list[dict]:
         c = enrich_valuation(session, j, entries, _compute(j, entries))  # 현재가 평가 (2026-09-06)
         cost = sum(h["cost"] for h in c["holdings"])
         s = c["summary"]
-        # value = 총자산 합산에 쓰는 값: 전 종목 현재가가 있으면 평가액, 아니면 취득원가(시세 미연동 종목 보호)
-        value = s["eval_total"] if s["priced"] else cost
-        dup = j.broker_credential_id is not None and j.broker_credential_id in linked_by_ports
+        held = port_held.get(j.broker_credential_id, {}) if j.broker_credential_id else {}
+        held_norm = {_norm(n) for n in held.values()}
+        included_value = 0
+        excluded: list[dict] = []
+        for h in c["holdings"]:
+            # value 규약: 전 종목 현재가가 있으면 평가액, 아니면 취득원가(시세 미연동 종목 보호)
+            hv = (h.get("eval") if s["priced"] else None) or h["cost"]
+            overlap = (h.get("code") and h["code"] in held) or (_norm(h["symbol"]) in held_norm)
+            if overlap:
+                excluded.append({"symbol": h["symbol"], "code": h.get("code"), "value": hv})
+            else:
+                included_value += hv
+        all_excluded = bool(c["holdings"]) and len(excluded) == len(c["holdings"])
+        note = None
+        if excluded:
+            names = ", ".join(x["symbol"] for x in excluded)
+            note = (f"실전매매 포트가 같은 계좌로 보유 중인 종목 제외: {names}"
+                    + (" — 총자산에는 실전매매 쪽만 포함" if all_excluded else ""))
         out.append({"id": j.id, "name": j.name, "symbol": j.symbol, "cost": cost,
-                    "value": value, "priced": s["priced"],
+                    "value": included_value, "priced": s["priced"],
                     "unrealized": s["unrealized_total"] if s["priced"] else None,
                     "unrealized_pct": s["unrealized_pct"] if s["priced"] else None,
                     "realized": s["realized"], "return_pct": s["return_pct"],
                     "holdings": [{"symbol": h["symbol"], "qty": h["qty"], "cost": h["cost"],
                                   "price": h.get("price"), "eval": h.get("eval")} for h in c["holdings"]],
-                    "entries": len(entries), "counted": not dup,
-                    "note": "실전매매 포트와 같은 증권사 계좌 — 총자산에는 실전매매 쪽만 포함" if dup else None})
+                    "entries": len(entries), "counted": not all_excluded, "excluded": excluded, "note": note})
     return out
 
 
