@@ -589,7 +589,7 @@ function MJournalPage() {
           <div className="grid auto-rows-fr gap-3 sm:grid-cols-2 lg:col-span-2">
             {/* 계좌 평가금액 (2026-09-06 지시) — 주식 평가액 + 예수금. 일지가 계좌 주식을 전부 담고 있을 때만 표시 */}
             {detail.summary.account_total != null && (
-              <Stat label="계좌 평가금액" className="h-full"
+              <Stat label="계좌 평가금액" className="h-full !border-accent/30 !bg-accent-dim" size="lg" tone="accent"
                 value={fm(detail.summary.account_total)}
                 tip="연결 계좌의 주식 평가액과 예수금을 더한 금액입니다. 이 일지가 계좌의 주식을 전부 담고 있을 때만 표시됩니다. 예수금은 D+2 정산 기준이라 매도 직후 인출 가능액과 다를 수 있고, 대시보드 총자산에는 주식 평가액만 반영됩니다."
                 sub={<>주식 <b className="text-ink">{fm(detail.summary.eval_total ?? 0)}</b> + 예수금 <b className="text-ink">{fm(detail.summary.account_deposit ?? 0)}</b></>}
@@ -603,7 +603,7 @@ function MJournalPage() {
             <Stat label="평가손익" className="h-full"
               value={detail.summary.priced_count
                 ? <>{fm(detail.summary.unrealized_total ?? 0)}{detail.summary.unrealized_pct != null &&
-                    <span className="whitespace-nowrap text-[14px]"> ({pct(detail.summary.unrealized_pct)})</span>}</>
+                    <span className="whitespace-nowrap text-[14px] font-semibold text-muted"> ({pct(detail.summary.unrealized_pct)})</span>}</>
                 : <span className="text-faint">—</span>}
               tone={(detail.summary.unrealized_total ?? 0) > 0 ? "up" : (detail.summary.unrealized_total ?? 0) < 0 ? "down" : "default"}
               tip={detail.summary.priced_count
@@ -615,7 +615,7 @@ function MJournalPage() {
                 : <>보유 원가 <b className="text-ink">{fm(detail.holdings.reduce((a, h) => a + h.cost, 0))}</b> · 시세 미연동</>} />
             <Stat label="실현손익" className="h-full"
               value={<>{fm(detail.summary.realized)}{detail.summary.return_pct != null &&
-                <span className="whitespace-nowrap text-[14px]"> ({pct(detail.summary.return_pct)})</span>}</>}
+                <span className="whitespace-nowrap text-[14px] font-semibold text-muted"> ({pct(detail.summary.return_pct)})</span>}</>}
               tone={detail.summary.realized > 0 ? "up" : detail.summary.realized < 0 ? "down" : "default"}
               sub={<>수익률 = 실현손익 ÷ 매도분 원가</>}
               hint={`매매 비용 ${fm(detail.summary.cost)} (수수료 + 제세금) 차감 후 금액입니다`} />
