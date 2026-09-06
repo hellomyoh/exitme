@@ -48,10 +48,19 @@ def _setup_portfolio(c, h, plan_date: date, orders: list[dict], gap_exact: float
 class FakeKis:
     """place_order/fetch_price/fetch_balance/fetch_executions 만 흉내 — 네트워크 없음."""
 
-    def __init__(self, open_px: int, deposit: int, holdings: dict[str, int], fail_orders: int = 0):
+    def __init__(self, open_px: int, deposit: int, holdings: dict[str, int], fail_orders: int = 0, psbl_cash: int | None = None):
         self.open_px, self.deposit, self.holdings, self.fail_orders = open_px, deposit, holdings, fail_orders
+        self.psbl_cash = psbl_cash   # None = 매수가능조회 실패(폴백 경로), 숫자 = KIS 주문가능현금(발주마다 차감)
         self.placed: list[tuple] = []
         self.cancelled: list[str] = []
+        self.buyable_calls: list[tuple] = []
+
+    def buyable(self, code, price):
+        self.buyable_calls.append((code, price))
+        if self.psbl_cash is None:
+            raise RuntimeError("KIS error EGW00201 조회 실패")
+        qty = self.psbl_cash // int(price)
+        return {"cash": self.psbl_cash, "cash_qty": qty, "max_qty": qty, "raw": {}}
 
     def fetch_price(self, code):
         return {"stck_oprc": str(self.open_px), "stck_prpr": str(self.open_px)}
@@ -65,6 +74,8 @@ class FakeKis:
             self.fail_orders -= 1
             raise RuntimeError("KIS error 40310000 주문가능금액을 초과하였습니다")
         self.placed.append((code, side, qty, price))
+        if side == "buy" and self.psbl_cash is not None:
+            self.psbl_cash -= qty * price   # 증거금 묶임 — 다음 매수가능조회에 반영
         return {"order_no": f"N{len(self.placed):04d}", "orgno": "00950", "msg": "주문 전송 완료", "raw": {"ODNO": f"N{len(self.placed):04d}"}}
 
     def cancel_order(self, order_no, orgno=""):
@@ -172,7 +183,7 @@ def test_execution_no_gap_cash_limit_and_fail_streak_pauses(monkeypatch):
     rec = out["portfolios"][0]
     assert rec["submitted"] == 1 and rec["skipped"] == 2 and rec["skipped_gap"] == 0 and fake.placed == [("069500", "buy", 5, 99000)]
     msgs = {i["kind"]: i["message"] for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]}
-    assert "예수금 한도" in msgs["grid2"] and "잔고 부족" in msgs["tp"]
+    assert "예수금 한도(폴백)" in msgs["grid2"] and "잔고 부족" in msgs["tp"]
 
     # 다음 날: 발주 2건 연속 실패 → 자동 정지, 이후 승인 거절, 다시 켜기로 해제
     c2, h2 = _client()

@@ -352,29 +352,39 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, rows: list[BrokerOr
                 _skip(keep, "skipped", f"사전 대조 불일치 — {detail}", rec, "skipped")
                 keep = []
                 pause_portfolio(pf, f"09:01 사전 대조 불일치 — {detail}. 체결 가져오기 또는 기록 수정으로 원장을 계좌에 맞춘 뒤 다시 켜세요", now)
-            # 예수금 한도: 얕은 그리드(높은 지정가 = grid1)부터 누적 매수액이 예수금 이하인 줄만 발주하고 넘치는 줄은 생략.
-            # 전부 생략하면 체결 확률이 높은 grid1 까지 버려 백테스트의 순차 체결과 어긋난다 (2026-09-06 검토).
-            buys = sorted([r for r in keep if r.side == "buy"], key=lambda x: -int(x.price))
-            running, afford = 0, []
-            for r in buys:
-                cost = r.qty * int(r.price)
-                if running + cost <= deposit:
-                    running += cost
-                    afford.append(r)
-                else:
-                    r.status = "skipped"
-                    r.message = f"예수금 한도 — 이 줄까지 매수 {running + cost:,}원 > 예수금 {deposit:,}원, 생략"
-                    rec["skipped"] += 1
-            keep = [r for r in keep if r.side != "buy"] + afford
+            # 매수 한도는 발주 직전에 줄마다 KIS 매수가능조회로 판정한다(④ 참조). 여기서는 폴백용 예수금만 기억한다.
+            buy_fallback_deposit = deposit
             for r in [r for r in keep if r.side == "sell"]:
                 if r.qty > held.get(r.code, 0):
                     r.status, r.message = "skipped", f"잔고 부족 — 매도 {r.qty}주 > 보유 {held.get(r.code, 0)}주"
                     rec["skipped"] += 1
                     keep.remove(r)
-    # ④ 발주 — 매도 먼저(현금 확보), 줄 단위 실패는 기록하고 계속
+    # ④ 발주 — 매도 먼저(현금 확보), 매수는 얕은 그리드(높은 지정가)부터. 줄 단위 실패는 기록하고 계속.
+    #    매수 줄은 발주 직전에 **매수가능조회**(증거금·매도대금 재사용까지 KIS 가 계산한 주문가능 수량)로 판정하고,
+    #    가능 수량 < 계획 수량이면 그 줄만 생략한다(수량을 줄여 내지 않음 — 계획과 달라지므로).
+    #    조회가 실패하면 예수금 총액 누적 규칙으로 물러난다 (2026-09-06 지시).
     streak = state["fail_streak"]
     last_fail = ""
-    for r in sorted(keep, key=lambda x: 0 if x.side == "sell" else 1):
+    running = 0  # 폴백(예수금 누적)용
+    for r in sorted(keep, key=lambda x: (0 if x.side == "sell" else 1, -int(x.price or 0))):
+        if r.side == "buy":
+            cost = r.qty * int(r.price)
+            try:
+                pb = client.buyable(r.code, int(r.price))
+                can = int(pb.get("cash_qty") or 0)
+                if can < r.qty:
+                    r.status = "skipped"
+                    r.message = f"주문가능 수량 부족 — 가능 {can:,}주 < 계획 {r.qty:,}주 (주문가능현금 {int(pb.get('cash') or 0):,}원)"
+                    rec["skipped"] += 1
+                    continue
+            except Exception as exc:  # noqa: BLE001 — 조회 실패 → 예수금 총액 누적 규칙으로 폴백
+                logger.warning("auto-exec buyable failed pid=%s %s: %s — deposit fallback", pf.id, r.line_key, exc)
+                if running + cost > buy_fallback_deposit:
+                    r.status = "skipped"
+                    r.message = f"예수금 한도(폴백) — 이 줄까지 매수 {running + cost:,}원 > 예수금 {buy_fallback_deposit:,}원, 생략"
+                    rec["skipped"] += 1
+                    continue
+                running += cost
         try:
             res = client.place_order(r.code, r.side, r.qty, int(r.price))
             r.order_no = res["order_no"] or None

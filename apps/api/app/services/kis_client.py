@@ -476,6 +476,25 @@ class KisTradingClient(KisClient):
                 "orgno": str(_first(out, "KRX_FWDG_ORD_ORGNO", "krx_fwdg_ord_orgno")).strip(),
                 "msg": str(data.get("msg1") or "").strip(), "raw": out}
 
+    def buyable(self, code: str, price: int) -> dict:
+        """매수가능조회 (실전 TTTC8908R / 모의 VTTC8908R) — 이 종목·지정가로 지금 낼 수 있는 현금·수량. 무인 실행이 발주 직전에 쓴다.
+
+        반환 {"cash": 주문가능현금, "cash_qty": 미수 없는 매수가능수량, "max_qty": 최대 매수가능수량(미수 포함), "raw"}.
+        무인 실행은 미수(신용)를 쓰지 않으므로 cash_qty 를 기준으로 한다.
+        """
+        body = self._get(PSBL_ORDER_PATH, PSBL_ORDER_TR, {
+            "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "PDNO": code,
+            "ORD_UNPR": str(int(price)), "ORD_DVSN": "00",
+            "CMA_EVLU_AMT_ICLD_YN": "N", "OVRS_ICLD_YN": "N",
+        })
+        out = body.get("output") or {}
+        if isinstance(out, list):
+            out = out[0] if out else {}
+        cash_qty = _to_int(_first(out, "nrcvb_buy_qty", "NRCVB_BUY_QTY"))
+        max_qty = _to_int(_first(out, "max_buy_qty", "MAX_BUY_QTY"))
+        return {"cash": _to_int(_first(out, "ord_psbl_cash", "ORD_PSBL_CASH")),
+                "cash_qty": cash_qty if cash_qty > 0 else max_qty, "max_qty": max_qty, "raw": out}
+
     def cancel_order(self, order_no: str, orgno: str = "") -> dict:
         """정규 주문 잔량 전부 취소 (실전 TTTC0013U / 모의 VTTC0803U). 정정은 지원하지 않는다."""
         env = self.auth.env if self.auth.env in ("prod", "vps") else "prod"
@@ -494,6 +513,8 @@ ORDER_TR = {("prod", "buy"): "TTTC0012U", ("prod", "sell"): "TTTC0011U",
             ("vps", "buy"): "VTTC0802U", ("vps", "sell"): "VTTC0801U"}
 ORDER_CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 ORDER_CANCEL_TR = {"prod": "TTTC0013U", "vps": "VTTC0803U"}
+PSBL_ORDER_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
+PSBL_ORDER_TR = "TTTC8908R"   # 모의는 headers() 가 VTTC8908R 로 치환
 
 # ── 예약주문 TR (koreainvestment/open-trading-api 공식 예제 기준, 2026-09-05) ─────────
 RESV_ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-resv"

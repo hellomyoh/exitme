@@ -82,7 +82,7 @@ def test_deposit_limit_fills_shallow_grid_first(monkeypatch):
     rec = out["portfolios"][0]
     assert rec["submitted"] == 1 and rec["skipped"] == 1 and fake.placed == [("069500", "buy", 5, 99000)]
     st = {i["kind"]: i for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]}
-    assert st["grid1"]["status"] == "submitted" and st["grid2"]["status"] == "skipped" and "예수금 한도" in st["grid2"]["message"]
+    assert st["grid1"]["status"] == "submitted" and st["grid2"]["status"] == "skipped" and "예수금 한도(폴백)" in st["grid2"]["message"]
 
 
 def test_precheck_ledger_vs_account_mismatch_skips_and_pauses(monkeypatch):
@@ -132,3 +132,26 @@ def test_precheck_plan_revalidation_at_execution(monkeypatch):
     assert rec["submitted"] == 1 and rec["skipped"] == 1 and fake.placed == [("069500", "buy", 3, 98000)]
     st = {i["kind"]: i for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]}
     assert st["grid1"]["status"] == "skipped" and "재대조 실패" in st["grid1"]["message"] and st["grid2"]["status"] == "submitted"
+
+
+def test_buyable_check_before_each_buy(monkeypatch):
+    """매수가능조회(2026-09-06 지시): 매수 줄마다 발주 직전 KIS 주문가능 수량으로 판정 — 앞 주문이 묶은 금액이 다음 판정에 반영되고,
+    예수금 총액이 작아도 KIS 가 가능하다고 하면(매도대금 재사용 등) 발주된다. 수량을 줄여 내지 않는다."""
+    import app.autoexec as ae
+    from app.db import SessionLocal
+
+    c, h = _client()
+    today = date.today()
+    pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
+    c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
+    monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
+    c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": [LINES[0], LINES[1]]}, headers=h)
+    # 예수금 총액은 0 이지만 KIS 주문가능현금 600,000 → grid1(495,000) 발주 후 잔여 105,000 → grid2(294,000) 는 수량 부족으로 생략
+    fake = FakeKis(open_px=100000, deposit=0, holdings={}, psbl_cash=600_000)
+    with SessionLocal() as s:
+        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
+    rec = out["portfolios"][0]
+    assert rec["submitted"] == 1 and rec["skipped"] == 1 and fake.placed == [("069500", "buy", 5, 99000)]
+    assert fake.buyable_calls == [("069500", 99000), ("069500", 98000)]          # 얕은 단부터, 발주 직전마다 조회
+    st = {i["kind"]: i for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]}
+    assert st["grid2"]["status"] == "skipped" and "주문가능 수량 부족" in st["grid2"]["message"] and "가능 1주 < 계획 3주" in st["grid2"]["message"]
