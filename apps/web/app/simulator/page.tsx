@@ -28,6 +28,10 @@ const FLAG_LABELS: [string, string, string][] = [
   ["f5_gap_filter", "⑤ 갭 필터 + 잔여예산", "갭 하락 방어 · 예산 초과 미발주"],
 ];
 type EtfKey = "KODEX" | "TIGER" | "QQQ_TF" | "LTM_QLD" | "LTM_TQQQ" | "QQQ_QLD" | "QQQ_TQQQ";
+// 지난 결과 뱃지용 짧은 이름 (2026-09-06)
+const ETF_SHORT: Record<EtfKey, string> = {
+  KODEX: "KODEX", TIGER: "TIGER", QQQ_TF: "TF", LTM_QLD: "LTM·QLD", LTM_TQQQ: "LTM·TQQQ", QQQ_QLD: "RAVG·QLD(구)", QQQ_TQQQ: "RAVG·TQQQ(구)",
+};
 const ETF_INFO: Record<EtfKey, { label: string; fee: number; market: "KR" | "US"; legacy?: boolean; hidden?: boolean; desc?: string }> = {
   TIGER: { label: "TIGER 200 (기본)", fee: 0.0005, market: "KR" },
   KODEX: { label: "KODEX 200", fee: 0.0015, market: "KR" },
@@ -172,6 +176,7 @@ function SimulatorPage() {
     if (!res.ok) return;
     const j = (await res.json()) as Job;
     setJob(j); setStep(3); setOverlay([]);
+    void loadHistory();  // 완료 직후 지난 결과 갱신 — 메뉴로 돌아왔을 때 새 결과가 빠져 있던 문제 (2026-09-06)
     // 이 백테스트에서 전환된 실전 포트가 있으면 실제 수익 곡선을 함께 그림 (2026-09-02 지시)
     liveOverlayRef.current = null;
     try {
@@ -394,16 +399,19 @@ function SimulatorPage() {
             <Card>
               <CardTitle>지난 결과</CardTitle>
               <div className="grid gap-1">
-                {history.slice(0, 8).map((j) => {
+                {history.filter((j) => {
+                  // 시장 판정은 ETF_INFO 기준 — "QQQ" 접두 판정은 LTM_* 잡을 한국으로 분류해 미국 지난 결과에서 사라지게 했다 (2026-09-06 결함)
+                  const key = ((j.params as { etf?: string }).etf ?? "KODEX") as EtfKey;
+                  const jobMarket = ETF_INFO[key]?.market ?? (String(key).startsWith("QQQ") ? "US" : "KR");
+                  return jobMarket === market;
+                }).slice(0, 8).map((j) => {
                   const p = j.params as { etf?: string; capital?: number; date_from?: string; date_to?: string; flags?: Flags };
-                  const jobMarket = (p.etf ?? "KODEX").startsWith("QQQ") ? "US" : "KR";
-                  if (jobMarket !== market) return null;
                   const offFlags = p.flags ? FLAG_LABELS.filter(([k]) => p.flags![k] === false).map(([, l]) => l.slice(0, 1)) : [];
                   return (
                     <div key={j.id} className="rounded-lg px-2 py-2 hover:bg-raised">
                       <div className="flex items-center gap-3 text-[14px]">
                         <span className="w-10 text-faint">#{j.id}</span>
-                        <Badge tone="default">{p.etf ?? "KODEX"}</Badge>
+                        <Badge tone="default">{ETF_SHORT[(p.etf ?? "KODEX") as EtfKey] ?? p.etf}</Badge>
                         <span className={`w-20 text-right font-bold ${(j.kpi?.total_return ?? 0) >= 0 ? "text-up" : "text-down"}`}>
                           {fmtPct(j.kpi?.total_return)}
                         </span>
