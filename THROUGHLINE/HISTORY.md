@@ -424,4 +424,14 @@
 - 배경: 갭 취소 규칙이 실전에서는 예약주문 때문에 지켜지지 않았다(시가는 09:00 에야 확정, 예약 취소 창은 07:30 마감). 사용자 판단 "철저히 통제된 무인 매수/매도는 문제 없다" + 지시 "매도도 포함, 설정에서 매수·매도 허용을 각각 켜야 동작".
 - 작업 내용: docs/auto-execution-20260906.md. `app/autoexec.py` — 설정 `GET/PUT /settings/auto-exec`({buy, sell}), 승인 `POST /portfolio/{pid}/orders/approve`(설정 꺼진 방향·시장가·미국·09:00 이후·계획 불일치 거절, 중복 차단), 09:01 실행 `run_auto_execution`(락·설정 재확인·시가 조회·갭 취소 `gap_cancel_exact`·예수금/잔고 한도·매도 우선 발주·연속 실패 2회 정지·요약 기록), 장 마감 확정 `sync_auto_orders`·대조 경고 정지 `pause_if_reconcile_warns`, `resume`. KIS `place_order`(TTTC0012U/0011U, 모의 VTTC0802U/0801U)·`cancel_order`(TTTC0013U/VTTC0803U). 마이그레이션 0021(`user_settings.auto_exec`, `broker_orders.mode`). 워커 `auto-exec-open` 09:01(재시도 없음·휴장일 스킵). 취소 엔드포인트가 승인 철회/정규 주문 취소 처리. 웹: 설정 › 무인 실행 탭(매수·매도 토글, 켤 때 확인창), 주문표 "🤖 무인 실행 승인" 버튼·확인창·줄 상태·마지막 실행 요약·정지 배너(다시 켜기).
 - 테스트: `tests/test_autoexec.py` 4건(설정·승인 규칙·중복/불일치·철회 / 갭 취소·매도 우선·재실행 차단·체결 확정 / 예수금·잔고 한도·연속 실패 정지·해제 / 미국 거절·대조 경고 정지). 전체 205 passed, tsc 클린, 헤드리스(설정 탭·토글·승인 버튼 표시, 원상복구).
-- Git commit: feat: controlled auto-execution — approved limit orders placed after the 09:01 open check (ADR-008)
+- Git commit: feat: controlled auto-execution — approved limit orders placed after the 09:01 open check (ADR-008) (#129)
+
+## [2026-09-06] fix | 무인 실행 2차 검증 — 논리·절차 오류 3건 수정 (사용자 지시)
+
+- 검토 방법: `autoexec.py`·`broker.py` 훅·워커를 흐름 순서(승인 → 09:01 → 15:45)로 다시 읽고 백테스트 순서와 대조.
+- ① **이중 발주 구멍**: 예약주문 중복 검사가 `reserved` 만 봐서, 무인 승인된 줄을 예약주문으로도 접수할 수 있었다(09:00 동시호가 + 09:01 무인 = 2건). 승인 쪽은 예약을 막았지만 반대 방향이 비어 있었다 → 예약 접수도 `approved/submitted/partial` 을 중복으로 본다.
+- ② **상시 정지 오류**: 장 마감 대조의 모든 `warn` 을 정지 사유로 썼는데, 지정가 부분체결(계획 8주 ≠ 등록 5주)도 `warn` 이라 그리드 운용에서는 거의 매일 멈췄을 것. `reconcile_plan` 항목에 `kind`(missing/unplanned/short/excess)를 붙이고(level·text 는 불변 — 수동 배너 호환) 정지는 **unplanned·excess** 만.
+- ③ **예수금 한도의 전부 생략**: 매수 합계 > 예수금이면 그리드를 전부 생략했다. 백테스트는 grid1 부터 순차 체결하므로 얕은 그리드(높은 지정가)부터 누적액이 예수금 이하인 줄만 발주하고 넘치는 줄만 생략하도록 바꿈. 정지 사유 문구는 마지막 실패 메시지를 쓰도록 정리.
+- 검토했지만 유지한 것: 매도 대금은 T+2 라 당일 매수 한도에 넣지 않음(보수적, 백테스트와의 불가피한 차이) · 실패 연속 카운터는 날을 넘겨 누적(성공 시 초기화) · 09:00~09:01 1분 공백 · 실행 도중 예외 시 롤백돼도 락·`plan_date` 조건으로 같은 날 재발주는 없음(원장은 15:45 체결 가져오기로 맞음).
+- 테스트: `tests/test_autoexec_review.py` 3건(kind·정지 기준 / 예약↔무인 중복 양방향 / 예수금 한도 부분 발주).
+- Git commit: fix: auto-execution review — block reserve/auto double submission, pause only on dangerous reconcile, partial buys by shallow grid first

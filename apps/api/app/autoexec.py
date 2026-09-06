@@ -318,11 +318,20 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, rows: list[BrokerOr
         else:
             deposit = int(bal.get("deposit") or 0)
             held = {h["code"]: int(h["qty"]) for h in bal.get("holdings", [])}
-            buys = [r for r in keep if r.side == "buy"]
-            buy_total = sum(r.qty * int(r.price) for r in buys)
-            if buys and buy_total > deposit:
-                _skip(buys, "skipped", f"예수금 부족 — 매수 합계 {buy_total:,}원 > 예수금 {deposit:,}원", rec, "skipped")
-                keep = [r for r in keep if r.side != "buy"]
+            # 예수금 한도: 얕은 그리드(높은 지정가 = grid1)부터 누적 매수액이 예수금 이하인 줄만 발주하고 넘치는 줄은 생략.
+            # 전부 생략하면 체결 확률이 높은 grid1 까지 버려 백테스트의 순차 체결과 어긋난다 (2026-09-06 검토).
+            buys = sorted([r for r in keep if r.side == "buy"], key=lambda x: -int(x.price))
+            running, afford = 0, []
+            for r in buys:
+                cost = r.qty * int(r.price)
+                if running + cost <= deposit:
+                    running += cost
+                    afford.append(r)
+                else:
+                    r.status = "skipped"
+                    r.message = f"예수금 한도 — 이 줄까지 매수 {running + cost:,}원 > 예수금 {deposit:,}원, 생략"
+                    rec["skipped"] += 1
+            keep = [r for r in keep if r.side != "buy"] + afford
             for r in [r for r in keep if r.side == "sell"]:
                 if r.qty > held.get(r.code, 0):
                     r.status, r.message = "skipped", f"잔고 부족 — 매도 {r.qty}주 > 보유 {held.get(r.code, 0)}주"
@@ -330,6 +339,7 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, rows: list[BrokerOr
                     keep.remove(r)
     # ④ 발주 — 매도 먼저(현금 확보), 줄 단위 실패는 기록하고 계속
     streak = state["fail_streak"]
+    last_fail = ""
     for r in sorted(keep, key=lambda x: 0 if x.side == "sell" else 1):
         try:
             res = client.place_order(r.code, r.side, r.qty, int(r.price))
@@ -343,6 +353,7 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, rows: list[BrokerOr
         except Exception as exc:  # noqa: BLE001
             r.status = "failed"
             r.message = humanize_kis_error(str(exc)[:200])
+            last_fail = r.message
             rec["failed"] += 1
             streak += 1
             logger.warning("auto-exec failed pid=%s %s: %s", pf.id, r.line_key, exc)
@@ -350,7 +361,7 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, rows: list[BrokerOr
                **{k: rec[k] for k in ("submitted", "skipped_gap", "skipped", "failed")}}
     _set_pf_auto_state(pf, fail_streak=streak, last_run=summary)
     if streak >= FAIL_STREAK_PAUSE:
-        pause_portfolio(pf, f"발주 연속 실패 {streak}회 — 마지막 오류: {rows[-1].message or ''}", now)
+        pause_portfolio(pf, f"발주 연속 실패 {streak}회 — 마지막 오류: {last_fail}", now)
 
 
 # ── 장 마감 후 상태 확정 (run_post_close_sync 에서 호출) ─────────────────────────────
@@ -384,9 +395,13 @@ def sync_auto_orders(session: Session, cred: BrokerCredential, rows: list[Broker
 
 
 def pause_if_reconcile_warns(session: Session, pf: TradePortfolio, reconcile: dict | None, now: datetime | None = None) -> bool:
-    """장 마감 대조에서 경고(warn)가 있으면 무인 실행을 멈춘다 — 계획과 계좌가 어긋난 채 다음 날 발주하지 않기 위해."""
-    warns = [it for it in ((reconcile or {}).get("items") or []) if it.get("level") == "warn"]
-    if not warns or pf_auto_state(pf)["paused"]:
+    """장 마감 대조에서 **위험한** 불일치가 있으면 무인 실행을 멈춘다.
+
+    위험 = unplanned(계획에 없던 거래)·excess(계획 초과 체결). short(부분·미달 체결)는 지정가의 정상 결과라 정지하지 않는다
+    (모든 warn 을 정지 사유로 삼으면 부분체결이 잦은 그리드에서 거의 매일 멈춘다 — 2026-09-06 검토).
+    """
+    danger = [it for it in ((reconcile or {}).get("items") or []) if it.get("kind") in ("unplanned", "excess")]
+    if not danger or pf_auto_state(pf)["paused"]:
         return False
-    pause_portfolio(pf, "장 마감 대조 경고 — " + "; ".join(w.get("text", "") for w in warns)[:160], now)
+    pause_portfolio(pf, "장 마감 대조 — " + "; ".join(w.get("text", "") for w in danger)[:160], now)
     return True

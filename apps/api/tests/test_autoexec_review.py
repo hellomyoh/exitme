@@ -1,0 +1,85 @@
+"""무인 실행 2차 검증 (2026-09-06 지시 "논리·절차 오류 검토") 에서 고친 3건의 회귀 테스트. DB 필요."""
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta
+
+import pytest
+
+from app.broker import reconcile_plan
+from tests.test_autoexec import DB_UP, KST, LINES, FakeKis, _client, _setup_portfolio
+
+pytestmark = [pytest.mark.integration, pytest.mark.skipif(not DB_UP, reason="database not reachable")]
+
+
+def test_reconcile_kind_and_pause_only_on_dangerous_items():
+    """Fix C: 대조 항목에 kind 가 붙고(level·text 불변), 무인 정지는 unplanned·excess 만 — 부분체결(short)은 정지 사유가 아니다."""
+    import app.autoexec as ae
+
+    plan = [{"kind": "grid1", "instrument": "K200", "side": "buy", "qty": 8, "price": 100000}]
+    short = reconcile_plan(plan, [{"leg": "K200", "side": "buy", "qty": 5, "price": 100000}])
+    assert short[0]["level"] == "warn" and short[0]["kind"] == "short" and "-3주" in short[0]["text"]
+    excess = reconcile_plan(plan, [{"leg": "K200", "side": "buy", "qty": 11, "price": 100000}])
+    assert excess[0]["kind"] == "excess"
+    unplanned = reconcile_plan([], [{"leg": "LEV", "side": "buy", "qty": 1, "price": 9000}])
+    assert unplanned[0]["kind"] == "unplanned"
+    missing = reconcile_plan(plan, [])
+    assert missing[0]["kind"] == "missing" and missing[0]["level"] == "info"
+
+    c, h = _client()
+    pid, _ = _setup_portfolio(c, h, date.today() + timedelta(days=1), LINES, gap_exact=None)
+    from app.db import SessionLocal
+    from app.models import TradePortfolio
+    with SessionLocal() as s:
+        pf = s.get(TradePortfolio, pid)
+        assert ae.pause_if_reconcile_warns(s, pf, {"items": short}) is False        # 부분체결 → 정지 안 함
+        assert ae.pause_if_reconcile_warns(s, pf, {"items": missing}) is False      # 미이행 → 정지 안 함
+        assert ae.pause_if_reconcile_warns(s, pf, {"items": excess}) is True        # 초과 체결 → 정지
+        assert "계획 8주 ≠ 등록 11주" in ae.pf_auto_state(pf)["paused_reason"]
+
+
+def test_reserve_refuses_line_already_approved_for_auto(monkeypatch):
+    """Fix A: 무인 승인된 줄은 예약주문으로 다시 접수되지 않는다(이중 발주 방지) — 반대 방향은 승인 쪽에서 이미 막힌다."""
+    import app.autoexec as ae
+    import app.broker as br
+
+    c, h = _client()
+    tomorrow = date.today() + timedelta(days=1)
+    pid, _ = _setup_portfolio(c, h, tomorrow, LINES, gap_exact=97500.0)
+    c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
+    assert c.post(f"/portfolio/{pid}/orders/approve", json={"date": tomorrow.isoformat(), "lines": [LINES[0]]}, headers=h).json()["approved"] == 1
+    # 예약 접수 창을 열어 두고(시간 무관) 같은 줄을 예약 → duplicate, 다른 줄(grid2)은 접수 시도
+    monkeypatch.setattr(br, "reservation_window", lambda now=None, session=None: {"open": True, "reason": "test"})
+    monkeypatch.setattr(br, "_client", lambda cred: FakeKis(open_px=0, deposit=0, holdings={}))
+
+    class _Resv(FakeKis):
+        def reserve_order(self, code, side, qty, price, end_date=None):
+            return {"rsvn_ord_seq": "84617", "msg": "ok", "raw": {}}
+    monkeypatch.setattr(br, "_client", lambda cred: _Resv(open_px=0, deposit=0, holdings={}))
+    r = c.post(f"/portfolio/{pid}/orders/reserve", json={"date": tomorrow.isoformat(), "lines": [LINES[0], LINES[1]]}, headers=h).json()
+    st = {i["kind"]: i["status"] for i in r["items"]}
+    assert st["grid1"] == "duplicate" and st["grid2"] == "reserved"
+    # 반대: 예약된 grid2 를 무인 승인하려 하면 duplicate
+    r2 = c.post(f"/portfolio/{pid}/orders/approve", json={"date": tomorrow.isoformat(), "lines": [LINES[1]]}, headers=h).json()
+    assert r2["items"][0]["status"] == "duplicate" and r2["approved"] == 0
+    del ae  # noqa: F821 — 참조 유지용
+
+
+def test_deposit_limit_fills_shallow_grid_first(monkeypatch):
+    """Fix B: 예수금이 일부만 되면 얕은 그리드(높은 가격)부터 발주하고 넘치는 줄만 생략 — 전부 생략하지 않는다."""
+    import app.autoexec as ae
+
+    c, h = _client()
+    today = date.today()
+    pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
+    c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
+    monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
+    c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": [LINES[0], LINES[1]]}, headers=h)
+    # grid1 5×99,000=495,000 · grid2 3×98,000=294,000 · 예수금 600,000 → grid1 만 발주
+    fake = FakeKis(open_px=100000, deposit=600_000, holdings={})
+    from app.db import SessionLocal
+    with SessionLocal() as s:
+        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
+    rec = out["portfolios"][0]
+    assert rec["submitted"] == 1 and rec["skipped"] == 1 and fake.placed == [("069500", "buy", 5, 99000)]
+    st = {i["kind"]: i for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]}
+    assert st["grid1"]["status"] == "submitted" and st["grid2"]["status"] == "skipped" and "예수금 한도" in st["grid2"]["message"]
