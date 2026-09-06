@@ -560,8 +560,13 @@ def _broker_price_map(session: Session, j: ManualJournal) -> dict:
         from app.services.kis_auth import KisAuth
         from app.services.kis_client import KisTradingClient
 
-        rows = KisTradingClient(KisAuth(cred.app_key, cred.app_secret, cred.env, wait_on_rate_limit=False),
-                                cano=cred.account_no, acnt_prdt_cd=cred.acnt_prdt_cd).fetch_holdings()
+        cli = KisTradingClient(KisAuth(cred.app_key, cred.app_secret, cred.env, wait_on_rate_limit=False),
+                               cano=cred.account_no, acnt_prdt_cd=cred.acnt_prdt_cd)
+        if hasattr(cli, "fetch_balance"):
+            bal = cli.fetch_balance()
+            rows, deposit = bal["holdings"], bal.get("deposit", 0)
+        else:  # 구형 클라이언트(테스트 대역 포함) — 보유만
+            rows, deposit = cli.fetch_holdings(), 0
     except Exception as exc:  # noqa: BLE001 — 시세는 보조 정보, 실패해도 일지는 떠야 한다
         logger.warning("journal price lookup failed cred=%s: %s", cred.id, exc)
         return hit[1] if hit else {}
@@ -569,6 +574,7 @@ def _broker_price_map(session: Session, j: ManualJournal) -> dict:
     for r in rows:
         m[r["code"]] = r
         m["name:" + _norm(r["name"])] = r
+    m["__account__"] = {"deposit": deposit, "rows": rows}  # 계좌 단위 정보 (예수금·전체 보유)
     _PRICE_CACHE[cred.id] = (now, m)
     return m
 
@@ -626,6 +632,31 @@ def enrich_valuation(session: Session, j: ManualJournal, entries: list[ManualJou
     s["total_pnl"] = s["realized"] + unreal_total
     s["priced"] = bool(computed["holdings"]) and priced_count == len(computed["holdings"])
     s["priced_count"] = priced_count
+    # 계좌 평가금액 (2026-09-06 지시) — 이 일지가 계좌의 주식을 '전부' 담고 있을 때만 의미가 있다.
+    # 일지 ≠ 계좌인데 예수금을 더하면 계좌 총액도 일지 총액도 아닌 값이 되고, 한 계좌를 여러 일지에
+    # 연결하면 중복된다. 그래서 커버리지(계좌 보유 = 일지 보유, 수량 일치)를 확인해 표시 여부를 정하고,
+    # 대시보드 총자산에는 넣지 않는다(일지 화면 참고 값).
+    acct = broker.get("__account__") if broker else None
+    s["account_deposit"] = acct["deposit"] if acct else None
+    covered = False
+    if acct is not None:
+        jr = {h["symbol"]: h for h in computed["holdings"]}
+        seen: set[str] = set()
+        covered = True
+        for r in acct["rows"]:
+            sym = None
+            for h in computed["holdings"]:
+                if (h.get("code") and h["code"] == r["code"]) or _norm(h["symbol"]) == _norm(r["name"]):
+                    sym = h["symbol"]
+                    break
+            if sym is None or jr[sym]["qty"] != r["qty"]:
+                covered = False
+                break
+            seen.add(sym)
+        if covered and seen != set(jr):
+            covered = False  # 계좌에 없는 종목이 일지에 있다 (수동 기록·다른 계좌 종목)
+    s["account_covered"] = covered
+    s["account_total"] = (eval_total + (acct["deposit"] or 0)) if (covered and acct) else None
     return computed
 
 

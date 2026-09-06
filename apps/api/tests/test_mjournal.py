@@ -468,3 +468,60 @@ def test_journal_return_series_fetches_missing_bars(monkeypatch):
     # 두 번째 호출: 3월 봉은 있고 꼬리(4월~오늘)만 부족 → 꼬리 구간 1회만 더 조회(가짜 클라이언트는 3월 이후 빈 응답)
     assert len(calls) == n_calls + 1 and calls[-1][1] >= date(2026, 3, 31)
     assert body2["symbols"]["새종목"]["segments"][0][0]["date"] == "2026-03-03"
+
+
+def test_journal_account_total_only_when_journal_covers_account(monkeypatch):
+    """계좌 평가금액 (2026-09-06 지시): 주식 평가액 + 예수금. 일지가 계좌 주식을 전부 담고 있을 때만 계산하고,
+    대시보드 총자산에는 예수금을 넣지 않는다(한 계좌를 여러 일지에 연결하면 중복되므로)."""
+    import app.mjournal as mj
+    from app.services import kis_client
+
+    mj._PRICE_CACHE.clear()
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "한투", "symbol": "삼성전자", "fee_rate": 0.0, "tax_rate": 0.0},
+                 headers=h).json()["id"]
+    acct = c.post("/broker/accounts", json={"label": "위탁", "app_key": "PS" + "a" * 34, "app_secret": "S" * 180,
+                                            "account_no": "68800037-01"}, headers=h).json()
+    c.put(f"/mjournals/{jid}/broker", json={"credential_id": acct["id"]}, headers=h)
+
+    class _Fake:
+        def __init__(self, *a, **kw):
+            pass
+
+        def fetch_balance(self):
+            return {"holdings": [{"code": "005930", "name": "삼성전자", "qty": 11, "avg_price": 138200,
+                                  "buy_amount": 1520200, "price": 255500, "eval_amount": 2810500}],
+                    "deposit": 480000, "total_eval": 3290500}
+
+        def fetch_holdings(self):
+            return self.fetch_balance()["holdings"]
+
+    monkeypatch.setattr(kis_client, "KisTradingClient", _Fake)
+    c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 11, "price": 138200, "code": "005930",
+                                              "trade_date": "2026-01-08"}, headers=h)
+    d = c.get(f"/mjournals/{jid}", headers=h).json()["summary"]
+    assert d["account_covered"] is True and d["account_deposit"] == 480000
+    assert d["account_total"] == 2_810_500 + 480_000          # 주식 평가 + 예수금
+    # 대시보드 총자산은 예수금을 빼고 주식 평가액만
+    dash = c.get("/dashboard", headers=h).json()
+    assert dash["journal"] == 2_810_500 and next(x for x in dash["journals"] if x["id"] == jid)["value"] == 2_810_500
+
+    # 계좌에 없는 종목이 일지에 섞이면 커버리지 실패 → 표시하지 않는다
+    mj._PRICE_CACHE.clear()
+    c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 2, "price": 50000, "symbol": "미상장주",
+                                              "trade_date": "2026-02-01"}, headers=h)
+    d2 = c.get(f"/mjournals/{jid}", headers=h).json()["summary"]
+    assert d2["account_covered"] is False and d2["account_total"] is None and d2["account_deposit"] == 480000
+
+    # 수량이 어긋나도(계좌 11주 vs 일지 9주) 커버리지 실패
+    mj._PRICE_CACHE.clear()
+    c2, h2 = _client()
+    j2 = c2.post("/mjournals", json={"name": "부분", "symbol": "삼성전자", "fee_rate": 0.0, "tax_rate": 0.0},
+                 headers=h2).json()["id"]
+    a2 = c2.post("/broker/accounts", json={"label": "위탁2", "app_key": "PS" + "b" * 34, "app_secret": "S" * 180,
+                                           "account_no": "68800037-01"}, headers=h2).json()
+    c2.put(f"/mjournals/{j2}/broker", json={"credential_id": a2["id"]}, headers=h2)
+    c2.post(f"/mjournals/{j2}/entries", json={"side": "buy", "qty": 9, "price": 138200, "code": "005930",
+                                              "trade_date": "2026-01-08"}, headers=h2)
+    s2 = c2.get(f"/mjournals/{j2}", headers=h2).json()["summary"]
+    assert s2["account_covered"] is False and s2["account_total"] is None
