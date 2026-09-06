@@ -374,4 +374,10 @@
 
 - 작업 내용: ① 태그 배포 시 체크아웃 직후 실행 중인 `/api/health` 버전과 비교해 **같은 버전이면 재빌드하지 않고 중지**(저장소를 배포 전 ref 로 되돌리고 --stash 로 치운 변경도 복구), **낮은 버전이면 중지**(롤백 보호). `--force` 로 강제. 브랜치 배포(main)는 VERSION 이 같아도 코드가 바뀔 수 있어 경고만 하고 진행. ② `scripts/deploy.sh restart [서비스…]` — 코드·이미지 변경 없이 `docker compose restart` 후 헬스·상태 출력(코드 반영 아님을 명시). 헬스 대기를 `wait_health` 함수로 통합. README 업데이트 절·스크립트 도움말 갱신.
 - 테스트: `bash -n` 구문 검사, 로컬 재실행 시나리오(같은 버전 중지·--force 진행·restart) 는 원격 서버에서만 가능 — 검증 결과는 커밋 메시지 참조.
-- Git commit: change: deploy.sh — stop on same version, protect against downgrade, add restart mode
+- Git commit: change: deploy.sh — stop on same version, protect against downgrade, add restart mode (#119)
+
+## [2026-09-06] change | 매매일지 카드 정리 — 매매 비용을 실현손익 카드의 작은 글씨로 (사용자 지시)
+
+- 작업 내용: "매매 비용" 카드를 없애고 그 값을 실현손익 카드 하단 작은 글씨("매매 비용 N원 (수수료 + 제세금) 차감 후 금액입니다")로 옮겼다 — 비용은 이미 실현손익에 반영된 값이라 독립 카드로 자리를 차지할 이유가 없었다. 카드가 4→3개가 되며 빈 칸이 생기므로 "총 손익 (실현 + 평가)" 카드를 두 칸으로 넓혔다.
+- 테스트: tsc, 헤드리스(작은 글씨 표기·카드 수·모바일 폭·페이지 에러 없음).
+- Git commit: change: journal cards — fold trading cost into the realized card as a small note
