@@ -22,6 +22,13 @@ const GROUPS: Group[] = [
     { href: "/simulator", label: "시뮬레이터", reset: true },
     { href: "/portfolio", label: "실전매매", reset: true },
   ]},
+  // 가이드 — 매매 공식별 설명 (2026-09-06 지시). 매매일지 그룹은 런타임에 이 앞에 삽입된다
+  { title: "📖 가이드", items: [
+    { href: "/guide", label: "매매 공식 개요" },
+    { href: "/guide/ravg", label: "RAVG · 한국" },
+    { href: "/guide/tf", label: "TF · 미국 1배" },
+    { href: "/guide/ltm", label: "LTM · 미국 레버리지" },
+  ]},
   { title: "⚙️ 설정", items: [
     { href: "/settings", label: "일반 설정" },
     { href: "/settings/algorithm", label: "알고리즘 설정", adminOnly: true },  // 일반 계정에서는 삭제 (2026-09-05 지시)
@@ -56,20 +63,20 @@ function NavInner({ onNavigate }: { onNavigate?: () => void }) {
       if (h?.ok) setVer((await h.json()) as { version: string; db_revision: string | null; build_time?: string | null });
     });
   }, [pathname]);
-  // 등록된 매매일지가 서브메뉴로 (2026-09-05 지시) — 설정 그룹 앞에 주입
+  // 등록된 매매일지가 서브메뉴로 (2026-09-05 지시) — 실전 매매 그룹 뒤, 가이드·설정 앞에 주입
   const groups: Group[] = [
-    ...GROUPS.slice(0, -1),
+    ...GROUPS.slice(0, 2),
     { title: "매매일지", items: [
       ...journals.map((j) => ({ href: `/mjournal?jid=${j.id}`, label: j.name })),
       { href: "/mjournal?new=1", label: "＋ 새 매매일지" },
     ]},
-    GROUPS[GROUPS.length - 1],
+    ...GROUPS.slice(2),
   ];
   const isAdmin = me?.is_admin === true;
 
   function isActive(it: Item): boolean {
     const base = it.href.split("?")[0];
-    if (base === "/settings") return pathname === "/settings";
+    if (base === "/settings" || base === "/guide") return pathname === base;  // 상위 항목은 정확히 일치할 때만
     if (!pathname?.startsWith(base)) return false;
     if (base === "/mjournal") {  // 일지 서브메뉴 — jid 로 개별 활성 (2026-09-05)
       const want = new URLSearchParams(it.href.split("?")[1] ?? "").get("jid");
