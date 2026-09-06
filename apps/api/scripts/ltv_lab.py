@@ -30,6 +30,7 @@ def load(session, code: str, d0: date, d1: date) -> dict[str, dict]:
                                                     OhlcvDaily.trade_date >= d0, OhlcvDaily.trade_date <= d1)
                            .order_by(OhlcvDaily.trade_date)).scalars().all()
     return {r.trade_date.isoformat(): {"date": r.trade_date.isoformat(), "open": float(r.open_raw) * float(r.adj_factor),
+                                      "high": float(r.high_raw) * float(r.adj_factor), "low": float(r.low_raw) * float(r.adj_factor),
                                       "close": float(r.close_raw) * float(r.adj_factor)} for r in rows}
 
 
@@ -123,6 +124,7 @@ def main() -> None:
     ap.add_argument("--episodes", action="store_true", help="주요 변형의 최대 낙폭 에피소드 5개 출력")
     ap.add_argument("--sensitivity", action="store_true", help="후보 공식(LTM) 파라미터 민감도 표")
     ap.add_argument("--yearly", action="store_true", help="연도별 수익률: B&H · TF-1x · LTM")
+    ap.add_argument("--laoer", action="store_true", help="라오어 무한매수 v2.2/v3.0 · VR 을 같은 조건으로 비교 (첫 종목 단독 + LTM 참조)")
     a = ap.parse_args()
     code1, _, code2 = a.pair.partition(":")
     code2 = code2 or None
@@ -153,6 +155,60 @@ def main() -> None:
         print()
         return res
 
+    if a.laoer:
+        from app.strategy.laoer import V22, V30, VRParams, run_infinite, run_vr
+        from app.strategy.ltv import drawdown_episodes
+        # 비교 대상은 첫 종목(레버리지 ETF 자체) 단독 운용. LTM 은 --pair 의 (1배:레버리지) 쌍으로 같은 창에서 참조.
+        target = bars2 if bars2 else bars1          # 예: --pair QQQ:TQQQ → 무한매수/VR 은 TQQQ 에, LTM 은 QQQ+TQQQ
+        tcode = code2 or code1
+        fee = FEES.get(tcode, 0.0084)
+        windows = [("전 구간", None, None), ("2010~2018", "2010-01-01", "2018-12-31"), ("2019~", "2019-01-01", None)]
+        for tag, w0, w1 in windows:
+            idx = [i for i, b in enumerate(target) if (w0 is None or b["date"] >= w0) and (w1 is None or b["date"] <= w1)]
+            if len(idx) < 300:
+                continue
+            sl = target[idx[0]:idx[-1] + 1]
+            res = []
+            bh = buy_and_hold(sl, a.capital, fee); bh.label = f"B&H {tcode}"; res.append(fmt(bh))
+            from dataclasses import replace as _rp
+            res.append(fmt(run_infinite(sl, a.capital, _rp(V22, fee_annual=fee), label="무한매수 v2.2 (40분할·+10%)")))
+            res.append(fmt(run_infinite(sl, a.capital, _rp(V30, fee_annual=fee), label="무한매수 v3.0 (20분할·+15%·복리)")))
+            res.append(fmt(run_vr(sl, a.capital, VRParams(fee_annual=fee), label="VR G10 · 주식50/풀50 · 밴드15% · 2주")))
+            res.append(fmt(run_vr(sl, a.capital, VRParams(g=20.0, fee_annual=fee), label="VR G20 · 50/50")))
+            res.append(fmt(run_vr(sl, a.capital, VRParams(init_stock=0.75, fee_annual=fee), label="VR G10 · 75/25")))
+            res.append(fmt(run_vr(sl, a.capital, VRParams(band=0.10, fee_annual=fee), label="VR G10 · 밴드10%")))
+            if bars2:
+                start = next(i for i, b in enumerate(bars1) if b["date"] >= sl[0]["date"])
+                ltm_p = replace(LTVParams(lev_multiple=lev_mult), sigma_target=None, e_max=2.0, shock_drop=0.03, shock_days=20,
+                                mom_filter=252, fee_1x=FEES.get(code1, 0.002), fee_lev=fee)
+                # 창 시작 전 데이터로 지표 워밍업 (창 안 성과만 평가). 첫 창은 워밍업 없이 시작 → 초반 200일은 현금
+                r = run_ltv(bars1[: idx[-1] + 1] if False else bars1, bars2, a.capital, ltm_p, start_index=start, label=f"LTM {code1}+{tcode}")
+                cut = next(k for k, d in enumerate(r.dates) if d > sl[-1]["date"]) if r.dates[-1] > sl[-1]["date"] else len(r.dates)
+                r.equity, r.dates = r.equity[:cut], r.dates[:cut]
+                r.kpi = __import__("app.strategy.backtest", fromlist=["compute_kpi"]).compute_kpi(r.equity, r.equity[0], r.trades)
+                res.append(fmt(r))
+                tf = run_ltv(bars1, bars2, a.capital, replace(ltm_p, e_max=1.0, shock_drop=None, mom_filter=None), start_index=start, label=f"TF-1x {code1}")
+                tf.equity, tf.dates = tf.equity[:cut], tf.dates[:cut]
+                tf.kpi = __import__("app.strategy.backtest", fromlist=["compute_kpi"]).compute_kpi(tf.equity, tf.equity[0], tf.trades)
+                res.append(fmt(tf))
+            print(f"**{tag} · {sl[0]['date']} ~ {sl[-1]['date']} ({len(sl)}봉) · 대상 {tcode}**")
+            print()
+            print(HEADER)
+            for d in res:
+                print(row(d))
+            print()
+            if tag == "전 구간":
+                for lb, fn in (("무한매수 v2.2", lambda: run_infinite(sl, a.capital, _rp(V22, fee_annual=fee))),
+                               ("VR G10 · 50/50", lambda: run_vr(sl, a.capital, VRParams(fee_annual=fee)))):
+                    r = fn()
+                    print(f"**낙폭 에피소드 — {lb}**")
+                    print()
+                    print("| 고점 | 저점 | 낙폭 | 회복 | 기간(일) |")
+                    print("|---|---|---:|---|---:|")
+                    for e in drawdown_episodes(r.dates, r.equity):
+                        print(f"| {e['peak']} | {e['trough']} | {e['depth'] * 100:+.1f}% | {e['recovered'] or '미회복'} | {e['days']} |")
+                    print()
+        return
     out = {"pair": a.pair, "range": [bars1[0]["date"], bars1[-1]["date"]], "full": run_all(0, "전 구간 (워밍업 후)")}
     if a.episodes:
         from app.strategy.ltv import drawdown_episodes
