@@ -434,4 +434,11 @@
 - ③ **예수금 한도의 전부 생략**: 매수 합계 > 예수금이면 그리드를 전부 생략했다. 백테스트는 grid1 부터 순차 체결하므로 얕은 그리드(높은 지정가)부터 누적액이 예수금 이하인 줄만 발주하고 넘치는 줄만 생략하도록 바꿈. 정지 사유 문구는 마지막 실패 메시지를 쓰도록 정리.
 - 검토했지만 유지한 것: 매도 대금은 T+2 라 당일 매수 한도에 넣지 않음(보수적, 백테스트와의 불가피한 차이) · 실패 연속 카운터는 날을 넘겨 누적(성공 시 초기화) · 09:00~09:01 1분 공백 · 실행 도중 예외 시 롤백돼도 락·`plan_date` 조건으로 같은 날 재발주는 없음(원장은 15:45 체결 가져오기로 맞음).
 - 테스트: `tests/test_autoexec_review.py` 3건(kind·정지 기준 / 예약↔무인 중복 양방향 / 예수금 한도 부분 발주).
-- Git commit: fix: auto-execution review — block reserve/auto double submission, pause only on dangerous reconcile, partial buys by shallow grid first
+- Git commit: fix: auto-execution review — block reserve/auto double submission, pause only on dangerous reconcile, partial buys by shallow grid first; bump version to 0.5.0 (#130, tag v0.5.0)
+
+## [2026-09-06] feat | 무인 실행 09:01 사전 확인 2건 — 원장 vs 계좌 대조, 계획 재대조 (사용자 질문 → 구현 지시)
+
+- 질문 "최종 주문 전 자동 매매 조건을 한 번 더 확인하는 건 의미 없나?" → 전략 조건 재계산은 입력(전날 종가)이 같아 무의미, 두 가지만 의미 있음: ① 앱 원장과 계좌 잔고의 보유 대조(HTS 수동 매매·가져오기 누락으로 어긋난 보유 기준의 주문표를 그대로 내는 것을 방지 — 종전엔 15:45 사후 대조만), ② 승인 행과 그날 계획 스냅샷 재대조(승인 때만 확인했던 것).
+- 작업 내용: `_execute_portfolio` 에 ② 계획 재대조(줄 키·수량 불일치 줄만 생략) → ③ 시가 → ④ 잔고 조회 뒤 원장 대조(200 ETF·레버리지 수량 불일치면 전부 생략 + 정지, 사유에 종목·수량) 순으로 삽입. `_ledger_holdings` 헬퍼. ADR-008 표 11·12, 운영 문서 §5-1 갱신.
+- 테스트: `test_precheck_ledger_vs_account_mismatch_skips_and_pauses`, `test_precheck_plan_revalidation_at_execution`; 갭 테스트는 원장 10주를 미리 등록해 사전 대조를 통과하도록 갱신.
+- Git commit: feat: auto-execution pre-checks — ledger vs account holdings and plan re-validation right before placing orders

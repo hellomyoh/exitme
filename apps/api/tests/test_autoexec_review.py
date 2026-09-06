@@ -83,3 +83,52 @@ def test_deposit_limit_fills_shallow_grid_first(monkeypatch):
     assert rec["submitted"] == 1 and rec["skipped"] == 1 and fake.placed == [("069500", "buy", 5, 99000)]
     st = {i["kind"]: i for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]}
     assert st["grid1"]["status"] == "submitted" and st["grid2"]["status"] == "skipped" and "예수금 한도" in st["grid2"]["message"]
+
+
+def test_precheck_ledger_vs_account_mismatch_skips_and_pauses(monkeypatch):
+    """후속 1: 09:01 에 앱 원장의 전략 종목 보유가 계좌 잔고와 다르면 그날 발주를 전부 생략하고 정지한다."""
+    import app.autoexec as ae
+    from app.db import SessionLocal
+
+    c, h = _client()
+    today = date.today()
+    pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
+    c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
+    c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 10, "price": 100000,
+                               "executed_at": (today - timedelta(days=2)).isoformat() + "T15:30:00+09:00"}, headers=h)
+    monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
+    c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": LINES[:3]}, headers=h)
+    fake = FakeKis(open_px=100000, deposit=9_000_000, holdings={"069500": 7})   # 계좌 7주 ≠ 원장 10주
+    with SessionLocal() as s:
+        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
+    rec = out["portfolios"][0]
+    assert rec["submitted"] == 0 and rec["skipped"] == 3 and fake.placed == []
+    view = c.get(f"/portfolio/{pid}/auto-exec", headers=h).json()
+    assert view["paused"] is True and "원장 10주 ≠ 계좌 7주" in view["paused_reason"]
+    assert all("사전 대조 불일치" in i["message"] for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"])
+
+
+def test_precheck_plan_revalidation_at_execution(monkeypatch):
+    """후속 2: 승인 뒤 계획 스냅샷이 바뀌면(수량 변경) 그 줄은 실행 시점 재대조에서 생략되고 나머지는 발주된다."""
+    import app.autoexec as ae
+    from app.db import SessionLocal
+    from app.models import PortfolioPlan
+
+    c, h = _client()
+    today = date.today()
+    pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
+    c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
+    monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
+    c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": [LINES[0], LINES[1]]}, headers=h)
+    with SessionLocal() as s:   # 계획의 grid1 수량을 5 → 6 으로 바꿔 승인 행과 어긋나게
+        plan = s.scalar(ae.select(PortfolioPlan).where(PortfolioPlan.portfolio_id == pid, PortfolioPlan.trade_date == today))
+        orders = [dict(o, qty=6) if o["kind"] == "grid1" else o for o in plan.payload["orders"]]
+        plan.payload = {**plan.payload, "orders": orders}
+        s.commit()
+    fake = FakeKis(open_px=100000, deposit=9_000_000, holdings={})
+    with SessionLocal() as s:
+        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
+    rec = out["portfolios"][0]
+    assert rec["submitted"] == 1 and rec["skipped"] == 1 and fake.placed == [("069500", "buy", 3, 98000)]
+    st = {i["kind"]: i for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]}
+    assert st["grid1"]["status"] == "skipped" and "재대조 실패" in st["grid1"]["message"] and st["grid2"]["status"] == "submitted"

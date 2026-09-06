@@ -256,6 +256,19 @@ def run_auto_execution(session: Session, now: datetime | None = None, client_fac
     return out
 
 
+def _ledger_holdings(session: Session, pid: int) -> dict[str, int]:
+    """앱 원장(잔여 로트) 기준 종목별 보유 수량 — 09:01 사전 대조에서 계좌 잔고와 비교한다."""
+    from app.models import Instrument, PositionLot
+
+    out: dict[str, int] = {}
+    for lot in session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pid)).all():
+        if lot.qty_open > 0:
+            inst = session.get(Instrument, lot.instrument_id)
+            if inst is not None:
+                out[inst.code] = out.get(inst.code, 0) + int(lot.qty_open)
+    return out
+
+
 def _skip(rows: list[BrokerOrder], status: str, message: str, rec: dict, key: str) -> None:
     for r in rows:
         r.status = status
@@ -294,11 +307,23 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, rows: list[BrokerOr
         else:
             keep.append(r)
     client = client_factory(cred)
-    # ② 시가 확인 → 갭 취소 (계획 스냅샷의 정확값)
-    code_200, _code_lev = _resolve_codes(session, pf)
-    open_px = _read_open(client, code_200, sleep_fn=sleep_fn) if keep else None
+    code_200, code_lev = _resolve_codes(session, pf)
+    # ② 계획 스냅샷 재대조 (2026-09-06 후속 2) — 승인 때 확인했지만 실행 시점에 한 번 더: 그날 계획에 같은 줄(키·수량)이 있어야 발주
     plan = session.scalar(select(PortfolioPlan).where(PortfolioPlan.portfolio_id == pf.id, PortfolioPlan.trade_date == today))
     payload = (plan.payload if plan else None) or {}
+    plan_lines = {line_key(o): int(o.get("qty") or 0) for o in payload.get("orders", [])}
+    still: list[BrokerOrder] = []
+    for r in keep:
+        if plan_lines.get(r.line_key) != r.qty:
+            r.status = "skipped"
+            r.message = ("실행 시점 재대조 실패 — 그날 계획 스냅샷이 없습니다" if plan is None
+                         else "실행 시점 재대조 실패 — 그날 계획 스냅샷에 같은 줄(수량)이 없습니다")
+            rec["skipped"] += 1
+        else:
+            still.append(r)
+    keep = still
+    # ③ 시가 확인 → 갭 취소 (계획 스냅샷의 정확값)
+    open_px = _read_open(client, code_200, sleep_fn=sleep_fn) if keep else None
     gap_exact = payload.get("gap_cancel_exact") or payload.get("gap_cancel_below")
     gap_hit = bool(keep and open_px is not None and gap_exact and open_px <= float(gap_exact))
     if keep and open_px is None:
@@ -318,6 +343,15 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, rows: list[BrokerOr
         else:
             deposit = int(bal.get("deposit") or 0)
             held = {h["code"]: int(h["qty"]) for h in bal.get("holdings", [])}
+            # 원장 대조 (2026-09-06 후속 1) — 전략 종목(200 ETF·레버리지)의 앱 원장 보유가 계좌 잔고와 다르면 그 보유로 계산된
+            # 주문표는 틀린 전제라 그날 발주를 생략하고 정지한다. 15:45 대조를 기다리지 않고 발주 전에 막는 장치.
+            ledger = _ledger_holdings(session, pf.id)
+            diffs = [(c, ledger.get(c, 0), held.get(c, 0)) for c in (code_200, code_lev) if ledger.get(c, 0) != held.get(c, 0)]
+            if diffs:
+                detail = ", ".join(f"{c} 원장 {l:,}주 ≠ 계좌 {a:,}주" for c, l, a in diffs)
+                _skip(keep, "skipped", f"사전 대조 불일치 — {detail}", rec, "skipped")
+                keep = []
+                pause_portfolio(pf, f"09:01 사전 대조 불일치 — {detail}. 체결 가져오기 또는 기록 수정으로 원장을 계좌에 맞춘 뒤 다시 켜세요", now)
             # 예수금 한도: 얕은 그리드(높은 지정가 = grid1)부터 누적 매수액이 예수금 이하인 줄만 발주하고 넘치는 줄은 생략.
             # 전부 생략하면 체결 확률이 높은 grid1 까지 버려 백테스트의 순차 체결과 어긋난다 (2026-09-06 검토).
             buys = sorted([r for r in keep if r.side == "buy"], key=lambda x: -int(x.price))
