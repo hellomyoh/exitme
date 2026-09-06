@@ -588,7 +588,8 @@ function MJournalPage() {
               value={<>{fm(detail.summary.realized)}{detail.summary.return_pct != null &&
                 <span className="whitespace-nowrap text-[14px]"> ({pct(detail.summary.return_pct)})</span>}</>}
               tone={detail.summary.realized > 0 ? "up" : detail.summary.realized < 0 ? "down" : "default"}
-              sub={<>매도 금액 <b className="text-ink">{fm(detail.summary.sell_amount)}</b> · 수익률 = 실현손익 ÷ 매도분 원가</>} />
+              sub={<>매도 금액 <b className="text-ink">{fm(detail.summary.sell_amount)}</b> · 수익률 = 실현손익 ÷ 매도분 원가</>}
+              hint={`매매 비용 ${fm(detail.summary.cost)} (수수료 + 제세금) 차감 후 금액입니다`} />
             <Stat label="평가손익"
               value={detail.summary.priced_count
                 ? <>{fm(detail.summary.unrealized_total ?? 0)}{detail.summary.unrealized_pct != null &&
@@ -602,11 +603,13 @@ function MJournalPage() {
                 ? <>보유 원가 <b className="text-ink">{fm(detail.holdings.reduce((a, h) => a + h.cost, 0))}</b> → 평가 <b className="text-ink">{fm(detail.summary.eval_total ?? 0)}</b>
                     {!detail.summary.priced && <span className="text-faint"> · 시세 없는 종목 {detail.holdings.length - (detail.summary.priced_count ?? 0)}개는 원가</span>}</>
                 : <>보유 원가 <b className="text-ink">{fm(detail.holdings.reduce((a, h) => a + h.cost, 0))}</b> · 시세 미연동</>} />
-            <Stat label="총 손익 (실현 + 평가)"
-              value={fm(detail.summary.total_pnl ?? detail.summary.realized)}
-              tone={(detail.summary.total_pnl ?? detail.summary.realized) > 0 ? "up" : (detail.summary.total_pnl ?? detail.summary.realized) < 0 ? "down" : "default"}
-              sub={<>매수 금액 <b className="text-ink">{fm(detail.summary.buy_amount)}</b></>} />
-            <Stat label="매매 비용" value={fm(detail.summary.cost)} hint="수수료 + 제세금 (실현손익에 이미 반영)" />
+            {/* 매매 비용은 카드를 없애고 실현손익 카드의 작은 글씨로 (2026-09-06 지시) — 총 손익이 남은 줄을 채운다 */}
+            <div className="sm:col-span-2">
+              <Stat label="총 손익 (실현 + 평가)"
+                value={fm(detail.summary.total_pnl ?? detail.summary.realized)}
+                tone={(detail.summary.total_pnl ?? detail.summary.realized) > 0 ? "up" : (detail.summary.total_pnl ?? detail.summary.realized) < 0 ? "down" : "default"}
+                sub={<>매수 금액 <b className="text-ink">{fm(detail.summary.buy_amount)}</b></>} />
+            </div>
           </div>
           {(() => {
             const total = detail.holdings.reduce((a, h) => a + h.cost, 0);
