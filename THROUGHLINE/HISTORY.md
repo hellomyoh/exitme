@@ -449,3 +449,12 @@
 - 작업 내용: `KisTradingClient.buyable(code, price)` — 매수가능조회(`inquire-psbl-order`, 실전 TTTC8908R·모의 VTTC8908R 자동 치환) → 주문가능현금·미수 없는 매수가능수량. 실행기 ④: 매수 줄마다 발주 직전 조회 → 가능 수량 ≥ 계획 수량이면 발주, 아니면 그 줄만 생략(수량 축소 없음). 조회 실패 시 예수금 총액 누적 규칙으로 폴백("예수금 한도(폴백)"). 그리드 전량 자본 요건은 설계 그대로(주문표가 원장 현금 안에서 단을 만들고, 지정가는 증권사에서 금액이 묶임 — 실데이터 8.4년 grid1/2/3 체결률 25%/5%/1%, 전체 사다리 = 평가액 중앙 6.8%).
 - 테스트: `test_buyable_check_before_each_buy`(예수금 총액 0 이어도 KIS 가능 600,000 → grid1 발주 후 잔여 105,000 으로 grid2 "가능 1주 < 계획 3주" 생략, 얕은 단부터 발주 직전마다 조회), 기존 폴백 테스트 문구 갱신. 전체 스위트 결과는 커밋 메시지 참조.
 - Git commit: feat: auto-execution — check KIS buyable quantity right before each buy, deposit rule as fallback
+
+## [2026-09-06] feat | 계좌 예수금 연동 — 시작 시 잔고 불러오기 + 장 마감 예수금 대조(경고·원클릭 보정)
+
+- 지시: "kis 에서 예수금 조회도 가능한가? 실전매매 등록할 때 증권계좌 연동하면 자동으로 가져올 수 있는지 검토해줘" → 검토(잔고 조회 output2 에 예수금총액·D+1·D+2 가 이미 옴, 원장 현금과 같은 정의는 **D+2 가수도정산금액**; 계좌 공유 가능성 때문에 자동 확정은 위험) → "1. 구현하세요. 2. 테스트 완료 후 버전 올리고 tag 생성하세요."
+- 작업 내용: (1) `fetch_balance` 가 `deposit_d1`(익일정산)·`deposit_d2`(가수도정산, 없으면 총액) 추가 반환. (2) 신규 `app/cashcheck.py` — `GET /broker/accounts/{aid}/balance`(시작 패널 잔고 요약: D+2 예수금·전략 종목 표시), `GET /portfolio/{pid}/cash-check[?refresh]`, `POST …/cash-check/align`(차액을 입금/출금 한 건으로, 오늘 대조 결과이고 대조 이후 원장이 안 바뀐 경우만; tags `cash_check`). 허용 오차 max(1만원, 총자산 0.1%) — 수수료·분배금 범위는 경고 없음. (3) `POST /portfolios` 에 `credential_id`(시작과 함께 계좌 연결), `GET /portfolio/{pid}/broker` 응답에 `cash_check`. (4) `run_post_close_sync` ④ — 체결 가져오기 뒤 국내 포트 예수금 대조를 `params.cash_check` 에 저장(경고·기록만, 원장 불변·무인 실행 정지 없음). (5) 웹 시작 패널: 증권사 계좌 선택 + "계좌에서 불러오기"(D+2 예수금 → 현금 칸, 전략 종목 보유 → 보유분 행, 주력 200 ETF 자동 선택, 전략 외 종목은 제외 목록) + 확인 안내; 주문표 위 예수금 대조 경고 배너("차액을 입출금으로 등록"·"지금 다시 대조"); 증권사 연동 카드에 마지막 대조 요약·"지금 대조"·소액 차이 "차액 등록". 계좌 목록은 포트가 없어도 로드. (6) 문서: ADR-008 ⑪(현금은 09:01 대조 대상 아님 → 15:45 예수금 대조), 운영 문서 §6, user-guide §4, feature-portfolio §5·§8.
+- 테스트: `tests/test_cashcheck.py` 6건 — 잔고 요약 파싱(D+1/D+2, 구형 응답 폴백), 잔고 요약 API(전략 종목 정렬·격리 404·502 문구), 시작 시 계좌 연결(타인 계좌 404·포트 미생성), 대조(허용 오차 안 warn=False → 초과 warn → 출금 보정 → 원장 3,900,000·거래 memo/tags → 차이 0 재등록 없음 → 대조 후 원장 변경 시 409 → 입금 보정), 가드(결과 없음·미연결·미국 409), 15:45 동기화 기록(원장 불변·정지 없음). 전체 `pytest -q tests/` → **217 passed**. `tsc --noEmit` 통과. Playwright: 시작 패널 계좌 선택·불러오기, 증권사 연동 카드 "지금 대조" 확인(스크린샷).
+- Git commit: feat: account cash link — prefill start panel from KIS balance, post-close cash reconciliation with one-click alignment
+- 특이사항: 보정 거래는 TWR·XIRR 에 외부 현금흐름으로 잡혀 수수료 차액이 손실 대신 출금으로 계산된다(소액, feature-portfolio §5 기록). 미국 포트는 국내 잔고 TR 이라 연결만 되고 불러오기·대조는 대상 외.
+

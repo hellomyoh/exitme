@@ -341,14 +341,17 @@ class KisTradingClient(KisClient):
     def fetch_balance(self) -> dict:
         """현재 잔고 — 보유 종목(output1) + 예수금·총평가(output2) (2026-09-06 계좌 평가금액).
 
-        반환 {holdings: [{code, name, qty, avg_price, buy_amount, price, eval_amount}], deposit, total_eval}.
+        반환 {holdings: [{code, name, qty, avg_price, buy_amount, price, eval_amount}], deposit, deposit_d1, deposit_d2, total_eval}.
         보유 수량 > 0 만. 평단(pchs_avg_pric)은 이동평균이라 FIFO 로트로는 근사다. 연속조회(CTX)를 끝까지 따라간다.
-        예수금(dnca_tot_amt)은 D+2 정산 기준이라 매도 직후 인출 가능액과 다를 수 있다.
+        deposit = 예수금총액(dnca_tot_amt, 미결제 거래 포함), deposit_d1 = 익일정산금액(nxdy_excc_amt),
+        deposit_d2 = 가수도정산금액(prvs_rcdl_excc_amt, 모든 미결제 거래 정산 후 현금 — 원장 현금과 같은 정의, 2026-09-06 예수금 대조).
+        D+2 필드가 없는 응답이면 deposit_d2 는 deposit 으로 채운다.
         """
         env = self.auth.env if self.auth.env in ("prod", "vps") else "prod"
         params = _balance_probe_params(self.cano, self.acnt_prdt_cd)
         out: list[dict] = []
-        deposit = total_eval = 0
+        deposit = total_eval = deposit_d1 = 0
+        deposit_d2: int | None = None
         for _page in range(10):  # 안전 상한
             body = self._get(BALANCE_PATH, BALANCE_TR[env], params)
             for r in (body.get("output1") or []):
@@ -365,11 +368,15 @@ class KisTradingClient(KisClient):
             if summary:  # 마지막 페이지 값이 최종 (계좌 단위 합계라 페이지마다 같다)
                 deposit = _to_int(_first(summary, "dnca_tot_amt", "prvs_rcdl_excc_amt"))
                 total_eval = _to_int(_first(summary, "tot_evlu_amt", "evlu_amt_smtl_amt"))
+                deposit_d1 = _to_int(_first(summary, "nxdy_excc_amt", "NXDY_EXCC_AMT"))
+                d2raw = _first(summary, "prvs_rcdl_excc_amt", "PRVS_RCDL_EXCC_AMT", default="")
+                deposit_d2 = _to_int(d2raw) if d2raw != "" else None
             nk = (body.get("ctx_area_nk100") or "").strip()
             if not nk:
                 break
             params = {**params, "CTX_AREA_FK100": (body.get("ctx_area_fk100") or "").strip(), "CTX_AREA_NK100": nk}
-        return {"holdings": out, "deposit": deposit, "total_eval": total_eval}
+        return {"holdings": out, "deposit": deposit, "deposit_d1": deposit_d1,
+                "deposit_d2": deposit_d2 if deposit_d2 is not None else deposit, "total_eval": total_eval}
 
     def fetch_holdings(self) -> list[dict]:
         """현재 잔고의 보유 종목만 — 기초 보유 등록·체결 대조용 (2026-09-05)."""
