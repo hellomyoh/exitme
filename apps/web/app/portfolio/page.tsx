@@ -132,11 +132,21 @@ function PortfolioPage() {
   const [holdings, setHoldings] = useState<{ code: string; qty: string; price: string }[]>([
     { code: market === "US" ? "QQQ" : "102110", qty: "", price: "" },
   ]);
+  // 시작 패널 증권사 계좌 (2026-09-06 지시) — 고르면 시작과 함께 연결, KR 은 잔고를 불러와 입금·보유분을 미리 채움
+  const [startAcct, setStartAcct] = useState("");
+  const [acctBal, setAcctBal] = useState<AcctBalance | null>(null);
+  const [acctMsg, setAcctMsg] = useState("");
+  const [ccBusy, setCcBusy] = useState(false);
   const [journal, setJournal] = useState<JournalItem[]>([]);
   // 포트 이름·탭 배경색 편집 패널 (2026-09-05 지시)
   const [editOpen, setEditOpen] = useState(false);
   // 증권사 조회 연동 (2026-09-05 지시) — 체결 자동 가져오기 · 주문표 대조
-  type BrokerInfo = { linked: boolean; id?: number; label?: string; env?: string; app_key?: string; account_no?: string; acnt_prdt_cd?: string; last_import_at?: string | null };
+  // 예수금 대조 (2026-09-06) — 15:45 동기화·'지금 대조'가 저장. diff = 계좌 D+2 예수금 − 원장 현금
+  type CashCheck = { date: string; at: string; ledger_cash: number; account_cash: number; account_deposit: number; diff: number; tolerance: number; warn: boolean; aligned_at?: string; aligned_amount?: number };
+  type BrokerInfo = { linked: boolean; id?: number; label?: string; env?: string; app_key?: string; account_no?: string; acnt_prdt_cd?: string; last_import_at?: string | null; cash_check?: CashCheck | null };
+  // 시작 패널 '계좌에서 불러오기' 응답 (2026-09-06)
+  type AcctBalance = { date: string; env: string; deposit: number; deposit_d2: number; deposit_d1: number; total_eval: number; strategy_count: number;
+    holdings: { code: string; name: string; qty: number; avg_price: number; price: number; eval_amount: number; strategy: boolean }[] };
   type ImportRow = { date: string; code: string; name: string; side: string; qty: number; price: number; amount: number; status: string };
   const [broker, setBroker] = useState<BrokerInfo | null>(null);
   const [acctList, setAcctList] = useState<{ id: number; label: string; account_no: string; acnt_prdt_cd: string; env: string }[]>([]);
@@ -264,9 +274,10 @@ function PortfolioPage() {
       if (bk.ok) setBroker((await bk.json()) as BrokerInfo);
       const bor = await apiFetch(`/portfolio/${sid}/orders${sgj?.exec_day ? `?date=${sgj.exec_day}` : ""}`);
       setBo(bor.ok ? ((await bor.json()) as BrokerOrders) : null);
-      const al = await apiFetch("/broker/accounts");
-      if (al.ok) setAcctList(((await al.json()) as { items: typeof acctList }).items);
     }
+    // 계좌 목록은 시작 패널(포트가 하나도 없을 때 포함)에서도 쓴다 (2026-09-06)
+    const al = await apiFetch("/broker/accounts");
+    if (al.ok) setAcctList(((await al.json()) as { items: typeof acctList }).items);
     const eq = await apiFetch(`/portfolio/equity${sid ? `?portfolio_id=${sid}` : ""}`);
     if (eq.ok) setCurve(((await eq.json()) as { items: { date: string; equity: number; index: number }[] }).items);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -328,7 +339,8 @@ function PortfolioPage() {
   async function startPortfolio() {
     const name = newName.trim() || `실전매매 ${new Date().toISOString().slice(0, 10)}`;
     const res = await apiFetch("/portfolios", { method: "POST", body: JSON.stringify({
-      name, market, code_200: market === "KR" ? startCode200 : undefined, etf: market === "US" ? startEtf : undefined }) });
+      name, market, code_200: market === "KR" ? startCode200 : undefined, etf: market === "US" ? startEtf : undefined,
+      credential_id: startAcct ? Number(startAcct) : undefined }) });
     if (!res.ok) return;
     const { id } = (await res.json()) as { id: number };
     // 시작 항목(입금·보유분)은 '최근 종가일' 15:30 KST 로 기록 — 신호 기준일 종가 시점 상태에
@@ -401,9 +413,55 @@ function PortfolioPage() {
         }
       }
     }
-    setShowStart(false); setNewName(""); setStartCash("");
+    setShowStart(false); setNewName(""); setStartCash(""); setStartAcct(""); setAcctBal(null); setAcctMsg("");
     setHoldings([{ code: market === "US" ? "QQQ" : startCode200, qty: "", price: "" }]);
     setPid(id);
+  }
+
+  // 시작 패널 '계좌에서 불러오기' (2026-09-06 지시) — D+2 예수금을 현금 칸에, 전략 종목 보유를 보유분 행에 미리 채운다.
+  // 자동 확정하지 않는다: 계좌를 일지·다른 포트와 함께 쓰면 예수금 전체가 이 전략 몫이 아닐 수 있어 사용자가 확인·수정 후 시작.
+  async function loadAccountBalance() {
+    if (!startAcct) return;
+    setAcctMsg("조회 중…"); setAcctBal(null);
+    const r = await apiFetch(`/broker/accounts/${startAcct}/balance?market=${market}`);
+    const j = (await r.json().catch(() => ({}))) as AcctBalance & { detail?: string };
+    if (!r.ok) { setAcctMsg(j.detail ?? `조회 실패 (${r.status})`); return; }
+    setAcctBal(j); setAcctMsg("");
+    setStartCash(String(j.deposit_d2));
+    const strat = j.holdings.filter((h) => h.strategy);
+    if (strat.length > 0) {
+      setStartMode("holdings");
+      setHoldings(strat.map((h) => ({ code: h.code, qty: String(h.qty), price: h.avg_price > 0 ? String(h.avg_price) : "" })));
+      const c200 = strat.find((h) => h.code === "102110" || h.code === "069500");
+      if (c200) setStartCode200(c200.code);  // 주력 조합을 실제 보유 200 ETF 로
+    } else {
+      setStartMode("fresh");
+    }
+  }
+
+  // 예수금 대조 (2026-09-06 지시) — 지금 계좌를 조회해 원장 현금과 비교 / 차액을 입출금 한 건으로 등록
+  const cc = broker?.linked ? (broker.cash_check ?? null) : null;
+  async function refreshCashCheck() {
+    if (!sum) return;
+    setCcBusy(true); setImpMsg("예수금 대조 중…");
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/cash-check?refresh=true`);
+    const j = (await r.json().catch(() => ({}))) as { cash_check?: CashCheck; detail?: string };
+    setCcBusy(false);
+    if (!r.ok) { setImpMsg(j.detail ?? `대조 실패 (${r.status})`); return; }
+    setImpMsg(j.cash_check && j.cash_check.diff === 0 ? "예수금 대조 — 원장 현금과 계좌가 같습니다" : "");
+    setBroker((prev) => (prev ? { ...prev, cash_check: j.cash_check ?? null } : prev));
+  }
+  async function alignCash() {
+    if (!sum || !cc || cc.diff === 0) return;
+    const kind = cc.diff > 0 ? "입금" : "출금";
+    if (!window.confirm(`${kind} ${fm(Math.abs(cc.diff))}을(를) 원장에 등록해 현금을 계좌 D+2 예수금 ${fm(cc.account_cash)}에 맞춥니다.\n\n수수료·분배금·앱 밖 입출금 차액일 때만 사용하세요. 체결 누락이 원인이면 '최근 7일 체결 조회'로 가져오는 것이 맞습니다.`)) return;
+    setCcBusy(true);
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/cash-check/align`, { method: "POST" });
+    const j = (await r.json().catch(() => ({}))) as { added?: boolean; amount?: number; detail?: string };
+    setCcBusy(false);
+    if (!r.ok) { setImpMsg(j.detail ?? `등록 실패 (${r.status})`); return; }
+    setImpMsg(j.added ? `${kind} ${fm(j.amount ?? 0)} 등록됨 — 원장 현금이 계좌와 같아졌습니다` : "차이가 없습니다");
+    void load(pid);
   }
 
   async function deletePortfolio() {
@@ -525,6 +583,13 @@ function PortfolioPage() {
               <>
                 <span className="rounded-lg bg-ok/10 px-2.5 py-1 font-semibold text-ok">연결됨</span>
                 {broker.last_import_at && <span className="text-faint">마지막 가져오기 {broker.last_import_at.slice(0, 16).replace("T", " ")}</span>}
+                {market === "KR" && (
+                  <span className="text-[12.5px] text-faint">
+                    {cc ? <>예수금 대조 {cc.at.slice(5, 16).replace("T", " ")} · 차이 <b className={cc.diff === 0 ? "text-ok" : cc.warn ? "text-warn" : "text-ink"}>{cc.diff === 0 ? "없음" : fm(cc.diff)}</b></> : "예수금 대조 기록 없음 (15:45 동기화 때 저장)"}
+                    <button className="ml-2 text-accent hover:underline disabled:opacity-50" disabled={ccBusy} onClick={() => void refreshCashCheck()}>지금 대조</button>
+                    {cc && cc.diff !== 0 && !cc.warn && <button className="ml-2 text-accent hover:underline disabled:opacity-50" disabled={ccBusy} onClick={() => void alignCash()}>차액 등록</button>}
+                  </span>
+                )}
                 <button className="btn !py-1.5 text-[13px]" onClick={() => void (async () => {
                   setImpMsg("조회 중…"); setImp(null);
                   const r = await apiFetch(`/portfolio/${sum.portfolio.id}/import-fills?days=7&dry_run=true`, { method: "POST" });
@@ -649,6 +714,34 @@ function PortfolioPage() {
                 <input className="input w-44" placeholder="예: 50000000" value={startCash}
                   onChange={(e) => setStartCash(e.target.value)} /></label>
             </div>
+            {/* 증권사 계좌 — 고르면 시작과 함께 연결. KR 은 잔고를 불러와 입금·보유분을 미리 채운다 (2026-09-06 지시) */}
+            <div className="flex flex-wrap items-end gap-3 text-[13.5px]">
+              <label className="grid gap-1 text-[13px] text-faint">증권사 계좌 (선택)
+                <select className="input !py-2" value={startAcct}
+                  onChange={(e) => { setStartAcct(e.target.value); setAcctBal(null); setAcctMsg(""); }}>
+                  <option value="">연결 안 함</option>
+                  {acctList.map((a) => (
+                    <option key={a.id} value={a.id}>{a.label} ({a.account_no}-{a.acnt_prdt_cd}{a.env === "vps" ? " · 모의" : ""})</option>
+                  ))}
+                </select></label>
+              {startAcct && market === "KR" && (
+                <button className="btn !py-2" onClick={() => void loadAccountBalance()}>계좌에서 불러오기</button>
+              )}
+              {startAcct && market === "US" && <span className="text-faint">미국 계좌의 잔고 불러오기는 지원하지 않습니다 — 계좌 연결만 됩니다.</span>}
+              {acctList.length === 0 && <span className="text-faint">등록된 계좌가 없습니다 — <Link href="/settings" className="text-accent underline underline-offset-2">일반 설정</Link>에서 등록하면 잔고를 불러올 수 있습니다.</span>}
+              {acctMsg && <span className="text-muted">{acctMsg}</span>}
+            </div>
+            {acctBal && (
+              <div className="rounded-lg border border-line bg-inset px-3 py-2 text-[12.5px] leading-relaxed text-muted">
+                📥 계좌 잔고 불러옴 — D+2 예수금 <b className="text-ink">{fm(acctBal.deposit_d2)}</b>
+                <span className="text-faint"> (예수금총액 {fm(acctBal.deposit)} · 총평가 {fm(acctBal.total_eval)})</span>
+                {" · "}보유 {acctBal.holdings.length}종목 중 전략 종목 <b className="text-ink">{acctBal.strategy_count}</b>개를 보유분에 채움
+                {acctBal.holdings.some((h) => !h.strategy) && (
+                  <span className="text-faint"> · 전략 외 제외: {acctBal.holdings.filter((h) => !h.strategy).map((h) => `${h.name || h.code} ${h.qty}주`).join(", ")}</span>
+                )}
+                <div className="mt-0.5 text-faint">아래 값은 확인·수정 후 시작하세요. 이 계좌를 매매일지나 다른 포트와 함께 쓰면 예수금 전체가 이 전략의 몫이 아닐 수 있습니다.</div>
+              </div>
+            )}
             {market === "KR" && (
               <div className="mb-1 flex flex-wrap items-center gap-2 text-[13.5px]">
                 <span className="font-semibold text-muted">주력 ETF 조합</span>
@@ -865,6 +958,19 @@ function PortfolioPage() {
               ))}
             </ul>
             <div className="mt-1 text-[11.5px] text-faint">자동으로 고치지 않습니다 — 일지에서 직접 수정하거나 증권사 내역을 가져오세요.</div>
+          </div>
+        )}
+        {/* 예수금 대조 경고 (2026-09-06 지시) — 원장 현금 vs 계좌 D+2 예수금, 허용 오차 초과 시. 자동 수정 없음, 차액 등록은 버튼으로 */}
+        {market === "KR" && cc?.warn && (
+          <div className="mb-3 rounded-lg border border-warn/40 bg-warn/5 px-3.5 py-2.5 text-[13px]">
+            <div className="font-bold text-warn">⚠️ 계좌 예수금과 원장 현금이 다릅니다 — 차이 {fm(cc.diff)}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-3 text-muted">
+              <span>원장 현금 <b className="text-ink">{fm(cc.ledger_cash)}</b> · 계좌 D+2 예수금 <b className="text-ink">{fm(cc.account_cash)}</b>
+                <span className="text-faint"> · 대조 {cc.at.slice(5, 16).replace("T", " ")}</span></span>
+              <button className="btn !py-1" disabled={ccBusy} onClick={() => void alignCash()}>차액을 입출금으로 등록</button>
+              <button className="btn-ghost btn !py-1" disabled={ccBusy} onClick={() => void refreshCashCheck()}>지금 다시 대조</button>
+            </div>
+            <div className="mt-1 text-[11.5px] text-faint">자동으로 고치지 않습니다 — 앱 밖 입출금·수수료·분배금이 원인이면 차액 등록으로 맞추고, 체결 누락이면 아래 증권사 연동에서 체결을 가져오세요. 주문표는 원장 현금으로 계산되므로 차이가 크면 매수 수량이 실제와 어긋납니다.</div>
           </div>
         )}
         {signal?.snapshot_missing && (

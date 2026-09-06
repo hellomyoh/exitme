@@ -261,7 +261,8 @@ def get_broker(pid: int, user_id: int = Depends(current_user_id),
     row = session.get(BrokerCredential, pf.broker_credential_id) if pf.broker_credential_id else None
     if row is None or row.user_id != user_id:
         return {"linked": False}
-    return {"linked": True, **_acct_out(row)}
+    # 예수금 대조 결과(2026-09-06) — 15:45 동기화·'지금 대조'가 params.cash_check 에 저장, 화면은 경고 배너·차액 등록 버튼
+    return {"linked": True, **_acct_out(row), "cash_check": (pf.params or {}).get("cash_check")}
 
 
 @router.put("/portfolio/{pid}/broker")
@@ -781,6 +782,16 @@ def run_post_close_sync(session: Session, now: datetime | None = None) -> dict:
         except Exception as exc:  # noqa: BLE001
             session.rollback()
             rec["orders_error"] = str(exc)[:200]
+        # ④ 예수금 대조 (2026-09-06 지시) — 체결을 가져온 뒤 원장 현금 vs 계좌 D+2 예수금. 경고·저장만, 자동 수정 없음.
+        if pf.market == "KR":
+            try:
+                from app.cashcheck import refresh_cash_check
+
+                rec["cash_check"] = refresh_cash_check(session, pf, cred, now)
+                session.commit()
+            except Exception as exc:  # noqa: BLE001
+                session.rollback()
+                rec["cash_check_error"] = str(exc)[:200]
         out["portfolios"].append(rec)
     for j in session.scalars(select(ManualJournal).where(ManualJournal.broker_credential_id.is_not(None))).all():
         cred = session.get(BrokerCredential, j.broker_credential_id)

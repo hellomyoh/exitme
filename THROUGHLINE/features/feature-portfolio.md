@@ -43,6 +43,8 @@
 - **거래 등록·삭제 시 당일 자산 스냅샷 즉시 재계산** ([ADR-008](../adr/008-portfolio-snapshots.md), feature-dashboard §5) — 대시보드 추이의 유령값 방지.
 - **오늘의 주문표 = 신호 기준일 종가 시점 상태의 함수 (2026-09-02 B안, 사용자 승인)**: 포트 기준 주문표는 실행일(exec_day) **이전에 체결된 거래만**으로 로트·현금을 시점 재생해 계산한다. 실행일 당일의 체결·입출금 등록은 당일 주문표를 바꾸지 않는다(HTS 주문장과 화면 불일치 방지 — 정본 §8 "종가 신호 → 익일 발주" 주기 준수). 기준일 이전 소급 등록은 반영(자가 치유). `portfolio_plans` 스냅샷 upsert 는 이로써 결정론적이 되어 보존을 해치지 않는다.
 - **시작 등록 시각**: "보유분 입력하고 시작"·시작 입금은 **직전 영업일 15:30 KST** 로 기록 — 등록 이전부터 보유하던 이력이며, 오늘 시각으로 기록하면 위 계약에 따라 당일 주문표에서 제외되기 때문.
+- **계좌에서 불러오기 (2026-09-06 지시)**: 시작 패널에서 증권사 계좌를 고르면 `GET /broker/accounts/{aid}/balance` 로 잔고 요약을 받아 현금 칸에 **D+2 예수금**(가수도정산금액 — 원장 현금과 같은 정의), 보유분 행에 전략 종목(200 ETF·레버리지) 수량·평단을 **미리 채운다**. 자동 확정하지 않는다(계좌를 일지·다른 포트와 공유하면 예수금 전체가 이 전략 몫이 아닐 수 있음). `POST /portfolios` 의 `credential_id` 로 시작과 함께 계좌가 연결된다. 미국 포트는 연결만(국내 잔고 TR).
+- **예수금 대조 (2026-09-06 지시, `app/cashcheck.py`)**: 연결된 국내 포트는 15:45/17:10 동기화가 체결을 가져온 뒤 원장 현금 vs 계좌 D+2 예수금을 비교해 `params.cash_check` 에 저장한다. 허용 오차 = max(1만원, 총자산 0.1%) — 수수료·분배금 범위. 초과 시 주문표 위 경고 배너(자동 수정·자동 정지 없음). "차액을 입출금으로 등록"은 오늘 대조 결과이고 대조 이후 원장이 안 바뀐 경우만 입금/출금 한 건(tags `cash_check`)으로 원장을 계좌에 맞춘다. 보정 거래는 TWR·XIRR 에 외부 현금흐름으로 잡힌다(수수료 차액은 손실이 아닌 출금으로 계산됨 — 소액이라 감내).
 - 전환 포트: 백테스트 결과 화면의 버튼으로 생성, 파라미터·`backtest_id` 사본 보관.
 
 ## 6. 비기능 요구사항
@@ -60,6 +62,7 @@
 
 - `POST /positions`(거래 등록), `GET /portfolio/summary`, `GET /portfolios/{id}/positions`, `PATCH /positions/{id}`(목표·손절·메모).
 - `GET /portfolio/summary` 확장(2026-09-02): `principal`(납입원금 = 입금−출금), `net_pnl`, `net_pnl_pct`(÷principal, 분모≤0→null), `unrealized_pnl_pct`(÷보유원가, 원가 0→null), `invested_cost`(보유원가) 필드 추가 — 기존 키 비파괴.
+- 예수금 연동(2026-09-06): `GET /broker/accounts/{aid}/balance?market=` (잔고 요약: deposit·deposit_d1·deposit_d2·total_eval·holdings[strategy]), `POST /portfolios` 에 `credential_id`, `GET /portfolio/{pid}/cash-check[?refresh=true]`, `POST /portfolio/{pid}/cash-check/align`, `GET /portfolio/{pid}/broker` 응답에 `cash_check`.
 
 ## 9. UI/UX 설계
 

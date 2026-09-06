@@ -378,6 +378,7 @@ class PortfolioIn(BaseModel):
     market: str = Field(default="KR", pattern="^(KR|US)$")
     code_200: str | None = Field(default=None, pattern="^(069500|102110)$")  # KR 주력 ETF (기본 TIGER, 2026-09-01)
     etf: str | None = Field(default=None, pattern=US_FORMULAS)  # US 공식 선택 — 미지정 시 LTM_QLD (2026-09-06 지시)
+    credential_id: int | None = None  # 시작 패널에서 고른 증권사 계좌 — 만들면서 바로 연결 (2026-09-06 예수금 연동)
 
 
 @router.post("/portfolios", status_code=201)
@@ -390,9 +391,17 @@ def create_portfolio(body: PortfolioIn, user_id: int = Depends(current_user_id),
     if body.market == "US":
         params["etf"] = body.etf or "LTM_QLD"  # 미국 기본 공식 = LTM·QLD (시뮬레이터 기본과 동일)
     pf = TradePortfolio(user_id=user_id, name=body.name, kind="manual", market=body.market, params=params or None)
+    if body.credential_id is not None:
+        from app.models import BrokerCredential
+
+        cred = session.get(BrokerCredential, body.credential_id)
+        if cred is None or cred.user_id != user_id:
+            raise HTTPException(status_code=404, detail="account not found")
+        pf.broker_credential_id = cred.id
     session.add(pf)
     session.commit()
-    return {"id": pf.id, "name": pf.name, "market": pf.market, "etf": params.get("etf")}
+    return {"id": pf.id, "name": pf.name, "market": pf.market, "etf": params.get("etf"),
+            "linked": pf.broker_credential_id is not None}
 
 
 class RenameIn(BaseModel):
