@@ -316,6 +316,10 @@ class UserSettings(TimestampMixin, Base):
     chat_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")  # 챗봇 추가 지침 (0012)
     # 무인 실행 허용 (0021, 2026-09-06 지시) — {"buy": bool, "sell": bool}. 둘 다 기본 꺼짐. 켠 쪽만 승인·발주 가능
     auto_exec: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # 텔레그램 알림 (0023, 2026-09-07 지시) — 봇 토큰은 암호화 🔒, chat_id 는 봇에 말을 건 뒤 '연결 확인'(getUpdates)으로 채움
+    telegram_bot_token: Mapped[str | None] = mapped_column(EncryptedText)   # 🔒
+    telegram_chat_id: Mapped[str | None] = mapped_column(Text)
+    notify: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)   # {"enabled": bool, "events": {카테고리: bool}}
 
 
 class BrokerOrder(TimestampMixin, Base):

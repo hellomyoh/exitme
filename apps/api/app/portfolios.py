@@ -182,6 +182,14 @@ def register_transaction(body: TransactionIn, user_id: int = Depends(current_use
                           realized_pnl=realized, executed_at=body.executed_at,
                           memo=body.memo, tags=body.tags)
     session.add(tx)
+    # 텔레그램 알림 (2026-09-07) — '체결 등록' 항목을 체크한 사용자에게. 실패해도 등록은 진행
+    try:
+        from app.notify import notify_trade
+
+        notify_trade(session, user_id, pf, body.kind, code=body.code, name=inst.name if inst else None, qty=body.qty,
+                     price=body.price, amount=body.amount, memo=body.memo, realized=realized)
+    except Exception:  # noqa: BLE001
+        pass
     # 당일 스냅샷 즉시 재계산 — 열람 적재분이 방금 거래를 반영하지 못하는 유령값 방지 (검토 Q1, ADR-008)
     from app.dashboard import compute_user_snapshot, kst_today
     compute_user_snapshot(session, user_id, kst_today())

@@ -50,7 +50,7 @@ KIND_KO = {  # 이벤트 종류 표시명 (화면 배지)
     "preopen.unmatched": "사전 갭 취소 불가", "preopen.error": "사전 갭 확인 오류",
     "sync.post_close": "장 마감 동기화", "sync.error": "동기화 오류", "sync.reserved_failed": "예약주문 상태 조회 실패",
     "cash_check.warn": "예수금 대조 경고", "cash_check.align": "예수금 보정",
-    "tx.delete": "거래 삭제",
+    "tx.delete": "거래 삭제", "notify.failed": "알림 전송 실패",
 }
 
 
@@ -62,6 +62,14 @@ def log_event(session: Session, user_id: int, kind: str, text: str, *, level: st
     row = ActivityLog(user_id=user_id, portfolio_id=portfolio_id, kind=kind, level=level,
                       text=(text or "")[:500], data=_jsonable(data or {}), at=at or datetime.now(KST))
     session.add(row)
+    # 텔레그램 알림 (2026-09-07 지시) — 기록과 같은 원천에서 카테고리로 걸러 발송. 실패해도 예외 없음
+    if kind != "notify.failed":
+        try:
+            from app.notify import notify_event
+
+            notify_event(session, user_id, kind, row.text, level, portfolio_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("notify hook failed kind=%s", kind)
     return row
 
 

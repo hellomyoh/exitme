@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -58,7 +58,8 @@ STRATEGY_DETAIL = """## 전략 지식 (정본 요약)
 - US — TF (QQQ): MA200 위에서 보유, 종가가 MA200 −2% 이탈 시 다음날 시가 매도. 그리드 없음.
 - 주문표는 "전일 종가 시점 상태"의 함수(B안) — 당일 체결 등록은 다음 주문표부터 반영.
   실행일이 지난 계획 스냅샷은 불변(그날 아침의 계획 보존).
-- 발주는 사용자가 본인 HTS 에서 직접 하고 결과만 등록한다. 부분 이행도 허용되며 원장은 정합하다.
+- 발주 경로 3가지: ① HTS 직접(결과만 등록) ② 주문표에서 예약주문 접수 ③ 무인 실행(사용자 승인 또는 완전 무인 자동 승인 → 09:01 시가 확인 후 발주).
+  부분 이행도 허용되며 원장은 정합하다.
 - 수동 등록 보유분은 단일 로트라 익절이 전량으로 나온다(설계 정합 — 10년 측정상 모델도 익절일 59% 전량 매도).
 """
 
@@ -70,7 +71,28 @@ STRATEGY_PLAIN = """## 전략 개념 (핵심 개념 설명 — 상세 수식은 
   변동성이 임계치를 넘으면 레버리지를 정리하는 방어 규칙이 있다.
 - US 전략(TF): 장기 추세선 위에서만 보유하고 이탈하면 다음날 정리하는 추세 추종.
 - 주문표는 전일 종가 상태 기준으로 계산되고, 당일 체결 등록은 다음 주문표부터 반영된다.
-  실행일이 지난 계획은 보존되며, 발주는 사용자가 HTS 에서 직접 한다.
+  실행일이 지난 계획은 보존된다. 발주는 HTS 직접, 주문표의 예약주문 접수, 무인 실행(승인 또는 자동 승인) 중 사용자가 고른 경로로 한다.
+"""
+
+# 운영 기능 지식 — 관리자·일반 공통 (2026-09-07: 무인 실행·사전 갭 취소·완전 무인·예수금 대조·로그·알림을 챗봇이 설명할 수 있게)
+OPERATIONS_KNOWLEDGE = """## 운영 기능 지식 (2026-09-06~07 도입 — 화면 위치와 동작)
+- 증권사 연동: 설정 › 증권사 계좌에 KIS 앱키·계좌 등록 → 실전매매 '증권사 연동'에서 포트에 연결. 최근 7일 체결 가져오기, 15:45/17:10 장 마감 동기화(체결 가져오기·주문 상태 확정·예수금 대조).
+- 예약주문: 주문표에서 줄을 체크해 '선택 주문 등록하기' → KIS 예약주문(접수 창 15:40~다음 영업일 07:30, 실전 계좌만). 09:00 동시호가에 들어간다.
+- 무인 실행(ADR-008): 설정 › 무인 실행에서 무인 매수·매도 허용을 각각 켠다(기본 꺼짐). 주문표에서 지정가 줄을 '🤖 무인 실행 승인'하면 실행일 09:01 워커가
+  시가 확인 → 갭 취소 기준 이하면 그리드 매수 생략 → 앱 원장 보유 vs 계좌 잔고 대조 → 계획 재대조 → 매도 먼저, 매수는 줄마다 매수가능조회 후 지정가 발주.
+  시장가 줄은 대상 외(예약주문). 발주 2회 연속 실패·사전 대조 불일치·장 마감 대조의 계획 외 거래/초과 체결이면 자동 정지 — 주문표 배너의 '다시 켜기'로 해제.
+- 사전 갭 취소(취소만 무인, 기본 켜짐 — 설정 › 무인 실행 세 번째 스위치): 08:57 에 200 ETF 예상체결가가 갭 취소 기준 이하면 미체결 주문 중 오늘 그리드 가격과 같은
+  200 ETF 매수를 취소(앱 예약주문·HTS 직접 주문 모두, 다른 가격·매도는 건드리지 않음). 결과는 주문표 위 '🕗 장 시작 전 갭 확인' 한 줄.
+- 완전 무인(자동 승인): 주문표 위 '🤖 완전 무인 운영 › 설정'에서 포트별로 켠다(기본 꺼짐). 16:45 에 다음 실행일 주문표를 계산해 허용 방향의 지정가 줄을 자동 승인,
+  시장가 줄(레버리지)은 옵션이면 예약주문 자동 접수. 하루 매수 상한(총자산 대비 %, 기본 20%) 초과면 승인하지 않고 정지. '전량 취소'는 승인·예약·발주 주문을 모두 거두고,
+  '⛔ 무인 중지 + 전량 취소'는 정지까지 한다. 이미 체결된 주문은 취소 불가(반대 매매로 정리).
+- 예수금 대조: 15:45 동기화가 원장 현금과 계좌 D+2 예수금을 비교, 허용 오차(1만원 또는 총자산 0.1%) 초과면 주문표 위 경고. '차액을 입출금으로 등록'으로 맞춤(자동 수정 없음).
+  새 실전매매 시작 시 '계좌에서 불러오기'로 D+2 예수금·전략 종목 보유를 미리 채울 수 있다.
+- 매매 로그(왼쪽 메뉴 '매매 로그'): 거래 원장·주문 상태·실행/동기화 이벤트를 합쳐 최신순. '경고 이상만' 필터로 실패 확인. 도구 recent_logs 로 조회.
+- 텔레그램 알림: 설정 › 알림에서 봇 토큰(@BotFather)·채팅 ID(봇에 메시지를 보낸 뒤 '연결 확인'으로 자동) 저장, 보낼 항목 체크
+  (무인 실행 결과·자동 승인·사전 갭 취소·정지·장 마감 동기화·예수금 대조·주문 접수/취소·체결 등록·일일 현황).
+- 이 상태들은 도구 auto_exec_status 로 조회한다 — 설정 스위치, 포트별 정지 여부·사유, 마지막 무인 실행/자동 승인/사전 갭 확인 요약, 예수금 대조, 살아 있는 주문 수, 알림 설정 여부.
+  질문이 '왜 발주가 안 됐나/왜 정지됐나' 류면 auto_exec_status 와 recent_logs(level=warn) 를 함께 보고 답한다.
 """
 
 
@@ -81,7 +103,8 @@ CORE_CONTRACT = """## 시스템 계약 (항상 적용 — 위 내용과 충돌�
 - 도구가 error 를 돌려주면 그 사실을 숨기지 말고 무엇이 실패했는지 말한다.
 - 미국 포트의 금액·가격은 센트 정수로 저장 — 표시할 때 100으로 나눠 $ 로 표기한다. 한국은 원 그대로.
 - 도구는 전부 읽기 전용 — 주문 실행·체결 등록·설정 변경은 할 수 없다. 요청받으면 화면 위치를 안내한다:
-  체결 등록 = 실전매매, 알고리즘 변수 = 알고리즘 설정, 시뮬레이션 실행 = 시뮬레이터.
+  체결 등록·예약주문·무인 승인·완전 무인·전량 취소·다시 켜기 = 실전매매(주문표), 무인 매수/매도 허용·사전 갭 취소·텔레그램 알림 = 일반 설정,
+  알고리즘 변수 = 알고리즘 설정, 시뮬레이션 실행 = 시뮬레이터, 기록·실패 확인 = 매매 로그.
 - 도구 결과는 **서버가 지금 계산한 값**이다. 화면에 무엇이 보이는지는 확인할 수 없으므로 "화면에 정상 출력된다/안 된다"를
   단정하지 않는다. 사용자가 화면과 다르다고 하면 계산값을 그대로 전하고, 원인 후보(장 마감 배치 미실행·데이터 지연·새로고침)를
   나열하되 캐시 문제라고 단정하지 않는다.
@@ -131,7 +154,49 @@ TOOLS = [
           {"journal_id": {"type": "integer", "description": "생략 시 전체 요약"}}),
     _tool("price_history", "종목 일봉 시세(원주가) — 마지막 행이 최신 확정 종가. 장중 실시간 시세는 제공하지 않음(장 마감 후 배치로 당일 종가 적재). code 예: 102110(TIGER 200), 069500(KODEX 200), 122630(레버), QQQ.",
           {"code": {"type": "string"}, "days": {"type": "integer", "description": "기본 30"}}, ["code"]),
+    # 운영 상태·로그 (2026-09-07) — 무인 실행·완전 무인·사전 갭 취소·예수금 대조·알림 설정을 챗봇이 답할 수 있게
+    _tool("auto_exec_status", "무인 운영 상태 — 설정 스위치(무인 매수/매도 허용·사전 갭 취소), 포트별 정지 여부와 사유, 마지막 무인 실행(09:01)·자동 승인(16:45)·사전 갭 확인(08:57) 요약, 완전 무인 설정(자동 승인·시장가 예약·하루 매수 상한 %), 예수금 대조 결과, 살아 있는 주문 수, 텔레그램 알림 설정 여부. 국내 포트만.",
+          {"portfolio_id": {"type": "integer", "description": "생략 시 국내 포트 전부"}}),
+    _tool("recent_logs", "매매 로그 — 거래 원장·주문 상태·실행/동기화 이벤트를 최신순으로. 실패·경고만 보려면 level=warn 또는 error. '왜 발주가 안 됐나' 질문에 사용.",
+          {"days": {"type": "integer", "description": "최근 N일 (기본 7)"}, "level": {"type": "string", "enum": ["all", "warn", "error"]},
+           "type": {"type": "string", "enum": ["all", "trade", "order", "event"]}, "portfolio_id": {"type": "integer"}}),
 ]
+
+
+def _auto_exec_status(session, user_id: int, pid) -> dict:
+    """무인 운영 상태 요약 — 화면(주문표 패널·설정)과 같은 원천. 읽기 전용, user_id 스코프. 채팅 ID·토큰은 내보내지 않는다."""
+    from sqlalchemy import select
+    from app.autoexec import auto_exec_view, user_auto_exec
+    from app.cashcheck import pf_cash_check
+    from app.dashboard import kst_today
+    from app.models import BrokerOrder, TradePortfolio
+    from app.notify import user_notify
+    from app.preopen import pf_preopen_state
+
+    q = select(TradePortfolio).where(TradePortfolio.user_id == user_id, TradePortfolio.market == "KR")
+    if pid:
+        q = q.where(TradePortfolio.id == int(pid))
+    pfs = session.scalars(q.order_by(TradePortfolio.id)).all()
+    if pid and not pfs:
+        return {"error": "portfolio not found"}
+    today = kst_today()
+    n = user_notify(session, user_id)
+    out: dict = {"settings": user_auto_exec(session, user_id),
+                 "notify": {"enabled": n["enabled"], "ready": n["ready"], "events": n["events"]},
+                 "portfolios": []}
+    for pf in pfs:
+        live = session.scalars(select(BrokerOrder).where(
+            BrokerOrder.portfolio_id == pf.id, BrokerOrder.plan_date >= today,
+            BrokerOrder.status.in_(("approved", "reserved", "submitted", "partial")))).all()
+        view = auto_exec_view(session, pf)
+        out["portfolios"].append({
+            "portfolio_id": pf.id, "name": pf.name, "broker_linked": bool(pf.broker_credential_id),
+            "paused": view["paused"], "paused_reason": view["paused_reason"], "fail_streak": view["fail_streak"],
+            "last_run": view["last_run"], "auto_approve": view["auto_approve"], "auto_approve_last": view["auto_approve_last"],
+            "preopen_last_run": pf_preopen_state(pf).get("last_run"), "cash_check": pf_cash_check(pf),
+            "live_orders": {"count": len(live),
+                            "by_status": {s: sum(1 for r in live if r.status == s) for s in ("approved", "reserved", "submitted", "partial")}}})
+    return out
 
 
 def _run_tool(name: str, args: dict, user_id: int, is_admin: bool = False) -> dict:
@@ -205,6 +270,15 @@ def _run_tool(name: str, args: dict, user_id: int, is_admin: bool = False) -> di
                         "note": "일봉 종가 기준 — 마지막 행이 최신 확정 종가(장중 실시간 아님)",
                         "items": [{"date": r.trade_date.isoformat(), "open": r.open_raw, "high": r.high_raw,
                                    "low": r.low_raw, "close": r.close_raw, "volume": r.volume} for r in rows]}
+            if name == "auto_exec_status":
+                return _auto_exec_status(session, user_id, args.get("portfolio_id"))
+            if name == "recent_logs":
+                from app.activity import list_logs
+                out = list_logs(days=int(args.get("days") or 7), portfolio_id=args.get("portfolio_id"),
+                                type=str(args.get("type") or "all"), level=str(args.get("level") or "all"), q=None, limit=60,
+                                user_id=user_id, session=session)
+                return {"days": out["days"], "total": out["total"], "counts": out["counts"],
+                        "items": [{k: i.get(k) for k in ("at", "type", "kind_ko", "level", "portfolio", "text", "detail")} for i in out["items"]]}
             return {"error": f"unknown tool {name}"}
         except HTTPException as e:  # 소유권·404 등 — 모델이 이해할 메시지로
             return {"error": str(e.detail)}
@@ -242,7 +316,8 @@ class ChatIn(BaseModel):
 TOOL_KO = {"list_portfolios": "포트폴리오 목록", "portfolio_summary": "자산 요약",
            "portfolio_journal": "매매 일지", "order_sheet": "주문표",
            "list_backtests": "시뮬레이션 목록", "algorithm_params": "알고리즘 설정",
-           "price_history": "시세 조회", "trading_journal": "매매일지"}
+           "price_history": "시세 조회", "trading_journal": "매매일지",
+           "auto_exec_status": "무인 운영 상태", "recent_logs": "매매 로그"}
 
 
 @router.post("/chat")
@@ -269,10 +344,10 @@ def chat(body: ChatIn, user_id: int = Depends(current_user_id)) -> StreamingResp
 
     def stream():
         strategy = STRATEGY_DETAIL if is_admin else STRATEGY_PLAIN
-        sys_text = body_text + "\n\n" + strategy + "\n\n" + CORE_CONTRACT
+        sys_text = body_text + "\n\n" + strategy + "\n\n" + OPERATIONS_KNOWLEDGE + "\n\n" + CORE_CONTRACT
         if not is_admin:
             sys_text += "\n\n" + RESTRICT_CONTRACT
-        sys_text += f"\n오늘: {date.today().isoformat()}"
+        sys_text += f"\n오늘: {datetime.now(timezone(timedelta(hours=9))).date().isoformat()}"  # KST — UTC 날짜는 새벽에 하루 밀린다
         if user_prompt:
             sys_text += ("\n\n## 사용자 추가 지침 (시스템 계약·공개 제한과 충돌하면 그것들이 우선)\n" + user_prompt)
         msgs: list[dict] = [{"role": "system", "content": sys_text}]

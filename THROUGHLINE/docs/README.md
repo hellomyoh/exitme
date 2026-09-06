@@ -2,7 +2,7 @@
 
 | 문서 | 대상 독자 | 한 줄 설명 |
 |---|---|---|
-| [user-guide.md](user-guide.md) | 일반 사용자 | 차트·백테스트·실전 기록·대시보드 기본 사용 방법 |
+| [user-guide.md](user-guide.md) | 일반 사용자 | 차트·백테스트·실전 기록·대시보드 기본 사용 방법 + 증권사 연동·예약주문·무인 실행·완전 무인·사전 갭 취소·예수금 대조·매매 로그·텔레그램 알림 |
 | [strategy-guide.md](strategy-guide.md) | 일반 사용자 | RAVG v2.5 전략과 주문표를 이해하고 활용하는 방법 |
 | [operator-guide.md](operator-guide.md) | 운영자 | 설치·시딩·배치 운영·장애 대응 |
 | [ablation-report-20260828.md](ablation-report-20260828.md) | 운영자 | RAVG v2 절제 5종 실데이터 백테스트 결과 (Phase 4 게이트) |
@@ -13,7 +13,11 @@
 | [us-transfer-study-20260831.md](us-transfer-study-20260831.md) | 운영자 | 한·미 동일 알고리즘 적용 검증 — 파라미터 고원 확인, 세금·환율·운영 선결 조건 |
 | [ltv-strategy-study-20260906.md](ltv-strategy-study-20260906.md) | 운영자 | 미국 지수 추세 자산용 신규 공식 LTM 연구 — 문헌·4차 개선 반복·민감도·국내 상장 S&P 판정 |
 | [krx-aftermarket-20260914-review.md](krx-aftermarket-20260914-review.md) | 운영자 | KRX 애프터마켓 개장(2026-09-14) 영향 검토 — ETF 제외로 공식 수정 없음, 운영 보완(20:15 동기화·예약주문 창 확인), 11월 NXT ETF 관찰 항목, ETF 밤갭 통계 |
-| [auto-execution-20260906.md](auto-execution-20260906.md) | 운영자·개발자 | 통제된 무인 실행([ADR-008](../adr/008-controlled-auto-execution.md)) — 승인된 지정가를 09:01 시가 확인 후 발주: 흐름·코드 지도·상태 흐름·테스트·운영 절차·한계 |
+| [auto-execution-20260906.md](auto-execution-20260906.md) | 운영자·개발자 | 통제된 무인 실행([ADR-008](../adr/008-controlled-auto-execution.md)) — 승인된 지정가를 09:01 시가 확인 후 발주 + 08:57 사전 갭 취소 + 16:45 완전 무인(자동 승인·전량 취소) + 15:45 예수금 대조 + 매매 로그·텔레그램 알림: 흐름·코드 지도·상태 흐름·테스트·운영 절차·한계 |
+| [broker-reserved-orders-20260905.md](broker-reserved-orders-20260905.md) | 운영자·개발자 | 증권사(KIS) 조회 연동·예약주문 접수·장 마감 동기화 설계 |
+| [mjournal-broker-link-review-20260905.md](mjournal-broker-link-review-20260905.md) | 운영자·개발자 | 매매일지 증권사 연동 검토 — 체결 가져오기·기초 보유 등록·계좌 평가금액 |
+| [manual-holdings-tp-review-20260903.md](manual-holdings-tp-review-20260903.md) | 운영자 | 수동 등록 보유분의 전량 익절 근사 검토(설계 정합 유지) |
+| [minute-fill-study-20260901.md](minute-fill-study-20260901.md) | 운영자 | 1분봉 체결 시뮬 대조 — 일봉 엔진 유지 |
 | [order-formula-study-20260903.md](order-formula-study-20260903.md) | 운영자 | 주문표 공식 수리 검토 — E 탄력성·그리드 반사원리 검증, 예산 가중 50/30/20 후보 (미채택) |
 | [yearly-trade-frequency-20260903.md](yearly-trade-frequency-20260903.md) | 운영자 | 2020~2026 연도별 시뮬레이션·체결 횟수 분해 (평균 주 1.3회, 2022년 방어 17.1%p) |
 - [market-research/](market-research/README.md) — 유사 서비스 시장 조사(11건, 기능·유료화 모델·ExitMe 시사점, 2026-09-05)

@@ -482,3 +482,11 @@
 - Git commit: feat: auto-approve daily buy cap as percent of equity (default 20%), market lines reserved unattended
 - 특이사항: 레짐 전환일의 레버리지 진입(총자산의 30~40%)은 기본 20% 를 넘어 그날 자동 승인이 멈춘다 — 의도된 확인 지점이며, 무인으로 통과시키려면 상한을 40% 이상으로 올리거나 0 으로 둔다.
 
+## [2026-09-07] feat | 텔레그램 알림 + 챗봇 운영 지식·상태 도구 + 문서 전수 점검
+
+- 지시: "외부 메신저로 매매결과, 현황 등 메시지를 전송 — 텔레그램 연동, 봇 토큰은 설정에서 입력, 설정에 전송할 메시지 항목을 나열하고 사용자가 체크하면 발송. 지금까지 변경된 내용을 문서에 모두 기록했는지 검토하고 누락은 기록. 테스트 후 tag." + "챗봇에서 관련 내용을 답변 가능한 상태인지 검토하고 보완."
+- 작업 내용: (1) **텔레그램** 신규 `app/notify.py` + 0023(`user_settings.telegram_bot_token` 🔒·`telegram_chat_id`·`notify`). 설정 › 알림 탭: 봇 토큰(암호화 저장·마스킹 표시, 형식 검증), 채팅 ID('연결 확인'이 getUpdates 로 자동 확인 + 테스트 메시지), 알림 켬/끔, 보낼 항목 9종 체크(무인 실행 결과·자동 승인·사전 갭 취소·정지/긴급 정지·장 마감 동기화·예수금 대조 기본 켬 / 주문 접수·취소·설정, 체결 등록 기본 꺼짐 / 일일 현황 켬). 발송 지점 3곳 — 활동 로그 저장 훅(`log_event` → 이벤트 종류→카테고리 매핑, 줄 단위 이벤트는 제외), 거래 등록(`register_transaction`), 16:40 스냅샷 뒤 일일 현황(총자산·전일 대비·구성·포트별 평가액). 실패는 `notify.failed` 로그만(본 작업 계속). (2) **챗봇** — 검토 결과 프롬프트가 "HTS 직접 발주"만 알고 9/5~9/7 기능을 몰랐음 → `OPERATIONS_KNOWLEDGE`(증권사 연동·예약주문·무인 실행·사전 갭 취소·완전 무인·예수금 대조·매매 로그·알림의 화면 위치·동작·시각·정지/해제), 전략 지식의 발주 문장 3경로로 수정, 코어 계약 화면 안내 확장, 도구 `auto_exec_status`(설정 스위치·포트별 정지/사유·마지막 무인 실행/자동 승인/사전 갭·완전 무인 설정·예수금 대조·살아 있는 주문·알림 여부, 채팅 ID/토큰 비노출)·`recent_logs`(매매 로그 병합), '오늘'을 KST 로. (3) **문서 점검** — 누락 보완: docs/README(user-guide·auto-execution 설명 갱신, 미등록 문서 4건 색인), 루트 README 주요 기능(증권사 연동·무인 실행·로그/알림·챗봇), features/README(챗봇·US 공식·무인 운영 행), feature-chatbot §10, feature-portfolio §8(알림 API), ADR-008 조건 8(알림), 운영 문서 §2(알림 행), operator-guide(배치 시각·외부 호스트·비밀값·점검), user-guide §4-4, ASSUMPTIONS 6건(예상체결가 근사·예약주문 전환 시각·D+2 예수금·상한 20%·알림 동기 발송·테스트 KST), TODO 3건(예상체결가 오차 기록·예약주문 전환 시각 실측·알림 확장), PROGRESS 전면 갱신(2026-08 상태로 멈춰 있었음).
+- 테스트: `tests/test_notify.py` 5건(설정 왕복·검증·마스킹·격리 / 이벤트 카테고리 필터·수준 머리말·꺼짐·실패 로그 / 거래 등록·삭제 알림 / 연결 확인 chat_id 자동·409·502 / 일일 현황 문구·전송), `tests/test_chat_ops.py` 2건(지식 키워드·도구 등록 / 상태·로그 도구 응답·사용자 스코프). 전체 `pytest -q tests/` → **235 passed**. `tsc --noEmit` 통과. Playwright: 설정 › 알림 탭 렌더(토큰·채팅 ID·연결 확인·항목 9개), 콘솔 오류 없음. dev DB 0023.
+- Git commit: feat: telegram notifications (bot token in settings, per-category opt-in), chatbot operations knowledge and status/log tools, docs sweep
+- 특이사항: 알림은 활동 로그 저장 직후(commit 전) 동기 발송 — 롤백 시 기록 없는 메시지가 갈 수 있음(드묾, ASSUMPTIONS). 실제 텔레그램 발송은 사용자가 봇을 만들어 연결한 뒤 확인 필요(테스트는 HTTP 경계를 대체).
+
