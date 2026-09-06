@@ -141,6 +141,7 @@ export default function SettingsPage() {
   const TABS_ALL = [
     { key: "account", label: "계정", desc: "비밀번호 · 세션" },
     { key: "broker", label: "증권사 계좌", desc: "체결 자동 가져오기 연동" },
+    { key: "auto", label: "무인 실행", desc: "승인한 지정가를 09:01 시가 확인 후 자동 발주" },
     { key: "chat", label: "챗봇", desc: "시스템 프롬프트 (관리자)", adminOnly: true },
   ] as const;
   type TabKey = (typeof TABS_ALL)[number]["key"];
@@ -180,6 +181,8 @@ export default function SettingsPage() {
           </button>
         ))}
       </div>
+
+      {tab === "auto" && <AutoExecSettings />}
 
       {tab === "account" && (<>
       <Card className="mb-4">
@@ -449,5 +452,47 @@ export default function SettingsPage() {
       </Callout>
       )}
     </main>
+  );
+}
+
+/** 무인 실행 허용 (2026-09-06 지시, ADR-008) — 매수·매도를 각각 켠다. 기본 모두 꺼짐.
+ *  켜야만 실전매매 주문표에서 그 방향의 '무인 실행 승인'이 가능하고, 끄면 이미 승인된 줄도 실행 시점에 생략된다. */
+function AutoExecSettings() {
+  const [v, setV] = useState<{ buy: boolean; sell: boolean } | null>(null);
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    void apiFetch("/settings/auto-exec").then(async (r) => { if (r.ok) setV((await r.json()) as { buy: boolean; sell: boolean }); });
+  }, []);
+  async function save(next: { buy: boolean; sell: boolean }) {
+    const turningOn = (next.buy && !v?.buy) || (next.sell && !v?.sell);
+    if (turningOn && !window.confirm(
+      "무인 실행을 켭니다.\n\n· 실전매매 주문표에서 사용자가 체크해 '무인 실행 승인'한 지정가 줄만 대상입니다.\n· 실행일 09:01 에 시가를 확인해 갭 취소 기준 이하면 그리드 매수를 생략하고, 그 외 줄을 정규 주문으로 냅니다.\n· 예수금·잔고 한도를 넘는 줄은 내지 않고, 발주 2회 연속 실패·장 마감 대조 불일치 시 해당 포트는 자동 정지됩니다.\n\n계속할까요?")) return;
+    const r = await apiFetch("/settings/auto-exec", { method: "PUT", body: JSON.stringify(next) });
+    if (r.ok) { setV((await r.json()) as { buy: boolean; sell: boolean }); setMsg("저장되었습니다"); }
+    else setMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `저장 실패 (${r.status})`);
+  }
+  const Row = ({ k, label, desc }: { k: "buy" | "sell"; label: string; desc: string }) => (
+    <label className="flex items-start gap-3 rounded-xl border border-line bg-inset p-4">
+      <input type="checkbox" className="mt-1 h-4 w-4 accent-[#c2410c]" checked={!!v?.[k]} disabled={!v}
+        onChange={(e) => v && void save({ ...v, [k]: e.target.checked })} />
+      <span className="grid gap-0.5">
+        <span className="text-[15px] font-semibold text-ink">{label} <span className={`ml-1 rounded-md px-2 py-0.5 text-[12px] ${v?.[k] ? "bg-accent-dim text-accent" : "bg-raised text-faint"}`}>{v?.[k] ? "허용" : "꺼짐"}</span></span>
+        <span className="text-[13px] leading-relaxed text-muted">{desc}</span>
+      </span>
+    </label>
+  );
+  return (
+    <Card className="mb-4">
+      <CardTitle>무인 매수 · 매도 허용 <span className="normal-case text-faint">· 기본은 모두 꺼짐 — 켠 방향만 주문표에서 승인할 수 있습니다</span></CardTitle>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Row k="buy" label="무인 매수 허용" desc="그리드 매수 등 매수 지정가 줄. 09:01 시가가 갭 취소 기준 이하면 그리드 매수는 발주하지 않습니다. 매수 합계가 예수금을 넘으면 내지 않습니다." />
+        <Row k="sell" label="무인 매도 허용" desc="익절·축소 등 매도 지정가 줄. 계좌 보유 수량을 넘는 매도는 내지 않습니다. 매도는 매수보다 먼저 냅니다." />
+      </div>
+      <div className="mt-3 rounded-lg border border-line bg-surface px-3.5 py-2.5 text-[13px] leading-relaxed text-muted">
+        <b className="text-ink">통제 규칙</b> — 사용자가 주문표에서 체크해 승인한 줄만 대상(승인은 실행일마다), 지정가만(시장가 줄은 예약주문으로), 서버에 저장된 그날의 계획과 줄이 정확히 일치해야 발주,
+        하루 1회 실행·재시도 없음, 발주 2회 연속 실패 또는 장 마감 대조 불일치 시 그 포트의 무인 실행 자동 정지(주문표 배너에서 다시 켜기). 모든 발주·생략·실패는 주문표 표에 기록됩니다.
+        {msg && <span className="ml-2 text-ink">{msg}</span>}
+      </div>
+    </Card>
   );
 }

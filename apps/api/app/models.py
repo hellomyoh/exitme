@@ -314,6 +314,8 @@ class UserSettings(TimestampMixin, Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False)
     algo_params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     chat_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")  # 챗봇 추가 지침 (0012)
+    # 무인 실행 허용 (0021, 2026-09-06 지시) — {"buy": bool, "sell": bool}. 둘 다 기본 꺼짐. 켠 쪽만 승인·발주 가능
+    auto_exec: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
 
 class BrokerOrder(TimestampMixin, Base):
@@ -344,6 +346,8 @@ class BrokerOrder(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, default="reserved")
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     response: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # 0021: reserve(예약주문) | auto(무인 실행 — approved → submitted → filled|partial|unfilled|cancelled, 생략 skipped_gap|skipped, 실패 failed)
+    mode: Mapped[str] = mapped_column(Text, nullable=False, default="reserve")
 
 
 class ManualJournal(TimestampMixin, Base):

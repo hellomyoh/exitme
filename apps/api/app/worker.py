@@ -53,6 +53,11 @@ celery_app.conf.update(
             "task": "app.worker.broker_post_close_sync",
             "schedule": crontab(hour=17, minute=10, day_of_week="mon-fri"),
         },
+        # 무인 실행 (2026-09-06 지시, ADR-008) — 09:01 에 당일 시가 확인 → 갭 취소 판정 → 승인된 지정가 발주. 하루 1회
+        "auto-exec-open": {
+            "task": "app.worker.auto_execute_open",
+            "schedule": crontab(hour=9, minute=1, day_of_week="mon-fri"),
+        },
     },
 )
 
@@ -284,6 +289,22 @@ def daily_signal(target: str | None = None) -> dict:
             finish_batch(session, run, "failed", {"error": str(exc)[:500]})
             session.commit()
             raise
+
+
+@celery_app.task(name="app.worker.auto_execute_open", max_retries=0)
+def auto_execute_open() -> dict:
+    """무인 실행 — 승인된 지정가 줄을 09:01 시가 확인 후 발주 (재시도 없음: 중복 발주 방지, ADR-008)."""
+    from app.autoexec import run_auto_execution
+    from app.db import SessionLocal
+    from app.models import TradingCalendar
+
+    today = datetime.now(KST).date()
+    with SessionLocal() as session:
+        cal = session.get(TradingCalendar, today)
+        if cal is not None and not cal.is_open:
+            logger.info("skip auto_execute_open: %s is a holiday", today)
+            return {"skipped": "holiday", "date": today.isoformat()}
+        return run_auto_execution(session)
 
 
 @celery_app.task(name="app.worker.broker_post_close_sync", max_retries=1, autoretry_for=(Exception,), retry_backoff=120)

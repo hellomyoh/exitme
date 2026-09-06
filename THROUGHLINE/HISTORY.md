@@ -417,4 +417,11 @@
 ## [2026-09-06] docs | KRX 애프터마켓 개장(9/14) 영향 검토 — 매매 공식 수정 없음 (사용자 지시)
 
 - 작업 내용: docs/krx-aftermarket-20260914-review.md. 보도 확인: 시간외 단일가 폐지 → KRX 애프터마켓 16:00~20:00 실시간 체결(전일 종가 ±30%), 시간외 종가매매(15:40~16:00) 유지, 프리마켓 2027년 말로 연기, **ETF·ETN 제외**, NXT ETF 는 11월부터. 결론: RAVG 의 신호 앵커(KRX 정규장 15:30 종가, 시장코드 J)·실행(다음 날 09:00 예약주문)·갭 취소 전제가 그대로라 공식 수정 없음. 운영 보완 후보: 20:15 체결 동기화 추가(주식 애프터마켓 체결), 9/14 첫 주 예약주문 창·일봉 종가 확인, 11월 NXT ETF 개시 후 갭 빈도 관찰. ASSUMPTIONS 에 신호 앵커 명시.
-- Git commit: docs: review KRX after-market launch (2026-09-14) — no formula change, ops follow-ups
+- Git commit: docs: review KRX after-market launch (2026-09-14) — no formula change, ops follow-ups (#127) · 후속 §5 ETF 밤갭 질문 답변(#128)
+
+## [2026-09-06] feat | 통제된 무인 실행 — 승인된 지정가를 09:01 시가 확인 후 자동 발주 (사용자 지시 · ADR-008)
+
+- 배경: 갭 취소 규칙이 실전에서는 예약주문 때문에 지켜지지 않았다(시가는 09:00 에야 확정, 예약 취소 창은 07:30 마감). 사용자 판단 "철저히 통제된 무인 매수/매도는 문제 없다" + 지시 "매도도 포함, 설정에서 매수·매도 허용을 각각 켜야 동작".
+- 작업 내용: docs/auto-execution-20260906.md. `app/autoexec.py` — 설정 `GET/PUT /settings/auto-exec`({buy, sell}), 승인 `POST /portfolio/{pid}/orders/approve`(설정 꺼진 방향·시장가·미국·09:00 이후·계획 불일치 거절, 중복 차단), 09:01 실행 `run_auto_execution`(락·설정 재확인·시가 조회·갭 취소 `gap_cancel_exact`·예수금/잔고 한도·매도 우선 발주·연속 실패 2회 정지·요약 기록), 장 마감 확정 `sync_auto_orders`·대조 경고 정지 `pause_if_reconcile_warns`, `resume`. KIS `place_order`(TTTC0012U/0011U, 모의 VTTC0802U/0801U)·`cancel_order`(TTTC0013U/VTTC0803U). 마이그레이션 0021(`user_settings.auto_exec`, `broker_orders.mode`). 워커 `auto-exec-open` 09:01(재시도 없음·휴장일 스킵). 취소 엔드포인트가 승인 철회/정규 주문 취소 처리. 웹: 설정 › 무인 실행 탭(매수·매도 토글, 켤 때 확인창), 주문표 "🤖 무인 실행 승인" 버튼·확인창·줄 상태·마지막 실행 요약·정지 배너(다시 켜기).
+- 테스트: `tests/test_autoexec.py` 4건(설정·승인 규칙·중복/불일치·철회 / 갭 취소·매도 우선·재실행 차단·체결 확정 / 예수금·잔고 한도·연속 실패 정지·해제 / 미국 거절·대조 경고 정지). 전체 205 passed, tsc 클린, 헤드리스(설정 탭·토글·승인 버튼 표시, 원상복구).
+- Git commit: feat: controlled auto-execution — approved limit orders placed after the 09:01 open check (ADR-008)

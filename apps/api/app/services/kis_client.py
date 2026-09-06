@@ -457,6 +457,43 @@ class KisTradingClient(KisClient):
             })
         return out
 
+    # ── 정규 주문 (2026-09-06 지시: 무인 실행) — 지정가 현금 주문·취소. 호출자는 app.autoexec 만 ──
+    def place_order(self, code: str, side: str, qty: int, price: int) -> dict:
+        """국내주식 지정가 현금 주문 (실전 TTTC0012U 매수 / TTTC0011U 매도, 모의 VTTC0802U / VTTC0801U).
+
+        시장가는 받지 않는다(무인 실행은 지정가만). 반환 {"order_no": 주문번호, "orgno": 거래소코드, "msg", "raw"}.
+        """
+        if qty <= 0 or not price or price <= 0:
+            raise KisError("지정가 주문은 수량·가격이 0 보다 커야 합니다")
+        tr = ORDER_TR[(self.auth.env if self.auth.env in ("prod", "vps") else "prod", side)]
+        body = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "PDNO": code,
+                "ORD_DVSN": "00", "ORD_QTY": str(int(qty)), "ORD_UNPR": str(int(price))}
+        data = self._post(ORDER_PATH, tr, body)
+        out = data.get("output") or {}
+        if isinstance(out, list):
+            out = out[0] if out else {}
+        return {"order_no": str(_first(out, "ODNO", "odno")).strip(),
+                "orgno": str(_first(out, "KRX_FWDG_ORD_ORGNO", "krx_fwdg_ord_orgno")).strip(),
+                "msg": str(data.get("msg1") or "").strip(), "raw": out}
+
+    def cancel_order(self, order_no: str, orgno: str = "") -> dict:
+        """정규 주문 잔량 전부 취소 (실전 TTTC0013U / 모의 VTTC0803U). 정정은 지원하지 않는다."""
+        env = self.auth.env if self.auth.env in ("prod", "vps") else "prod"
+        body = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd,
+                "KRX_FWDG_ORD_ORGNO": orgno or "", "ORGN_ODNO": str(order_no),
+                "ORD_DVSN": "00", "RVSE_CNCL_DVSN_CD": "02",  # 02 취소
+                "ORD_QTY": "0", "ORD_UNPR": "0", "QTY_ALL_ORD_YN": "Y"}
+        data = self._post(ORDER_CANCEL_PATH, ORDER_CANCEL_TR[env], body)
+        out = data.get("output") or {}
+        return {"msg": str(data.get("msg1") or "").strip(), "raw": out if isinstance(out, dict) else {}}
+
+
+# ── 정규 주문 TR (2026-09-06, 무인 실행 전용) ────────────────────────────────────────
+ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+ORDER_TR = {("prod", "buy"): "TTTC0012U", ("prod", "sell"): "TTTC0011U",
+            ("vps", "buy"): "VTTC0802U", ("vps", "sell"): "VTTC0801U"}
+ORDER_CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
+ORDER_CANCEL_TR = {"prod": "TTTC0013U", "vps": "VTTC0803U"}
 
 # ── 예약주문 TR (koreainvestment/open-trading-api 공식 예제 기준, 2026-09-05) ─────────
 RESV_ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-resv"
