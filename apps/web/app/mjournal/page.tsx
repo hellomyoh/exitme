@@ -33,7 +33,9 @@ type ImportResult = { range: [string, string]; dry_run: boolean; fetched: number
 type Detail = JournalMeta & {
   fee_rate: number; tax_rate: number; rows: Row[]; symbols: string[];
   summary: { realized: number; sell_amount: number; buy_amount: number; cost: number; return_pct: number | null;
-    eval_total?: number; unrealized_total?: number; unrealized_pct?: number | null; total_pnl?: number; priced?: boolean; priced_count?: number };
+    eval_total?: number; unrealized_total?: number; unrealized_pct?: number | null; total_pnl?: number; priced?: boolean; priced_count?: number;
+    // 계좌 평가금액 (2026-09-06) — 일지가 계좌 주식을 전부 담고 있을 때만 account_total 이 채워진다
+    account_deposit?: number | null; account_covered?: boolean; account_total?: number | null };
   holdings: Holding[];
   series: Record<string, { date: string; value: number }[]>;   // 종목별 누적 실현손익 (이 일지만)
   linked_account: { id: number; label: string; account_no: string; env: string } | null;   // 연결 계좌 (0018)
@@ -603,13 +605,22 @@ function MJournalPage() {
                 ? <>보유 원가 <b className="text-ink">{fm(detail.holdings.reduce((a, h) => a + h.cost, 0))}</b> → 평가 <b className="text-ink">{fm(detail.summary.eval_total ?? 0)}</b>
                     {!detail.summary.priced && <span className="text-faint"> · 시세 없는 종목 {detail.holdings.length - (detail.summary.priced_count ?? 0)}개는 원가</span>}</>
                 : <>보유 원가 <b className="text-ink">{fm(detail.holdings.reduce((a, h) => a + h.cost, 0))}</b> · 시세 미연동</>} />
-            {/* 매매 비용은 카드를 없애고 실현손익 카드의 작은 글씨로 (2026-09-06 지시) — 총 손익이 남은 줄을 채운다 */}
-            <div className="sm:col-span-2">
+            {/* 매매 비용은 카드를 없애고 실현손익 카드의 작은 글씨로 (2026-09-06 지시).
+                계좌 평가금액 카드가 있으면 2×2, 없으면 총 손익이 남은 줄을 채운다 */}
+            <div className={detail.summary.account_total == null ? "sm:col-span-2" : ""}>
               <Stat label="총 손익 (실현 + 평가)"
                 value={fm(detail.summary.total_pnl ?? detail.summary.realized)}
                 tone={(detail.summary.total_pnl ?? detail.summary.realized) > 0 ? "up" : (detail.summary.total_pnl ?? detail.summary.realized) < 0 ? "down" : "default"}
                 sub={<>매수 금액 <b className="text-ink">{fm(detail.summary.buy_amount)}</b></>} />
             </div>
+            {/* 계좌 평가금액 (2026-09-06 지시) — 주식 평가액 + 예수금. 일지가 계좌 주식을 전부 담고 있을 때만 표시 */}
+            {detail.summary.account_total != null && (
+              <Stat label="계좌 평가금액"
+                value={fm(detail.summary.account_total)}
+                tip="연결 계좌의 주식 평가액과 예수금을 더한 금액입니다. 이 일지가 계좌의 주식을 전부 담고 있을 때만 표시됩니다. 예수금은 D+2 정산 기준이라 매도 직후 인출 가능액과 다를 수 있고, 대시보드 총자산에는 주식 평가액만 반영됩니다."
+                sub={<>주식 <b className="text-ink">{fm(detail.summary.eval_total ?? 0)}</b> + 예수금 <b className="text-ink">{fm(detail.summary.account_deposit ?? 0)}</b></>}
+                hint="연결 계좌 잔고 기준 · 총자산에는 주식 평가액만 반영" />
+            )}
           </div>
           {(() => {
             const total = detail.holdings.reduce((a, h) => a + h.cost, 0);

@@ -380,4 +380,11 @@
 
 - 작업 내용: "매매 비용" 카드를 없애고 그 값을 실현손익 카드 하단 작은 글씨("매매 비용 N원 (수수료 + 제세금) 차감 후 금액입니다")로 옮겼다 — 비용은 이미 실현손익에 반영된 값이라 독립 카드로 자리를 차지할 이유가 없었다. 카드가 4→3개가 되며 빈 칸이 생기므로 "총 손익 (실현 + 평가)" 카드를 두 칸으로 넓혔다.
 - 테스트: tsc, 헤드리스(작은 글씨 표기·카드 수·모바일 폭·페이지 에러 없음).
-- Git commit: change: journal cards — fold trading cost into the realized card as a small note
+- Git commit: change: journal cards — fold trading cost into the realized card as a small note (#121)
+
+## [2026-09-06] feat | 매매일지 계좌 평가금액 카드 (주식 평가액 + 예수금) — 사용자 검토 요청 → 승인
+
+- 작업 내용: docs/mjournal-broker-link-review-20260905.md §3-3 참조. `fetch_balance()` 로 잔고 조회에서 예수금(output2)까지 함께 읽어 현재가 캐시(120초)에 담는다 — 추가 API 호출 없음. 일지가 **계좌 주식을 전부 담고 있을 때만**(계좌 보유 ⊆ 일지 보유, 수량 일치, 일지에 계좌 밖 종목 없음) `account_total = 주식 평가액 + 예수금` 을 계산해 "계좌 평가금액" 카드로 보인다. 커버리지가 깨지면(부분 관리·수동 종목 섞임) 카드를 감춘다. 대시보드 총자산에는 예수금을 넣지 않는다(한 계좌를 여러 일지에 연결할 수 있어 중복). 예수금 D+2 기준은 풍선말에 명시.
+- 실데이터 확인: 연금저축 주식 1,392,445 + 예수금 96,022 = 1,488,467 / 한투-삼성 2,810,500 + 5,035 = 2,815,535, 두 일지 모두 커버리지 충족.
+- 테스트: `test_journal_account_total_only_when_journal_covers_account`(합계·대시보드 미포함·계좌 밖 종목·수량 불일치) — 전체 201 passed.
+- Git commit: feat: journal account value card — stock valuation plus cash from the linked account

@@ -338,15 +338,17 @@ class KisTradingClient(KisClient):
         out.sort(key=lambda x: (x.trade_date, x.order_no))
         return out
 
-    def fetch_holdings(self) -> list[dict]:
-        """현재 잔고(보유 종목) — inquire-balance output1. 매매일지 '기초 보유 등록'용 (2026-09-05).
+    def fetch_balance(self) -> dict:
+        """현재 잔고 — 보유 종목(output1) + 예수금·총평가(output2) (2026-09-06 계좌 평가금액).
 
-        반환 [{code, name, qty, avg_price, buy_amount, price, eval_amount}] — 보유 수량 > 0 만.
-        평단(pchs_avg_pric)은 이동평균이라 FIFO 로트로는 근사다. 연속조회(CTX)를 끝까지 따라간다.
+        반환 {holdings: [{code, name, qty, avg_price, buy_amount, price, eval_amount}], deposit, total_eval}.
+        보유 수량 > 0 만. 평단(pchs_avg_pric)은 이동평균이라 FIFO 로트로는 근사다. 연속조회(CTX)를 끝까지 따라간다.
+        예수금(dnca_tot_amt)은 D+2 정산 기준이라 매도 직후 인출 가능액과 다를 수 있다.
         """
         env = self.auth.env if self.auth.env in ("prod", "vps") else "prod"
         params = _balance_probe_params(self.cano, self.acnt_prdt_cd)
         out: list[dict] = []
+        deposit = total_eval = 0
         for _page in range(10):  # 안전 상한
             body = self._get(BALANCE_PATH, BALANCE_TR[env], params)
             for r in (body.get("output1") or []):
@@ -358,11 +360,20 @@ class KisTradingClient(KisClient):
                             "buy_amount": _to_int(_first(r, "pchs_amt", "PCHS_AMT")),
                             "price": _to_int(_first(r, "prpr", "PRPR")),
                             "eval_amount": _to_int(_first(r, "evlu_amt", "EVLU_AMT"))})
+            summary = body.get("output2") or []
+            summary = summary[0] if isinstance(summary, list) and summary else {}
+            if summary:  # 마지막 페이지 값이 최종 (계좌 단위 합계라 페이지마다 같다)
+                deposit = _to_int(_first(summary, "dnca_tot_amt", "prvs_rcdl_excc_amt"))
+                total_eval = _to_int(_first(summary, "tot_evlu_amt", "evlu_amt_smtl_amt"))
             nk = (body.get("ctx_area_nk100") or "").strip()
             if not nk:
                 break
             params = {**params, "CTX_AREA_FK100": (body.get("ctx_area_fk100") or "").strip(), "CTX_AREA_NK100": nk}
-        return out
+        return {"holdings": out, "deposit": deposit, "total_eval": total_eval}
+
+    def fetch_holdings(self) -> list[dict]:
+        """현재 잔고의 보유 종목만 — 기초 보유 등록·체결 대조용 (2026-09-05)."""
+        return self.fetch_balance()["holdings"]
 
     # ── 예약주문 (2026-09-05 지시) — 접수 15:40~다음 영업일 07:30, 장 시작 시 자동 주문 ──
     def _post(self, path: str, tr_id: str, body: dict[str, str]) -> dict:
