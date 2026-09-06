@@ -11,8 +11,10 @@
 실행일 09:01    워커 auto_execute_open → 포트별:
                   락(하루 1회) → 정지 상태·설정 스위치 재확인 → 당일 시가 조회(현재가 TR stck_oprc, 최대 4회 재시도)
                   → 시가 ≤ gap_cancel_exact ? 그리드 매수 skipped_gap
-                  → 잔고 조회: 매수 합계 ≤ 예수금, 매도 수량 ≤ 보유 (아니면 skipped)
-                  → 매도 먼저, 매수 다음으로 place_order(지정가) → submitted(order_no) / failed
+                  → 잔고 조회: 원장 대조(200 ETF·레버리지 보유 = 계좌 잔고, 아니면 전부 생략+정지), 매도 수량 ≤ 보유
+                  → 매도 먼저 place_order → 매수는 얕은 그리드부터, 줄마다 발주 직전 buyable(매수가능조회) 로 가능 수량 ≥ 계획 수량이면
+                    place_order(지정가), 부족하면 그 줄 생략(수량 축소 없음) · 조회 실패 시 예수금 총액 누적 규칙으로 폴백
+                  → submitted(order_no) / skipped / failed
                   → last_run 요약 저장, 연속 실패 2회면 paused
 15:45 / 17:10   run_post_close_sync → sync_auto_orders(당일 체결조회로 filled/partial/unfilled 확정)
                 → reconcile_for_portfolio 에 warn 이 있으면 pause_if_reconcile_warns
@@ -25,7 +27,7 @@
 | 층 | 위치 | 내용 |
 |---|---|---|
 | 정책·실행 | `app/autoexec.py` | 설정 GET/PUT `/settings/auto-exec`, 승인 `POST /portfolio/{pid}/orders/approve`, 상태 `GET /portfolio/{pid}/auto-exec`, 해제 `POST …/auto-exec/resume`, `run_auto_execution`, `sync_auto_orders`, `pause_if_reconcile_warns` |
-| KIS | `services/kis_client.py` `KisTradingClient.place_order / cancel_order` | 실전 TTTC0012U(매수)·TTTC0011U(매도)·TTTC0013U(취소), 모의 VTTC0802U·VTTC0801U·VTTC0803U. 지정가만 |
+| KIS | `services/kis_client.py` `KisTradingClient.place_order / cancel_order / buyable` | 실전 TTTC0012U(매수)·TTTC0011U(매도)·TTTC0013U(취소)·TTTC8908R(매수가능조회), 모의 VTTC0802U·VTTC0801U·VTTC0803U·VTTC8908R. 지정가만 |
 | 기록 | `models.py` `BrokerOrder.mode`('reserve'/'auto'), `UserSettings.auto_exec`, `TradePortfolio.params.auto_exec` | 마이그레이션 0021 |
 | 훅 | `broker.py` | `STATUS_KO` 확장, 주문 목록 응답에 `auto_exec`, 취소 엔드포인트가 무인 줄 처리(승인 철회 / 정규 주문 취소), `run_post_close_sync` 가 확정·정지 |
 | 계획 | `signals.py` | `PortfolioPlan.payload.gap_cancel_exact`(정확값) 추가 — 시가 판정용 |

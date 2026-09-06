@@ -441,4 +441,11 @@
 - 질문 "최종 주문 전 자동 매매 조건을 한 번 더 확인하는 건 의미 없나?" → 전략 조건 재계산은 입력(전날 종가)이 같아 무의미, 두 가지만 의미 있음: ① 앱 원장과 계좌 잔고의 보유 대조(HTS 수동 매매·가져오기 누락으로 어긋난 보유 기준의 주문표를 그대로 내는 것을 방지 — 종전엔 15:45 사후 대조만), ② 승인 행과 그날 계획 스냅샷 재대조(승인 때만 확인했던 것).
 - 작업 내용: `_execute_portfolio` 에 ② 계획 재대조(줄 키·수량 불일치 줄만 생략) → ③ 시가 → ④ 잔고 조회 뒤 원장 대조(200 ETF·레버리지 수량 불일치면 전부 생략 + 정지, 사유에 종목·수량) 순으로 삽입. `_ledger_holdings` 헬퍼. ADR-008 표 11·12, 운영 문서 §5-1 갱신.
 - 테스트: `test_precheck_ledger_vs_account_mismatch_skips_and_pauses`, `test_precheck_plan_revalidation_at_execution`; 갭 테스트는 원장 10주를 미리 등록해 사전 대조를 통과하도록 갱신.
-- Git commit: feat: auto-execution pre-checks — ledger vs account holdings and plan re-validation right before placing orders
+- Git commit: feat: auto-execution pre-checks — ledger vs account holdings and plan re-validation right before placing orders (#131, tag v0.5.1)
+
+## [2026-09-06] feat | 무인 매수 — 발주 직전 KIS 매수가능조회로 판정 (사용자 검토 요청 → 승인)
+
+- 질문 "계좌 잔금을 먼저 검사하고 매수해야 하지 않나?" → 검사는 있었으나 기준이 예수금 총액(`dnca_tot_amt`)이라 근사: 다른 주문 증거금이 빠지지 않아 거절→실패→정지로 이어질 수 있고, 당일 매도대금 재사용은 반영되지 않았으며, 09:01 조회 한 번이라 앞 주문이 묶은 금액이 다음 판정에 안 들어갔다.
+- 작업 내용: `KisTradingClient.buyable(code, price)` — 매수가능조회(`inquire-psbl-order`, 실전 TTTC8908R·모의 VTTC8908R 자동 치환) → 주문가능현금·미수 없는 매수가능수량. 실행기 ④: 매수 줄마다 발주 직전 조회 → 가능 수량 ≥ 계획 수량이면 발주, 아니면 그 줄만 생략(수량 축소 없음). 조회 실패 시 예수금 총액 누적 규칙으로 폴백("예수금 한도(폴백)"). 그리드 전량 자본 요건은 설계 그대로(주문표가 원장 현금 안에서 단을 만들고, 지정가는 증권사에서 금액이 묶임 — 실데이터 8.4년 grid1/2/3 체결률 25%/5%/1%, 전체 사다리 = 평가액 중앙 6.8%).
+- 테스트: `test_buyable_check_before_each_buy`(예수금 총액 0 이어도 KIS 가능 600,000 → grid1 발주 후 잔여 105,000 으로 grid2 "가능 1주 < 계획 3주" 생략, 얕은 단부터 발주 직전마다 조회), 기존 폴백 테스트 문구 갱신. 전체 스위트 결과는 커밋 메시지 참조.
+- Git commit: feat: auto-execution — check KIS buyable quantity right before each buy, deposit rule as fallback
