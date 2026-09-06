@@ -368,4 +368,10 @@
 
 - 작업 내용: docs/mjournal-broker-link-review-20260905.md §3-2 참조. `GET /mjournals/{jid}/return-series`(종목별 보유 구간 % 시리즈·종합·현재 수익률·안내), DB 일봉 부족분은 KIS 일봉으로 보충·적재(`_ensure_daily_bars`, 일지 연결 계좌 키 → .env 키), 마지막 점은 연결 계좌 현재가. 현황 카드에 탭 "보유 수익률 (%)"(기본) / "누적 실현손익 (원)", 구간별 라인·0% 기준선·종합 점선·청산 종목 토글, 도넛 풍선에 평가 수익률·보유 기간. 기록 입력에 종목코드(선택) 필드(`EntryIn.code`) — 코드가 있어야 시세를 붙일 수 있다.
 - 테스트: `test_journal_return_series_fifo_avg_and_segments`, `test_journal_return_series_fetches_missing_bars` — 전체 스위트·tsc·헤드리스는 커밋 메시지 참조.
-- Git commit: feat: journal daily return vs average cost — return-series API, KIS bar backfill, chart tabs
+- Git commit: feat: journal daily return vs average cost — return-series API, KIS bar backfill, chart tabs (#117)
+
+## [2026-09-06] change | deploy.sh — 같은 버전이면 중지, 롤백 보호, `restart` 모드 (사용자 지시 2건)
+
+- 작업 내용: ① 태그 배포 시 체크아웃 직후 실행 중인 `/api/health` 버전과 비교해 **같은 버전이면 재빌드하지 않고 중지**(저장소를 배포 전 ref 로 되돌리고 --stash 로 치운 변경도 복구), **낮은 버전이면 중지**(롤백 보호). `--force` 로 강제. 브랜치 배포(main)는 VERSION 이 같아도 코드가 바뀔 수 있어 경고만 하고 진행. ② `scripts/deploy.sh restart [서비스…]` — 코드·이미지 변경 없이 `docker compose restart` 후 헬스·상태 출력(코드 반영 아님을 명시). 헬스 대기를 `wait_health` 함수로 통합. README 업데이트 절·스크립트 도움말 갱신.
+- 테스트: `bash -n` 구문 검사, 로컬 재실행 시나리오(같은 버전 중지·--force 진행·restart) 는 원격 서버에서만 가능 — 검증 결과는 커밋 메시지 참조.
+- Git commit: change: deploy.sh — stop on same version, protect against downgrade, add restart mode
