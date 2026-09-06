@@ -589,7 +589,7 @@ function MJournalPage() {
           <div className="grid auto-rows-fr gap-3 sm:grid-cols-2 lg:col-span-2">
             {/* 계좌 평가금액 (2026-09-06 지시) — 주식 평가액 + 예수금. 일지가 계좌 주식을 전부 담고 있을 때만 표시 */}
             {detail.summary.account_total != null && (
-              <Stat label="계좌 평가금액" className="h-full !border-accent/30 !bg-accent-dim" size="lg" tone="accent"
+              <Stat hero label="계좌 평가금액" className="h-full"
                 value={fm(detail.summary.account_total)}
                 tip="연결 계좌의 주식 평가액과 예수금을 더한 금액입니다. 이 일지가 계좌의 주식을 전부 담고 있을 때만 표시됩니다. 예수금은 D+2 정산 기준이라 매도 직후 인출 가능액과 다를 수 있고, 대시보드 총자산에는 주식 평가액만 반영됩니다."
                 sub={<>주식 <b className="text-ink">{fm(detail.summary.eval_total ?? 0)}</b> + 예수금 <b className="text-ink">{fm(detail.summary.account_deposit ?? 0)}</b></>}

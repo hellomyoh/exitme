@@ -53,6 +53,13 @@ body {
   border-radius: var(--radius-card);
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
 }
+/* 핵심 카드 (2026-09-06 카드 위계 규칙) — 페이지당 하나(총자산·총수익률·계좌 평가금액).
+   숫자 색이 아닌 카드 장식(왼쪽 주황 선 + 아주 옅은 배경)으로 표시해 '숫자 색 = 손익 부호' 규칙을 지킨다. */
+.card.card-hero {
+  background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-accent) 22%, var(--color-line));
+  box-shadow: inset 3px 0 0 var(--color-accent), 0 1px 2px rgba(16, 24, 40, 0.05);
+}
 
 .input {
   background: var(--color-surface);

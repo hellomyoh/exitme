@@ -8,7 +8,7 @@ import { createChart, IChartApi, AreaSeries, LineSeries } from "lightweight-char
 import { apiFetch, ensureSession } from "../../lib/api";
 import { MarketFlag } from "../../components/flags";
 import { Spark } from "../../components/spark";
-import { Badge, Card, CardTitle, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone } from "../../components/ui";
+import { Badge, Card, CardTitle, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone, Stat } from "../../components/ui";
 
 type Breakdown = { value: number; cost: number; pnl: number; pnl_pct: number | null };
 type PortPosition = { code: string; name: string; qty: number; value: number };
@@ -191,52 +191,39 @@ export default function DashboardPage() {
       <PageTitle title="대시보드" sub="총자산과 전략 상태를 한 화면에서 — 일별 스냅샷 기준, 지연 시세" />
       {loadError && <div className="mb-4 rounded-xl border border-down/40 bg-down/5 px-4 py-3 text-[14px] font-semibold text-down">⚠️ {loadError}</div>}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-6">
-        {/* 1열 KPI 4카드 — 숫자+스파크라인, 자산 내용과의 중복 제거 (2026-09-05 지시) */}
-        <Card className="px-4 py-3.5 md:col-span-2">
-          <div className="text-[13px] text-faint">총자산 (KRW · 미국 자산 별도)</div>
-          <div className="mt-1 text-[24px] font-extrabold tracking-tight">{dash ? fmtWon(dash.total) : "—"}</div>
-          {dash && (
-            <div className="mt-0.5 flex flex-wrap gap-x-3 text-[12.5px]">
+        {/* 1열 KPI 4카드 — 숫자+스파크라인, 자산 내용과의 중복 제거 (2026-09-05 지시).
+            카드 위계 규칙 (2026-09-06): 총자산만 핵심(hero) 카드, 한국·미국 주식은 공용 Stat 19px — 네 페이지 동일 규칙 */}
+        <Stat hero className="md:col-span-2" label="총자산 (KRW · 미국 자산 별도)" value={dash ? fmtWon(dash.total) : "—"}
+          spark={dash?.total_trend ?? null}
+          sub={dash ? (<>
+            <span className="flex flex-wrap gap-x-3">
               <span className={`font-semibold ${toneCls[ct]}`}>
                 {dash.change_amount >= 0 ? "▲" : "▼"} 전일 {fmtWon(Math.abs(dash.change_amount))} ({fmtPct(dash.change_pct, 2)})
               </span>
               <span className="text-faint">전체 {fmtPct(dash.since_inception_pct, 2)}</span>
-            </div>
-          )}
-          {dash && (
-            <div className="mt-1 flex flex-wrap gap-x-3 text-[12.5px] text-muted">
-              {/* 주식 거래 자산과 매매일지 자산 분리 표기 (2026-09-05 지시) */}
+            </span>
+            {/* 주식 거래 자산과 매매일지 자산 분리 표기 (2026-09-05 지시) */}
+            <span className="mt-0.5 flex flex-wrap gap-x-3">
               <span>실전매매 <b className="text-ink">{fmtWon(dash.trading_total ?? dash.stock + dash.cash)}</b></span>
               <span>매매일지 <b className="text-ink">{fmtWon(dash.journal ?? 0)}</b></span>
               {dash.other > 0 && <span>기타 <b className="text-ink">{fmtWon(dash.other)}</b></span>}
-            </div>
-          )}
-          <Spark data={dash?.total_trend} />
-        </Card>
-        <Card className="px-4 py-3.5 md:col-span-1">
-          <div className="flex items-center gap-1.5 text-[13px] text-faint"><MarketFlag market="KR" /> 한국 주식</div>
-          <div className="mt-1 text-[20px] font-bold">{dash ? fmtWon(dash.kr_stock.value) : "—"}</div>
-          {dash && dash.kr_stock.cost > 0 && (
-            <div className={`text-[12.5px] font-semibold ${toneCls[pnlTone(dash.kr_stock.pnl)]}`}>
+            </span>
+          </>) : undefined} />
+        <Stat className="md:col-span-1" label={<><MarketFlag market="KR" /> 한국 주식</>} value={dash ? fmtWon(dash.kr_stock.value) : "—"}
+          spark={dash?.kr_trend ?? null} sparkColor="#2a78d6"
+          sub={dash && dash.kr_stock.cost > 0 ? (
+            <span className={`font-semibold ${toneCls[pnlTone(dash.kr_stock.pnl)]}`}>
               {dash.kr_stock.pnl >= 0 ? "+" : ""}{fmtWon(dash.kr_stock.pnl)}
               {dash.kr_stock.pnl_pct != null && ` (${fmtPct(dash.kr_stock.pnl_pct, 2)})`}
-            </div>
-          )}
-          <Spark data={dash?.kr_trend} color="#2a78d6" />
-        </Card>
-        <Card className="px-4 py-3.5 md:col-span-1">
-          <div className="flex items-center gap-1.5 text-[13px] text-faint"><MarketFlag market="US" /> 미국 주식 ($)</div>
-          <div className="mt-1 text-[20px] font-bold">
-            {dash ? `$${(dash.us_stock.value / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "—"}
-          </div>
-          {dash && dash.us_stock.cost > 0 && (
-            <div className={`text-[12.5px] font-semibold ${toneCls[pnlTone(dash.us_stock.pnl)]}`}>
+            </span>) : undefined} />
+        <Stat className="md:col-span-1" label={<><MarketFlag market="US" /> 미국 주식 ($)</>}
+          value={dash ? `$${(dash.us_stock.value / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "—"}
+          spark={dash?.us_trend ?? null} sparkColor="#1baf7a"
+          sub={dash && dash.us_stock.cost > 0 ? (
+            <span className={`font-semibold ${toneCls[pnlTone(dash.us_stock.pnl)]}`}>
               {dash.us_stock.pnl >= 0 ? "+" : ""}${(dash.us_stock.pnl / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}
               {dash.us_stock.pnl_pct != null && ` (${fmtPct(dash.us_stock.pnl_pct, 2)})`}
-            </div>
-          )}
-          <Spark data={dash?.us_trend} color="#1baf7a" />
-        </Card>
+            </span>) : undefined} />
         <Card className="px-4 py-3.5 md:col-span-2">
           <CardTitle>RAVG v2.5 레짐</CardTitle>
           {signal?.status === "OK" ? (
