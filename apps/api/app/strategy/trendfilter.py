@@ -20,6 +20,7 @@ TF_MA = 200            # 추세 기준선
 TF_EXIT_BUFFER = 0.02  # 이탈 히스테리시스 — MA200 을 2% 관통해야 청산
 TF_COMMISSION = 0.001  # 편도 수수료 (미국 기본)
 TF_FEE_ANNUAL = 0.002  # QQQ 보수 연 0.20% (일할)
+TF_CASH_RESERVE = 0.01 # 매수 수량 산정 시 남기는 현금 비율 — 일할 보수 차감으로 현금이 음수가 되지 않게 (2026-09-06, LTM 과 동일)
 
 
 def run_tf_backtest(bars: list[dict], capital: float,
@@ -45,6 +46,7 @@ def run_tf_backtest(bars: list[dict], capital: float,
 
     first = start_index if start_index is not None else 0
     cash, qty = float(capital), 0
+    fee_due = 0.0  # 현금이 바닥일 때 이연된 보수 — 다음 매도 대금에서 정산 (현금 음수 방지, 2026-09-06)
     buy_px = 0.0
     buy_i = 0
     for h in (initial_lots or []):  # 보유 상태로 시작 — K200(QQQ) 레그만 유효 (2026-09-02)
@@ -76,7 +78,7 @@ def run_tf_backtest(bars: list[dict], capital: float,
         # ① 전일 계획의 시장가 체결 (익일 시가)
         if pending == "buy":
             px = opens[nxt]
-            qty = int(cash / (px * (1 + commission)))
+            qty = int(cash * (1 - TF_CASH_RESERVE) / (px * (1 + commission)))
             if qty > 0:
                 cash -= qty * px * (1 + commission)
                 buy_px, buy_i = px, nxt
@@ -89,11 +91,17 @@ def run_tf_backtest(bars: list[dict], capital: float,
             fills.append(Fill(dates[nxt], K200, "sell", "tf_exit", round(px), qty))
             cash += proceeds
             qty = 0
+            paid = min(fee_due, cash)
+            cash -= paid
+            fee_due -= paid
         pending = None
 
-        # ② 보수 일할 차감 (보유 평가액 기준)
+        # ② 보수 일할 차감 (보유 평가액 기준) — 현금 한도까지만 차감하고 나머지는 이연(fee_due)
         if qty > 0:
-            cash -= qty * closes[nxt] * fee_annual / 365.0
+            fee = qty * closes[nxt] * fee_annual / 365.0
+            pay = min(fee, max(cash, 0.0))
+            cash -= pay
+            fee_due += fee - pay
 
         # ③ 당일 종가 기준 다음 계획
         m = ma200[nxt]
@@ -107,7 +115,7 @@ def run_tf_backtest(bars: list[dict], capital: float,
                 active_start = len(equity)
             holding = qty > 0
             if not holding and c > m:
-                est = int(cash / c)
+                est = int(cash * (1 - TF_CASH_RESERVE) / c)
                 if est > 0:
                     orders = (Order(K200, "buy", "market", est, None, "tf_entry"),)
                     pending = "buy"
@@ -127,7 +135,7 @@ def run_tf_backtest(bars: list[dict], capital: float,
                 bench_qty = bench_cash / opens[nxt + 1]
                 bench_cash = 0.0
 
-        v = cash + qty * c
+        v = cash + qty * c - fee_due
         bench_v = bench_cash + bench_qty * c * (1 - 0)  # 보수는 전략과 동일하게 미차감(단순 비교)
         out_dates.append(dates[nxt])
         equity.append(v)

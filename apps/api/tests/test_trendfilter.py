@@ -33,6 +33,15 @@ def test_tf_hysteresis_no_flapping():
             assert ind["close"] > ind["ma200"] - 1e-9
 
 
+def test_tf_cash_never_negative_on_long_hold():
+    """장기 보유 중 일할 보수를 차감해도 현금이 음수가 되지 않는다 (2026-09-06 현금 여유 1%)."""
+    bars = make_bars(n=1500, drift=0.002)
+    r = run_tf_backtest(bars, 100_000_000)
+    assert sum(1 for x in r.regimes if x == "BULL") > 1000  # 대부분 보유
+    assert min(r.cash_curve) >= 0
+    assert r.cash_curve[-1] < 100_000_000 * 0.02          # 여유는 2% 미만 — 사실상 전액 투자
+
+
 def test_tf_downtrend_stays_cash():
     bars = make_bars(n=700, seed=11, drift=-0.002)
     r = run_tf_backtest(bars, 100_000_000)
