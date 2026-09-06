@@ -102,7 +102,7 @@ def test_approval_requires_setting_and_limit_lines():
     tomorrow = date.today() + timedelta(days=1)
     pid, _ = _setup_portfolio(c, h, tomorrow, LINES, gap_exact=97500.0)
     # 기본: 둘 다 꺼짐 → 승인 거절
-    assert c.get("/settings/auto-exec", headers=h).json() == {"buy": False, "sell": False}
+    assert c.get("/settings/auto-exec", headers=h).json() == {"buy": False, "sell": False, "preopen_cancel": True}
     body = {"date": tomorrow.isoformat(), "lines": [LINES[0]]}
     r = c.post(f"/portfolio/{pid}/orders/approve", json=body, headers=h)
     assert r.status_code == 409 and "무인 매수" in r.json()["detail"]
@@ -117,7 +117,7 @@ def test_approval_requires_setting_and_limit_lines():
     assert [i["status"] for i in r2["items"]] == ["duplicate", "mismatch"]
     # 주문 목록에 무인 상태·허용 스위치가 실린다
     lst = c.get(f"/portfolio/{pid}/orders?date={tomorrow.isoformat()}", headers=h).json()
-    assert lst["auto_exec"]["allowed"] == {"buy": True, "sell": False} and lst["auto_exec"]["paused"] is False
+    assert lst["auto_exec"]["allowed"] == {"buy": True, "sell": False, "preopen_cancel": True} and lst["auto_exec"]["paused"] is False
     assert sum(1 for i in lst["items"] if i["status"] == "approved") == 2
     # 승인 철회 = 취소 (KIS 호출 없음)
     oid = next(i["id"] for i in lst["items"] if i["status"] == "approved")

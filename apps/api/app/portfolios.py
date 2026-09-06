@@ -248,6 +248,14 @@ def delete_transaction(tx_id: int, user_id: int = Depends(current_user_id),
     if tx is None:
         raise HTTPException(status_code=404, detail="transaction not found")
     pf = _owned_portfolio(session, tx.portfolio_id, user_id)
+    # 로그 페이지 (2026-09-06) — 삭제된 거래는 원장에서 사라지므로 이벤트로 남긴다
+    from app.activity import TX_KO, log_event
+
+    _inst = session.get(Instrument, tx.instrument_id) if tx.instrument_id else None
+    _desc = (f"{TX_KO.get(tx.kind, tx.kind)} {(_inst.name if _inst else '')} {int(tx.qty or 0):,}주 @{int(tx.price or 0):,}"
+             if tx.kind in ("buy", "sell") else f"{TX_KO.get(tx.kind, tx.kind)} {int(tx.amount or 0):,}")
+    log_event(session, user_id, "tx.delete", f"거래 삭제 — {_desc} ({tx.executed_at.date().isoformat()})" + (f" · {tx.memo}" if tx.memo else ""),
+              level="warn", portfolio_id=pf.id, data={"tx_id": tx.id, "kind": tx.kind})
     session.delete(tx)
     session.flush()
     _rebuild_ledger(session, pf.id)

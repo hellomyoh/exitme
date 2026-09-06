@@ -8,6 +8,11 @@
 ```
 전날 16:40~     주문표 조회 → 줄 체크 → [🤖 무인 실행 승인] → BrokerOrder(mode=auto, status=approved)
                 (설정에서 그 방향이 허용돼 있어야 버튼이 동작. 시장가 줄은 제외 → 예약주문으로)
+실행일 08:57    워커 preopen_gap_cancel (app/preopen.py, 2026-09-06 밤 지시 — 취소만 무인) → 오늘 계획이 있는 국내 포트별:
+                  설정 auto_exec.preopen_cancel(기본 켜짐) → 200 ETF 예상체결가(FHKST01010200 antc_cnpr, 최대 3회 재시도)
+                  → 예상체결가 ≤ gap_cancel_exact ? KIS 정정취소가능(미체결) 주문 중 200 ETF 매수·오늘 그리드 지정가와 같은 것 취소(TTTC0013U)
+                    (앱 예약주문 → BrokerOrder gap_cancelled · HTS 직접 주문 → 로그에 '앱 밖 주문' · 미체결 목록에 없는 예약주문 → '취소 불가' 기록)
+                  → params.preopen_cancel.last_run + 활동 로그. 무인 승인 줄(auto)은 건드리지 않음 — 09:01 이 실제 시가로 판정
 실행일 09:01    워커 auto_execute_open → 포트별:
                   락(하루 1회) → 정지 상태·설정 스위치 재확인 → 당일 시가 조회(현재가 TR stck_oprc, 최대 4회 재시도)
                   → 시가 ≤ gap_cancel_exact ? 그리드 매수 skipped_gap
@@ -31,14 +36,17 @@
 | 기록 | `models.py` `BrokerOrder.mode`('reserve'/'auto'), `UserSettings.auto_exec`, `TradePortfolio.params.auto_exec` | 마이그레이션 0021 |
 | 훅 | `broker.py` | `STATUS_KO` 확장, 주문 목록 응답에 `auto_exec`, 취소 엔드포인트가 무인 줄 처리(승인 철회 / 정규 주문 취소), `run_post_close_sync` 가 확정·정지 |
 | 계획 | `signals.py` | `PortfolioPlan.payload.gap_cancel_exact`(정확값) 추가 — 시가 판정용 |
-| 워커 | `worker.py` | `auto-exec-open` 09:01 mon–fri, `max_retries=0`, 휴장일 스킵 |
-| 웹 | `portfolio/page.tsx`, `settings/page.tsx` | 승인 버튼·확인창·상태·배너 / 무인 실행 탭 |
+| 워커 | `worker.py` | `auto-exec-open` 09:01 mon–fri, `max_retries=0`, 휴장일 스킵 · `preopen-gap-cancel` 08:57 mon–fri (2026-09-06 밤) |
+| 사전 갭 취소 | `app/preopen.py` `run_preopen_cancel`, `services/kis_client.py` `fetch_expected`(FHKST01010200)·`list_open_orders`(TTTC0084R 실전 전용) | 예상체결가 ≤ 기준 → 그리드 가격과 같은 200 ETF 매수 미체결 취소. `BrokerOrder.status=gap_cancelled`, `params.preopen_cancel.last_run`. 설정 `auto_exec.preopen_cancel` 기본 켜짐 |
+| 로그 | `app/activity.py` `log_event`, `GET /logs`, `models.ActivityLog`(0022) | 거래(원장)·주문(BrokerOrder)·이벤트(ActivityLog) 병합. 기록 지점: 무인 실행 요약·정지·승인, 예약주문 접수·취소, 사전 갭 취소, 장 마감 동기화 결과·오류, 예수금 대조 경고·보정, 거래 삭제 |
+| 웹 | `portfolio/page.tsx`, `settings/page.tsx`, `logs/page.tsx` | 승인 버튼·확인창·상태·배너·사전 갭 확인 한 줄 / 무인 실행 탭(매수·매도·사전 갭 취소 스위치) / 매매 로그(기간·유형·수준·포트·검색 필터) |
 
 ## 3. 상태 흐름 (BrokerOrder.mode=auto)
 
 `approved` → (09:01) `submitted` → (15:45) `filled` | `partial` | `unfilled`
 `approved` → `skipped_gap`(갭 취소) | `skipped`(설정 꺼짐·시장가·시가 미확인·예수금/잔고 부족·정지) | `failed`(KIS 오류)
 `approved` → `cancelled`(사용자 승인 철회, KIS 호출 없음) · `submitted` → `cancelled`(정규 주문 취소 TR)
+(mode=reserve) `reserved` → (08:57 사전 갭 취소) `gap_cancelled` — 예상체결가 ≤ 기준일 때 미체결 목록에서 찾아 취소한 그리드 매수. 못 찾으면 `reserved` 유지 + 메시지 '취소 불가'
 
 ## 4. 테스트 (`tests/test_autoexec.py`)
 
@@ -82,4 +90,5 @@
 - 하루 1회 락은 Redis 기준이며, Redis 가 없으면 `last_run.date` 마커로 대신한다.
 - 대조 경고로 정지되면 그날 이미 발주된 주문은 취소하지 않는다(사용자 판단). 배너에서 확인 후 해제.
 - 미국 포트·시장가 줄은 대상 외(예약주문/수동).
+- **사전 갭 취소의 한계**(2026-09-06 밤): 예상체결가는 동시호가 호가 잔량으로 계산한 근사값이다 — 08:57 예상이 기준 아래여도 09:00 실제 시가가 위로 열리면 그날 그리드 매수를 놓친다(손실 아님). KIS 예약주문이 정규 주문으로 전송되는 시각이 08:57 보다 늦으면 미체결 목록에 없어 취소하지 못하고 '취소 불가'로 기록된다(실계좌 첫 주에 확인할 것). 미체결 조회 TR 은 실전 전용이라 모의 계좌는 대상 외. 대상은 **오늘 계획의 그리드 지정가와 정확히 같은 200 ETF 매수**뿐이라 사용자가 다른 가격으로 넣은 주문은 건드리지 않는다.
 - **예수금 대조**(2026-09-06, `app/cashcheck.py`): 15:45/17:10 동기화가 체결을 가져온 뒤 원장 현금과 계좌 **D+2 예수금**(가수도정산금액)을 비교해 `params.cash_check` 에 저장한다. 허용 오차(1만원 또는 총자산 0.1% 중 큰 값 — 수수료·분배금 범위)를 넘으면 주문표 위에 경고 배너. **자동 수정·자동 정지 없음** — "차액을 입출금으로 등록" 버튼 한 번으로 원장을 계좌에 맞춘다(오늘 대조 결과이고 대조 이후 원장이 안 바뀐 경우만). 주문표(그리드 수량)는 원장 현금으로 계산되므로 차이가 크면 매수 수량이 실제와 어긋난다 — 발주 자체는 매수가능조회가 막아 주지만 계획은 틀어진다. 시작 패널의 "계좌에서 불러오기"로 처음부터 계좌 값(D+2 예수금·전략 종목 보유)으로 시작할 수 있다.

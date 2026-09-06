@@ -43,12 +43,15 @@ GRID_KINDS_PREFIX = "grid"      # 갭 취소 대상(그리드 매수) 종류 접
 def user_auto_exec(session: Session, user_id: int) -> dict:
     row = session.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
     v = (row.auto_exec if row else None) or {}
-    return {"buy": bool(v.get("buy", False)), "sell": bool(v.get("sell", False))}
+    # preopen_cancel: 장 시작 전 예상 시가 갭 취소 (2026-09-06 지시, app.preopen) — 취소만 하는 보호 동작이라 기본 켜짐
+    return {"buy": bool(v.get("buy", False)), "sell": bool(v.get("sell", False)),
+            "preopen_cancel": bool(v.get("preopen_cancel", True))}
 
 
 class AutoExecSettingIn(BaseModel):
     buy: bool
     sell: bool
+    preopen_cancel: bool | None = None   # 생략 = 유지
 
 
 @router.get("/settings/auto-exec")
@@ -64,9 +67,11 @@ def put_auto_exec_setting(body: AutoExecSettingIn, user_id: int = Depends(curren
     from app.settings import _row
 
     row = _row(session, user_id)
-    row.auto_exec = {"buy": body.buy, "sell": body.sell}
+    cur = dict(row.auto_exec or {})
+    pre = body.preopen_cancel if body.preopen_cancel is not None else bool(cur.get("preopen_cancel", True))
+    row.auto_exec = {"buy": body.buy, "sell": body.sell, "preopen_cancel": pre}
     session.commit()
-    logger.info("auto-exec setting user=%s buy=%s sell=%s", user_id, body.buy, body.sell)
+    logger.info("auto-exec setting user=%s buy=%s sell=%s preopen_cancel=%s", user_id, body.buy, body.sell, pre)
     return user_auto_exec(session, user_id)
 
 
@@ -91,6 +96,14 @@ def pause_portfolio(pf: TradePortfolio, reason: str, now: datetime | None = None
     now = now or datetime.now(KST)
     _set_pf_auto_state(pf, paused=True, paused_reason=reason[:200], paused_at=now.isoformat())
     logger.warning("auto-exec paused pid=%s: %s", pf.id, reason)
+    # 로그 페이지 (2026-09-06) — 정지는 반드시 남긴다
+    from sqlalchemy.orm import object_session
+
+    from app.activity import log_event
+
+    s = object_session(pf)
+    if s is not None:
+        log_event(s, pf.user_id, "autoexec.paused", f"무인 실행 정지 — {reason[:200]}", level="error", portfolio_id=pf.id, at=now)
 
 
 def auto_exec_view(session: Session, pf: TradePortfolio) -> dict:
@@ -191,6 +204,12 @@ def approve_auto_orders(pid: int, body: ApproveIn, user_id: int = Depends(curren
         ok += 1
         items.append(_order_out(row))
         logger.info("auto-exec approved pid=%s %s %s x%s @%s for %s", pid, key, code, ln.qty, ln.price, body.date)
+    from app.activity import log_event
+
+    log_event(session, user_id, "autoexec.approve",
+              f"무인 실행 승인 {ok}건 (실행일 {body.date.isoformat()})" + (f" · 거절 {failed}건" if failed else ""),
+              level="warn" if failed else "info", portfolio_id=pid,
+              data={"date": body.date.isoformat(), "approved": ok, "failed": failed, "lines": [i["line_key"] for i in items]})
     session.commit()
     return {"date": body.date.isoformat(), "approved": ok, "failed": failed, "items": items}
 
@@ -247,13 +266,39 @@ def run_auto_execution(session: Session, now: datetime | None = None, client_fac
                      "skipped": 0, "failed": 0}
         try:
             _execute_portfolio(session, pf, rows, today, now, client_factory, sleep_fn, rec)
+            if pf is not None and rec.get("error") not in ("already-ran", "locked"):
+                _log_run(session, pf, rec, now)   # 로그 페이지 (2026-09-06)
             session.commit()
         except Exception as exc:  # noqa: BLE001 — 포트 단위 실패는 기록하고 다음 포트
             session.rollback()
             rec["error"] = str(exc)[:200]
             logger.exception("auto-exec portfolio failed pid=%s", pid)
+            if pf is not None:
+                try:
+                    from app.activity import log_event
+
+                    log_event(session, pf.user_id, "autoexec.error", f"무인 실행 오류 — {str(exc)[:200]}", level="error", portfolio_id=pf.id, at=now)
+                    session.commit()
+                except Exception:  # noqa: BLE001
+                    session.rollback()
         out["portfolios"].append(rec)
     return out
+
+
+def _log_run(session: Session, pf: TradePortfolio, rec: dict, now: datetime) -> None:
+    """실행 요약 한 줄 — 줄별 결과는 BrokerOrder 가 원천이므로 여기서는 건수만."""
+    from app.activity import log_event
+
+    parts = [f"발주 {rec['submitted']}건"]
+    if rec["skipped_gap"]:
+        parts.append(f"갭 취소 생략 {rec['skipped_gap']}건")
+    if rec["skipped"]:
+        parts.append(f"생략 {rec['skipped']}건")
+    if rec["failed"]:
+        parts.append(f"실패 {rec['failed']}건")
+    lvl = "error" if rec["failed"] else ("warn" if (rec["skipped"] or rec["skipped_gap"]) else "info")
+    log_event(session, pf.user_id, "autoexec.run", f"무인 실행 {now:%H:%M} — " + " · ".join(parts), level=lvl,
+              portfolio_id=pf.id, data={k: v for k, v in rec.items() if k != "name"}, at=now)
 
 
 def _ledger_holdings(session: Session, pid: int) -> dict[str, int]:

@@ -58,6 +58,11 @@ celery_app.conf.update(
             "task": "app.worker.auto_execute_open",
             "schedule": crontab(hour=9, minute=1, day_of_week="mon-fri"),
         },
+        # 장 시작 전 예상 시가 갭 취소 (2026-09-06 지시) — 08:57 동시호가 예상체결가 ≤ 갭 기준이면 접수된 그리드 매수를 취소(취소만 무인)
+        "preopen-gap-cancel": {
+            "task": "app.worker.preopen_gap_cancel",
+            "schedule": crontab(hour=8, minute=57, day_of_week="mon-fri"),
+        },
     },
 )
 
@@ -305,6 +310,22 @@ def auto_execute_open() -> dict:
             logger.info("skip auto_execute_open: %s is a holiday", today)
             return {"skipped": "holiday", "date": today.isoformat()}
         return run_auto_execution(session)
+
+
+@celery_app.task(name="app.worker.preopen_gap_cancel", max_retries=0)
+def preopen_gap_cancel() -> dict:
+    """장 시작 전 예상 시가 갭 취소 — 08:57 예상체결가로 판정, 그리드 매수 미체결 취소 (재시도 없음: 09:00 넘기면 의미 없음)."""
+    from app.db import SessionLocal
+    from app.models import TradingCalendar
+    from app.preopen import run_preopen_cancel
+
+    today = datetime.now(KST).date()
+    with SessionLocal() as session:
+        cal = session.get(TradingCalendar, today)
+        if cal is not None and not cal.is_open:
+            logger.info("skip preopen_gap_cancel: %s is a holiday", today)
+            return {"skipped": "holiday", "date": today.isoformat()}
+        return run_preopen_cancel(session)
 
 
 @celery_app.task(name="app.worker.broker_post_close_sync", max_retries=1, autoretry_for=(Exception,), retry_backoff=120)

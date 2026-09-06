@@ -486,7 +486,9 @@ def reconcile_for_portfolio(session: Session, pid: int, market: str = "KR") -> d
 STATUS_KO = {"reserved": "등록완료", "cancelled": "취소됨", "filled": "체결", "partial": "일부 체결",
              "unfilled": "미체결", "failed": "접수 실패", "duplicate": "이미 접수됨", "mismatch": "주문표 불일치",
              # 무인 실행 (2026-09-06)
-             "approved": "무인 승인", "submitted": "무인 발주", "skipped_gap": "갭 취소 생략", "skipped": "생략"}
+             "approved": "무인 승인", "submitted": "무인 발주", "skipped_gap": "갭 취소 생략", "skipped": "생략",
+             # 장 시작 전 예상 시가 갭 취소 (2026-09-06, app.preopen) — 접수된 예약주문(정규 주문 전환분)을 08:57 에 취소
+             "gap_cancelled": "갭 취소됨(예상 시가)"}
 
 
 def reservation_window(now: datetime | None = None, session: Session | None = None) -> dict:
@@ -562,6 +564,13 @@ def sync_orders(session: Session, cred: BrokerCredential, rows: list[BrokerOrder
         remote = _client(cred).list_reserved_orders(start, end)
     except Exception as exc:  # noqa: BLE001 — 상태 조회 실패는 다음 동기화에서 재시도
         logger.warning("reserved-order sync failed cred=%s: %s", cred.id, exc)
+        try:
+            from app.activity import log_event  # 로그 페이지 (2026-09-06)
+
+            log_event(session, cred.user_id, "sync.reserved_failed", f"예약주문 상태 조회 실패 — {humanize_kis_error(str(exc)[:160])}",
+                      level="warn", portfolio_id=active[0].portfolio_id, at=now)
+        except Exception:  # noqa: BLE001
+            pass
         return 0
     by_seq = {str(r["rsvn_ord_seq"]): r for r in remote if r.get("rsvn_ord_seq")}
     changed = 0
@@ -628,7 +637,8 @@ def list_broker_orders(pid: int, date_: date | None = Query(default=None, alias=
     from app.autoexec import auto_exec_view
 
     return {"window": reservation_window(session=session), "items": [_order_out(r) for r in rows],
-            "auto_exec": auto_exec_view(session, pf)}
+            "auto_exec": auto_exec_view(session, pf),
+            "preopen": (pf.params or {}).get("preopen_cancel")}  # 사전 갭 취소 마지막 실행 요약 (2026-09-06)
 
 
 @router.post("/portfolio/{pid}/orders/reserve")
@@ -703,6 +713,12 @@ def reserve_broker_orders(pid: int, body: ReserveIn, user_id: int = Depends(curr
         session.add(row)
         session.flush()
         items.append(_order_out(row))
+    from app.activity import log_event  # 로그 페이지 (2026-09-06)
+
+    log_event(session, user_id, "order.reserve",
+              f"예약주문 접수 {ok}건 (실행일 {body.date.isoformat()})" + (f" · 실패 {failed}건" if failed else ""),
+              level="warn" if failed else "info", portfolio_id=pid,
+              data={"date": body.date.isoformat(), "reserved": ok, "failed": failed, "lines": [i["line_key"] for i in items]})
     session.commit()
     return {"date": body.date.isoformat(), "reserved": ok, "failed": failed, "items": items}
 
@@ -711,13 +727,17 @@ def reserve_broker_orders(pid: int, body: ReserveIn, user_id: int = Depends(curr
 def cancel_broker_order(pid: int, oid: int, user_id: int = Depends(current_user_id),
                         session: Session = Depends(get_session)) -> dict:
     """접수된 예약주문 취소 (정정은 없음 — 취소 후 재접수). 무인 승인 줄은 승인 철회, 발주된 줄은 정규 주문 취소."""
+    from app.activity import log_event  # 로그 페이지 (2026-09-06)
+
     _owned(session, pid, user_id)
     row = session.get(BrokerOrder, oid)
     if row is None or row.portfolio_id != pid:
         raise HTTPException(status_code=404, detail="order not found")
+    what = f"{row.code} {'매수' if row.side == 'buy' else '매도'} {int(row.qty):,}주" + (f" @{int(row.price):,}" if row.price else " 시장가")
     if (getattr(row, "mode", "reserve") or "reserve") == "auto":
         if row.status == "approved":
             row.status, row.message = "cancelled", "승인 철회"
+            log_event(session, user_id, "order.cancel", f"무인 실행 승인 철회 — {what} (실행일 {row.plan_date.isoformat()})", portfolio_id=pid, data={"order_id": row.id})
             session.commit()
             return _order_out(row)
         if row.status not in ("submitted", "partial"):
@@ -728,6 +748,7 @@ def cancel_broker_order(pid: int, oid: int, user_id: int = Depends(current_user_
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"주문 취소 실패 — {humanize_kis_error(str(exc)[:200])}")
         row.status, row.message = "cancelled", r["msg"] or "취소됨"
+        log_event(session, user_id, "order.cancel", f"무인 발주 취소 — {what} (주문 {row.order_no})", level="warn", portfolio_id=pid, data={"order_id": row.id, "order_no": row.order_no})
         session.commit()
         return _order_out(row)
     if row.status not in ("reserved", "partial"):
@@ -742,6 +763,7 @@ def cancel_broker_order(pid: int, oid: int, user_id: int = Depends(current_user_
         raise HTTPException(status_code=502, detail=f"예약주문 취소 실패 — {humanize_kis_error(str(exc)[:200])}")
     row.status = "cancelled"
     row.message = r["msg"] or "취소됨"
+    log_event(session, user_id, "order.cancel", f"예약주문 취소 — {what} (예약 {row.rsvn_ord_seq})", level="warn", portfolio_id=pid, data={"order_id": row.id, "rsvn_ord_seq": row.rsvn_ord_seq})
     session.commit()
     return _order_out(row)
 
@@ -792,6 +814,7 @@ def run_post_close_sync(session: Session, now: datetime | None = None) -> dict:
             except Exception as exc:  # noqa: BLE001
                 session.rollback()
                 rec["cash_check_error"] = str(exc)[:200]
+        _log_post_close(session, pf, rec, now)   # 로그 페이지 (2026-09-06) — 결과 한 줄 + 오류
         out["portfolios"].append(rec)
     for j in session.scalars(select(ManualJournal).where(ManualJournal.broker_credential_id.is_not(None))).all():
         cred = session.get(BrokerCredential, j.broker_credential_id)
@@ -807,3 +830,34 @@ def run_post_close_sync(session: Session, now: datetime | None = None) -> dict:
         out["journals"].append(rec)
     logger.info("post-close sync: %s", out)
     return out
+
+
+def _log_post_close(session: Session, pf, rec: dict, now: datetime) -> None:
+    """동기화 결과를 활동 로그에 한 줄로. 예수금 대조 경고는 별도 한 줄(로그 페이지 '경고 이상' 필터에 잡히도록)."""
+    from app.activity import log_event
+
+    try:
+        errs = [str(rec[k]) for k in ("error", "orders_error", "cash_check_error") if rec.get(k)]
+        parts = []
+        if "fetched" in rec:
+            parts.append(f"체결 {rec['fetched']}건 조회 · 신규 {rec['added']}건 등록")
+        if rec.get("orders_changed"):
+            parts.append(f"주문 상태 {rec['orders_changed']}건 갱신")
+        if rec.get("auto_exec_paused"):
+            parts.append("대조 경고로 무인 실행 정지")
+        cc = rec.get("cash_check")
+        if cc:
+            parts.append(f"예수금 차이 {int(cc['diff']):+,}원" + (" (경고)" if cc.get("warn") else ""))
+        text = f"장 마감 동기화 {now:%H:%M} — " + (" · ".join(parts) if parts else "변경 없음")
+        if errs:
+            text += " · 오류: " + " / ".join(e[:120] for e in errs)
+        lvl = "error" if errs else ("warn" if (cc and cc.get("warn")) or rec.get("auto_exec_paused") else "info")
+        log_event(session, pf.user_id, "sync.post_close", text, level=lvl, portfolio_id=pf.id,
+                  data={k: v for k, v in rec.items() if k != "name"}, at=now)
+        if cc and cc.get("warn"):
+            log_event(session, pf.user_id, "cash_check.warn",
+                      f"예수금 대조 — 원장 {int(cc['ledger_cash']):,}원 vs 계좌 D+2 {int(cc['account_cash']):,}원, 차이 {int(cc['diff']):+,}원 (허용 {int(cc['tolerance']):,}원)",
+                      level="warn", portfolio_id=pf.id, data=cc, at=now)
+        session.commit()
+    except Exception:  # noqa: BLE001 — 로그 실패가 동기화를 막지 않게
+        session.rollback()

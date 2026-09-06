@@ -188,6 +188,11 @@ def align_cash(pid: int, user_id: int = Depends(current_user_id),
     from app.dashboard import compute_user_snapshot, kst_today  # 당일 스냅샷 즉시 반영 (수동 등록 경로와 동일)
 
     compute_user_snapshot(session, user_id, kst_today())
+    from app.activity import log_event  # 로그 페이지 (2026-09-06)
+
+    log_event(session, user_id, "cash_check.align",
+              f"예수금 보정 — {'입금' if kind == 'deposit' else '출금'} {abs(diff):,}원 등록, 원장 현금을 계좌 D+2 예수금 {int(check['account_cash']):,}원에 맞춤",
+              portfolio_id=pf.id, data={"tx_id": None, "kind": kind, "amount": abs(diff), "account_cash": check["account_cash"]}, at=now)
     session.commit()
     logger.info("cash-check align pid=%s %s %s", pf.id, kind, abs(diff))
     return {"added": True, "tx_id": tx.id, "kind": kind, "amount": abs(diff), "cash_check": new_check}

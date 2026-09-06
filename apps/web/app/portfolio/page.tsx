@@ -159,7 +159,10 @@ function PortfolioPage() {
   // 무인 실행 상태 (2026-09-06, ADR-008) — 설정 허용 스위치 + 포트 정지 상태 + 마지막 실행 요약
   type AutoExec = { allowed: { buy: boolean; sell: boolean }; paused: boolean; paused_reason: string | null; paused_at: string | null;
     fail_streak: number; last_run: { date: string; at: string; open: number | null; gap_hit: boolean; submitted: number; skipped_gap: number; skipped: number; failed: number; note?: string } | null };
-  type BrokerOrders = { window: { open: boolean; reason: string }; items: BrokerOrderRow[]; auto_exec?: AutoExec };
+  // 장 시작 전 예상 시가 갭 취소 마지막 실행 (2026-09-06, app.preopen) — 08:57 예상체결가 판정 결과
+  type PreopenRun = { date: string; at: string; expected: number | null; gap_exact: number | null; gap_hit: boolean;
+    cancelled: number; failed: number; untracked: number; unmatched: number; note?: string | null };
+  type BrokerOrders = { window: { open: boolean; reason: string }; items: BrokerOrderRow[]; auto_exec?: AutoExec; preopen?: { last_run?: PreopenRun | null } | null };
   const [bo, setBo] = useState<BrokerOrders | null>(null);
   const [boConfirm, setBoConfirm] = useState(false);
   const [boBusy, setBoBusy] = useState(false);
@@ -986,6 +989,19 @@ function PortfolioPage() {
             </div>
           </div>
         )}
+        {/* 장 시작 전 예상 시가 갭 취소 결과 (2026-09-06) — 08:57 예상체결가 vs 갭 기준, 취소 건수 */}
+        {market === "KR" && bo?.preopen?.last_run && bo.preopen.last_run.date === (signal?.exec_day ?? "") && (() => { const p = bo.preopen!.last_run!; return (
+          <p className="mb-2 text-[12.5px] text-muted">
+            🕗 장 시작 전 갭 확인 {p.at.slice(11, 16)} —{" "}
+            {p.expected == null ? <span className="text-faint">예상체결가 없음{p.note ? ` (${p.note})` : ""}</span>
+              : p.gap_hit ? <>예상 시가 {fpx(p.expected)} ≤ 기준 {fpx(p.gap_exact ?? 0)} → <b className="text-down">그리드 매수 {p.cancelled}건 취소</b>
+                  {p.failed > 0 && <> · <b className="text-down">취소 실패 {p.failed}건</b></>}
+                  {p.unmatched > 0 && <> · 취소 불가 {p.unmatched}건(미체결 목록에 없음)</>}
+                  {p.untracked > 0 && <span className="text-faint"> · 앱 밖 주문 {p.untracked}건 포함</span>}
+                  {p.note && <span className="text-faint"> · {p.note}</span>}</>
+              : <>예상 시가 {fpx(p.expected)} {">"} 기준 {fpx(p.gap_exact ?? 0)} — 그리드 매수 유지{p.note ? ` · ${p.note}` : ""}</>}
+          </p>
+        ); })()}
         {market === "KR" && ae?.last_run && ae.last_run.date === (signal?.exec_day ?? "") && (
           <p className="mb-2 text-[12.5px] text-muted">
             🤖 무인 실행 {ae.last_run.at.slice(11, 16)} — 발주 <b className="text-ink">{ae.last_run.submitted}</b>건
@@ -1169,6 +1185,7 @@ function PortfolioPage() {
                               <button className="text-faint hover:text-down" disabled={boBusy} onClick={() => void cancelOrder(b)}>취소</button>
                             </span>);
                           if (b.status === "unfilled") return <span className="text-faint">○ 미체결</span>;
+                          if (b.status === "gap_cancelled") return <span className="text-warn" title={b.message ?? ""}>⤫ 갭 취소됨 (예상 시가)</span>;
                           if (b.status === "cancelled") return <span className="text-faint">취소됨</span>;
                           return <span className="text-down" title={b.message ?? ""}>✗ {b.status_ko}{b.message ? ` — ${b.message.slice(0, 40)}` : ""}</span>;
                         })()}
