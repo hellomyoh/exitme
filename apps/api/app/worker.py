@@ -58,6 +58,11 @@ celery_app.conf.update(
             "task": "app.worker.auto_execute_open",
             "schedule": crontab(hour=9, minute=1, day_of_week="mon-fri"),
         },
+        # 완전 무인 운영 (2026-09-07 지시) — 16:45 (체결 가져오기 15:45·일봉 16:05·스냅샷 16:40 뒤) 다음 실행일 주문표 계산 → 자동 승인·시장가 줄 예약 접수
+        "auto-approve-plan": {
+            "task": "app.worker.auto_approve_plan",
+            "schedule": crontab(hour=16, minute=45, day_of_week="mon-fri"),
+        },
         # 장 시작 전 예상 시가 갭 취소 (2026-09-06 지시) — 08:57 동시호가 예상체결가 ≤ 갭 기준이면 접수된 그리드 매수를 취소(취소만 무인)
         "preopen-gap-cancel": {
             "task": "app.worker.preopen_gap_cancel",
@@ -310,6 +315,22 @@ def auto_execute_open() -> dict:
             logger.info("skip auto_execute_open: %s is a holiday", today)
             return {"skipped": "holiday", "date": today.isoformat()}
         return run_auto_execution(session)
+
+
+@celery_app.task(name="app.worker.auto_approve_plan", max_retries=0)
+def auto_approve_plan() -> dict:
+    """완전 무인 — 자동 승인이 켜진 국내 포트의 다음 실행일 주문표를 계산해 승인·예약 접수 (재시도 없음: 중복 접수 방지)."""
+    from app.autoapprove import run_auto_approve
+    from app.db import SessionLocal
+    from app.models import TradingCalendar
+
+    today = datetime.now(KST).date()
+    with SessionLocal() as session:
+        cal = session.get(TradingCalendar, today)
+        if cal is not None and not cal.is_open:
+            logger.info("skip auto_approve_plan: %s is a holiday", today)
+            return {"skipped": "holiday", "date": today.isoformat()}
+        return run_auto_approve(session)
 
 
 @celery_app.task(name="app.worker.preopen_gap_cancel", max_retries=0)

@@ -81,7 +81,17 @@ def pf_auto_state(pf: TradePortfolio) -> dict:
     st = dict(((pf.params or {}).get("auto_exec") or {}))
     return {"paused": bool(st.get("paused", False)), "paused_reason": st.get("paused_reason"),
             "paused_at": st.get("paused_at"), "fail_streak": int(st.get("fail_streak", 0) or 0),
-            "last_run": st.get("last_run")}
+            "last_run": st.get("last_run"),
+            # 완전 무인(자동 승인, 2026-09-07 지시, app.autoapprove)
+            "auto_approve": auto_approve_cfg(pf), "auto_approve_last": st.get("auto_approve_last")}
+
+
+def auto_approve_cfg(pf: TradePortfolio) -> dict:
+    """포트별 자동 승인 설정 — params.auto_exec.auto_approve. 기본 꺼짐, 시장가 줄 예약 접수 기본 켬, 상한 없음."""
+    st = dict((((pf.params or {}).get("auto_exec") or {}).get("auto_approve")) or {})
+    cap = st.get("daily_buy_cap")
+    return {"enabled": bool(st.get("enabled", False)), "market_reserve": bool(st.get("market_reserve", True)),
+            "daily_buy_cap": int(cap) if cap else None, "updated_at": st.get("updated_at")}
 
 
 def _set_pf_auto_state(pf: TradePortfolio, **kw) -> None:

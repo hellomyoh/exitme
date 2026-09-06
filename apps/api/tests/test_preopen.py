@@ -133,7 +133,7 @@ def _rec(out, pid):
 def test_preopen_no_gap_keeps_orders():
     """예상체결가 > 기준 → 아무것도 취소하지 않고 '유지' 기록만. 주문표 응답 preopen.last_run, 로그 이벤트(정상)."""
     c, h = _client()
-    today = date.today()
+    today = datetime.now(KST).date()
     pid, aid = _setup(c, h, today)
     fake = FakePre(expected=99_500, open_orders=[_open("A1", 99_000), _open("A2", 98_000, 3)])
     rec = _rec(_run(fake, today, aid), pid)
@@ -151,7 +151,7 @@ def test_preopen_gap_cancels_tracked_untracked_reports_unmatched_and_runs_once()
     """예상체결가 ≤ 기준 → 200 ETF 매수·그리드 가격과 같은 미체결만 취소(앱 예약주문 + HTS 직접 주문), 매도·다른 종목은 건드리지 않음.
     미체결 목록에 없는 앱 예약주문은 '취소 불가'로 기록. 같은 날 두 번째 실행은 아무것도 하지 않는다."""
     c, h = _client()
-    today = date.today()
+    today = datetime.now(KST).date()
     pid, aid = _setup(c, h, today, reserved_prices=(99_000, 98_000, 97_000))
     fake = FakePre(expected=98_500, open_orders=[
         _open("A1", 99_000, 5), _open("A2", 98_000, 3), _open("A3", 98_000, 2),            # A3 = 앱 밖(HTS) 주문, 같은 그리드 가격
@@ -181,7 +181,7 @@ def test_preopen_gap_cancels_tracked_untracked_reports_unmatched_and_runs_once()
 def test_preopen_cancel_failure_setting_off_and_no_grid():
     """취소 실패는 줄 메시지·오류 이벤트로 남고 실행 요약이 오류 수준. 설정을 끄면 조회조차 하지 않는다. 그리드가 없는 계획은 건너뛴다."""
     c, h = _client()
-    today = date.today()
+    today = datetime.now(KST).date()
     pid, aid = _setup(c, h, today, reserved_prices=(99_000,))
     fake = FakePre(expected=98_000, open_orders=[_open("A1", 99_000)], fail_cancel_for={"A1"})
     rec = _rec(_run(fake, today, aid), pid)

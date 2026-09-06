@@ -99,7 +99,7 @@ LINES = [
 
 def test_approval_requires_setting_and_limit_lines():
     c, h = _client()
-    tomorrow = date.today() + timedelta(days=1)
+    tomorrow = datetime.now(KST).date() + timedelta(days=1)
     pid, _ = _setup_portfolio(c, h, tomorrow, LINES, gap_exact=97500.0)
     # 기본: 둘 다 꺼짐 → 승인 거절
     assert c.get("/settings/auto-exec", headers=h).json() == {"buy": False, "sell": False, "preopen_cancel": True}
@@ -128,7 +128,7 @@ def test_execution_gap_cancel_limits_and_sync(monkeypatch):
     import app.autoexec as ae
 
     c, h = _client()
-    today = date.today()
+    today = datetime.now(KST).date()
     pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=97500.0)
     c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
     # 원장에 069500 10주 등록 — 09:01 사전 대조(원장 vs 계좌)를 통과하려면 계좌 보유와 같아야 한다
@@ -170,7 +170,7 @@ def test_execution_no_gap_cash_limit_and_fail_streak_pauses(monkeypatch):
     import app.autoexec as ae
 
     c, h = _client()
-    today = date.today()
+    today = datetime.now(KST).date()
     pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=97500.0)
     c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
     monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
@@ -210,7 +210,7 @@ def test_us_portfolio_and_pause_on_reconcile_warning():
                                             "account_no": "68800037-01"}, headers=h).json()
     us = c.post("/portfolios", json={"name": "us", "market": "US"}, headers=h).json()["id"]
     c.put(f"/portfolio/{us}/broker", json={"credential_id": acct["id"]}, headers=h)
-    r = c.post(f"/portfolio/{us}/orders/approve", json={"date": (date.today() + timedelta(days=1)).isoformat(), "lines": [LINES[0]]}, headers=h)
+    r = c.post(f"/portfolio/{us}/orders/approve", json={"date": (datetime.now(KST).date() + timedelta(days=1)).isoformat(), "lines": [LINES[0]]}, headers=h)
     assert r.status_code == 409 and "국내" in r.json()["detail"]
     # 대조 경고 → 정지
     with SessionLocal() as s:

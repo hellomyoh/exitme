@@ -157,8 +157,12 @@ function PortfolioPage() {
     otype: string; qty: number; price: number | null; rsvn_ord_seq: string | null; order_no: string | null; filled_qty: number;
     status: string; status_ko: string; message: string | null; mode?: string };
   // 무인 실행 상태 (2026-09-06, ADR-008) — 설정 허용 스위치 + 포트 정지 상태 + 마지막 실행 요약
-  type AutoExec = { allowed: { buy: boolean; sell: boolean }; paused: boolean; paused_reason: string | null; paused_at: string | null;
-    fail_streak: number; last_run: { date: string; at: string; open: number | null; gap_hit: boolean; submitted: number; skipped_gap: number; skipped: number; failed: number; note?: string } | null };
+  // 완전 무인(자동 승인, 2026-09-07 지시) — 16:45 주문표 자동 승인 설정·마지막 실행
+  type AutoApprove = { enabled: boolean; market_reserve: boolean; daily_buy_cap: number | null; updated_at?: string | null };
+  type AutoApproveLast = { date: string; at: string; exec_day: string; approved: number; reserved: number; skipped: number; failed: number; manual: string[]; note?: string | null };
+  type AutoExec = { allowed: { buy: boolean; sell: boolean; preopen_cancel?: boolean }; paused: boolean; paused_reason: string | null; paused_at: string | null;
+    fail_streak: number; last_run: { date: string; at: string; open: number | null; gap_hit: boolean; submitted: number; skipped_gap: number; skipped: number; failed: number; note?: string } | null;
+    auto_approve?: AutoApprove; auto_approve_last?: AutoApproveLast | null };
   // 장 시작 전 예상 시가 갭 취소 마지막 실행 (2026-09-06, app.preopen) — 08:57 예상체결가 판정 결과
   type PreopenRun = { date: string; at: string; expected: number | null; gap_exact: number | null; gap_hit: boolean;
     cancelled: number; failed: number; untracked: number; unmatched: number; note?: string | null };
@@ -226,6 +230,43 @@ function PortfolioPage() {
     const r = await apiFetch(`/portfolio/${sum.portfolio.id}/auto-exec/resume`, { method: "POST" });
     if (r.ok) { setBoMsg("무인 실행을 다시 켰습니다"); void load(pid); }
   }
+  // 완전 무인 운영 (2026-09-07 지시) — 자동 승인 설정 저장 · 살아 있는 주문 전량 취소(긴급 정지)
+  const aa: AutoApprove = ae?.auto_approve ?? { enabled: false, market_reserve: true, daily_buy_cap: null };
+  const [aaOpen, setAaOpen] = useState(false);
+  const [aaForm, setAaForm] = useState<{ enabled: boolean; market_reserve: boolean; cap: string }>({ enabled: false, market_reserve: true, cap: "" });
+  useEffect(() => { setAaForm({ enabled: aa.enabled, market_reserve: aa.market_reserve, cap: aa.daily_buy_cap ? String(aa.daily_buy_cap) : "" }); },
+    [aa.enabled, aa.market_reserve, aa.daily_buy_cap]);
+  const kstToday = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+  const liveOrders = (bo?.items ?? []).filter((i) => ["approved", "reserved", "submitted", "partial"].includes(i.status) && i.plan_date >= kstToday);
+  async function saveAutoApprove() {
+    if (!sum) return;
+    if (aaForm.enabled && !aa.enabled && !window.confirm(
+      "완전 무인 운영을 켭니다.\n\n· 매일 16:45 에 다음 실행일 주문표를 계산해 설정에서 허용한 방향의 지정가 줄을 자동 승인합니다 — 사람이 승인하지 않아도 09:01 에 발주됩니다.\n· 시장가 줄(레버리지 진입·청산)은 옵션에 따라 예약주문으로 자동 접수합니다.\n· 09:01 의 시가 확인·갭 취소·원장 대조·매수가능조회·자동 정지는 그대로 작동합니다.\n· 하루 매수 상한을 넘는 계획은 승인하지 않고 포트를 정지합니다.\n\n결과는 매매 로그와 이 화면에서 확인하세요. 계속할까요?")) return;
+    setBoBusy(true); setBoMsg("");
+    const cap = aaForm.cap.trim() ? priceToApi(market, aaForm.cap) : null;
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/auto-exec/auto-approve`, { method: "PUT",
+      body: JSON.stringify({ enabled: aaForm.enabled, market_reserve: aaForm.market_reserve, daily_buy_cap: cap }) });
+    const j = (await r.json().catch(() => ({}))) as AutoExec & { detail?: string };
+    setBoBusy(false);
+    if (!r.ok) { setBoMsg(j.detail ?? `저장 실패 (${r.status})`); return; }
+    setBo((prev) => (prev ? { ...prev, auto_exec: j } : prev));
+    setAaOpen(false);
+    setBoMsg(aaForm.enabled ? "완전 무인 운영을 켰습니다 — 오늘 16:45 부터 자동 승인됩니다" : "완전 무인 운영을 껐습니다 — 이미 승인된 줄은 그대로입니다(필요하면 전량 취소)");
+  }
+  async function cancelAll(stop: boolean) {
+    if (!sum) return;
+    const msg = stop
+      ? `⛔ 무인 운영을 정지하고 살아 있는 주문 ${liveOrders.length}건(승인·예약·발주)을 모두 취소합니다.\n이미 체결된 주문은 취소할 수 없습니다(반대 매매만 가능). 정지 해제는 배너의 '다시 켜기', 자동 승인은 다시 켜야 합니다.\n\n계속할까요?`
+      : `살아 있는 주문 ${liveOrders.length}건(승인·예약·발주)을 모두 취소합니다. 무인 운영 설정은 그대로 둡니다.\n\n계속할까요?`;
+    if (!window.confirm(msg)) return;
+    setBoBusy(true); setBoMsg("");
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/orders/cancel-all`, { method: "POST", body: JSON.stringify({ stop }) });
+    const j = (await r.json().catch(() => ({}))) as { cancelled?: number; failed?: number; filled_untouched?: boolean; detail?: string };
+    setBoBusy(false);
+    if (!r.ok) { setBoMsg(j.detail ?? `취소 실패 (${r.status})`); return; }
+    setBoMsg(`${j.cancelled ?? 0}건 취소${(j.failed ?? 0) > 0 ? ` · 실패 ${j.failed}건 — 표의 메시지를 확인하세요` : ""}${j.filled_untouched ? " · 이미 체결된 줄은 대상 외" : ""}${stop ? " · 무인 운영 정지" : ""}`);
+    void load(pid);
+  }
   async function cancelOrder(b: BrokerOrderRow) {
     if (!sum || b.id === null) return;
     const what = b.mode === "auto" ? (b.status === "approved" ? "무인 실행 승인" : `무인 발주 #${b.order_no ?? b.id}`) : `예약주문 #${b.rsvn_ord_seq ?? b.id}`;
@@ -234,7 +275,7 @@ function PortfolioPage() {
     const r = await apiFetch(`/portfolio/${sum.portfolio.id}/orders/${b.id}/cancel`, { method: "POST" });
     setBoBusy(false);
     if (!r.ok) setBoMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `취소 실패 (${r.status})`);
-    else setBoMsg("예약주문을 취소했습니다");
+    else setBoMsg(b.mode === "auto" ? (b.status === "approved" ? "승인을 철회했습니다" : "발주된 주문을 취소했습니다") : "예약주문을 취소했습니다");
     void load(pid);
   }
   async function refreshOrders() {
@@ -1011,6 +1052,51 @@ function PortfolioPage() {
             {ae.last_run.open != null && <span className="text-faint"> · 시가 {fpx(ae.last_run.open)}{ae.last_run.gap_hit ? " (갭 취소 발동)" : ""}</span>}
           </p>
         )}
+        {/* 완전 무인 운영 (2026-09-07 지시) — 자동 승인 상태·설정, 살아 있는 주문 전량 취소(긴급 정지) */}
+        {market === "KR" && broker?.linked && ae && (
+          <div className="mb-3 rounded-lg border border-line bg-inset px-3.5 py-2.5 text-[13px]">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-ink">🤖 완전 무인 운영</span>
+              <span className={`rounded-md px-2 py-0.5 text-[12px] font-semibold ${aa.enabled ? "bg-accent-dim text-accent" : "bg-raised text-faint"}`}>{aa.enabled ? "켜짐" : "꺼짐"}</span>
+              <span className="text-muted">
+                {aa.enabled
+                  ? `16:45 주문표 자동 승인${aa.market_reserve ? " · 시장가 줄은 예약주문 자동 접수" : " · 시장가 줄은 수동"}${aa.daily_buy_cap ? ` · 하루 매수 상한 ${fm(aa.daily_buy_cap)}` : ""}`
+                  : "장 마감 후 주문표를 자동 승인해 매일 승인 없이 09:01 에 발주하려면 켜세요"}
+              </span>
+              <button className="btn !py-1" disabled={boBusy} onClick={() => setAaOpen((o) => !o)}>{aaOpen ? "닫기" : "설정"}</button>
+              {liveOrders.length > 0 && (
+                <>
+                  <button className="btn !py-1" disabled={boBusy} onClick={() => void cancelAll(false)}>전량 취소 ({liveOrders.length})</button>
+                  <button className="btn !py-1 !text-down" disabled={boBusy} onClick={() => void cancelAll(true)}>⛔ 무인 중지 + 전량 취소</button>
+                </>
+              )}
+            </div>
+            {ae.auto_approve_last && (
+              <div className="mt-1 text-[12.5px] text-faint">
+                마지막 자동 승인 {ae.auto_approve_last.at.slice(5, 16).replace("T", " ")} — 실행일 {ae.auto_approve_last.exec_day} · 지정가 승인 <b className="text-ink">{ae.auto_approve_last.approved}</b>건
+                {ae.auto_approve_last.reserved > 0 && <> · 시장가 예약 <b className="text-ink">{ae.auto_approve_last.reserved}</b>건</>}
+                {ae.auto_approve_last.failed > 0 && <> · <b className="text-down">접수 실패 {ae.auto_approve_last.failed}건</b></>}
+                {ae.auto_approve_last.manual.length > 0 && <> · 수동 필요 {ae.auto_approve_last.manual.length}건 ({ae.auto_approve_last.manual.slice(0, 2).join(", ")})</>}
+                {ae.auto_approve_last.note && <> · {ae.auto_approve_last.note}</>}
+              </div>
+            )}
+            {aaOpen && (
+              <div className="mt-2 grid gap-2 border-t border-line pt-2">
+                <label className="flex items-center gap-2"><input type="checkbox" className="h-4 w-4 accent-[#c2410c]" checked={aaForm.enabled} onChange={(e) => setAaForm({ ...aaForm, enabled: e.target.checked })} />
+                  <span><b className="text-ink">자동 승인 켬</b> <span className="text-faint">— 16:45 에 다음 실행일 주문표를 계산해 허용된 방향의 지정가 줄을 승인(09:01 발주)</span></span></label>
+                <label className="flex items-center gap-2"><input type="checkbox" className="h-4 w-4 accent-[#c2410c]" checked={aaForm.market_reserve} onChange={(e) => setAaForm({ ...aaForm, market_reserve: e.target.checked })} />
+                  <span><b className="text-ink">시장가 줄은 예약주문으로 자동 접수</b> <span className="text-faint">— 레버리지 진입·청산. 끄면 그 줄은 수동(로그에 '수동 필요')</span></span></label>
+                <label className="flex flex-wrap items-center gap-2">
+                  <span><b className="text-ink">하루 매수 상한</b> <span className="text-faint">({unit}, 비우면 없음) — 계획 매수 합계가 넘으면 승인하지 않고 정지</span></span>
+                  <input className="input w-44 !py-1.5" placeholder="예: 20000000" value={aaForm.cap} onChange={(e) => setAaForm({ ...aaForm, cap: e.target.value })} /></label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button className="btn btn-primary !py-1.5" disabled={boBusy} onClick={() => void saveAutoApprove()}>저장</button>
+                  <span className="text-[12px] text-faint">설정 › 무인 실행의 매수·매도 허용이 켜진 방향만 승인됩니다. 정지 상태에서는 자동 승인도 멈춥니다.</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         {/* 예약주문 접수 (2026-09-05 지시) — 장 마감 후 버튼으로 KIS 예약주문, 사용자가 확인한 뒤에만 */}
         {market === "KR" && signal?.status === "OK" && signal.orders && signal.orders.length > 0 && (
           <div className="mb-3 flex flex-wrap items-center gap-2 text-[13px]">
@@ -1176,6 +1262,17 @@ function PortfolioPage() {
                             <span className="inline-flex items-center gap-1.5" title={`예약주문 #${b.rsvn_ord_seq ?? ""} · ${b.message ?? ""}`}>
                               <span className="font-semibold text-ok">✓ 등록완료</span>
                               <span className="text-faint">#{b.rsvn_ord_seq}</span>
+                              <button className="text-faint hover:text-down" disabled={boBusy} onClick={() => void cancelOrder(b)}>취소</button>
+                            </span>);
+                          if (b.status === "approved") return (
+                            <span className="inline-flex items-center gap-1.5" title={b.message ?? ""}>
+                              <span className="font-semibold text-accent">🤖 무인 승인</span>
+                              <button className="text-faint hover:text-down" disabled={boBusy} onClick={() => void cancelOrder(b)}>취소</button>
+                            </span>);
+                          if (b.status === "submitted") return (
+                            <span className="inline-flex items-center gap-1.5" title={b.message ?? ""}>
+                              <span className="font-semibold text-ok">🤖 발주됨</span>
+                              <span className="text-faint">#{b.order_no}</span>
                               <button className="text-faint hover:text-down" disabled={boBusy} onClick={() => void cancelOrder(b)}>취소</button>
                             </span>);
                           if (b.status === "filled") return <span className="font-semibold text-ok" title={`주문번호 ${b.order_no ?? ""}`}>✓ 체결 {b.filled_qty.toLocaleString()}주</span>;

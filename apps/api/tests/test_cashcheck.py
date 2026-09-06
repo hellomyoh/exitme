@@ -127,7 +127,7 @@ def test_cash_check_refresh_tolerance_warn_and_align(monkeypatch):
     c, h = _client()
     a = _acct(c, h)
     pid = c.post("/portfolios", json={"name": "대조", "market": "KR", "code_200": "069500", "credential_id": a["id"]}, headers=h).json()["id"]
-    day = (date.today() - timedelta(days=3)).isoformat()
+    day = (datetime.now(KST).date() - timedelta(days=3)).isoformat()
     c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 5_000_000, "executed_at": day + "T15:30:00+09:00"}, headers=h)
     c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 10, "price": 100_000, "executed_at": day + "T15:31:00+09:00"}, headers=h)
     assert c.get(f"/portfolio/{pid}/cash-check", headers=h).json()["cash_check"] is None
@@ -188,7 +188,7 @@ def test_post_close_sync_records_cash_check(monkeypatch):
     a = _acct(c, h)
     pid = c.post("/portfolios", json={"name": "동기화", "market": "KR", "code_200": "069500", "credential_id": a["id"]}, headers=h).json()["id"]
     c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 1_000_000,
-                               "executed_at": (date.today() - timedelta(days=2)).isoformat() + "T15:30:00+09:00"}, headers=h)
+                               "executed_at": (datetime.now(KST).date() - timedelta(days=2)).isoformat() + "T15:30:00+09:00"}, headers=h)
     monkeypatch.setattr(br, "_client", lambda cred: FakeBal(1_000_000, 980_000, {}))
     with SessionLocal() as s:
         out = br.run_post_close_sync(s, now=datetime.now(KST))
