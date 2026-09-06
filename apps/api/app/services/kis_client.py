@@ -23,6 +23,9 @@ DAILY_CHART_PATH = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartpr
 DAILY_CHART_TR = "FHKST03010100"
 PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
 PRICE_TR = "FHKST01010100"
+# 호가/예상체결 (2026-09-06 사전 갭 취소) — 동시호가(08:30~09:00·15:20~15:30) 중 output2.antc_cnpr = 예상체결가
+EXPECTED_PATH = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+EXPECTED_TR = "FHKST01010200"
 # 주식일별분봉조회 — 과거 최대 1년 보관, 호출당 120건, 시간 커서 내림차순 (실응답 프로브로 확인)
 MINUTE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
 MINUTE_TR = "FHKST03010230"
@@ -156,6 +159,19 @@ class KisClient:
             {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
         )
         return body["output"]
+
+    def fetch_expected(self, code: str) -> dict:
+        """호가/예상체결 조회 (FHKST01010200) — 동시호가 중 예상체결가. 반환 {"expected": antc_cnpr, "expected_qty", "time": 호가 접수 시각, "raw"}.
+
+        장중에는 예상체결가가 0 이고 현재가만 의미가 있다. 장 시작 전 갭 취소(app.preopen)가 08:57 에 쓴다.
+        """
+        body = self._get(EXPECTED_PATH, EXPECTED_TR, {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
+        out2 = body.get("output2") or {}
+        if isinstance(out2, list):
+            out2 = out2[0] if out2 else {}
+        return {"expected": _to_int(_first(out2, "antc_cnpr", "ANTC_CNPR")),
+                "expected_qty": _to_int(_first(out2, "antc_cnqn", "ANTC_CNQN")),
+                "time": _first(out2, "aspr_acpt_hour", "ASPR_ACPT_HOUR"), "raw": out2}
 
     def fetch_minutes_day(self, code: str, day: date) -> list["MinuteBar"]:
         """특정 일자의 1분봉 전체 — 15:30 부터 시간 커서를 뒤로 옮기며 페이지네이션.
@@ -502,6 +518,35 @@ class KisTradingClient(KisClient):
         return {"cash": _to_int(_first(out, "ord_psbl_cash", "ORD_PSBL_CASH")),
                 "cash_qty": cash_qty if cash_qty > 0 else max_qty, "max_qty": max_qty, "raw": out}
 
+    def list_open_orders(self) -> list[dict]:
+        """정정취소가능(미체결) 주문 조회 (TTTC0084R, 실전 전용) — 사전 갭 취소가 취소 대상을 찾는 데 쓴다 (2026-09-06).
+
+        반환 [{order_no, orgno(주문채번지점 — 취소 TR 의 KRX_FWDG_ORD_ORGNO), code, name, side, qty, price, filled_qty, psbl_qty, time, raw}].
+        예약주문은 장 시작 전 정규 주문으로 전송되면 여기 나타난다. 연속조회(CTX)를 따라간다.
+        """
+        if self.auth.env == "vps":
+            raise KisError("모의투자 계좌는 정정취소가능주문 조회를 지원하지 않습니다")
+        params = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
+                  "INQR_DVSN_1": "1", "INQR_DVSN_2": "0"}   # 1 주문순 / 0 매수·매도 전체
+        out: list[dict] = []
+        for _page in range(5):  # 안전 상한
+            body = self._get(OPEN_ORDERS_PATH, OPEN_ORDERS_TR, params)
+            rows = body.get("output") or body.get("output1") or []
+            if isinstance(rows, dict):
+                rows = [rows]
+            for r in rows:
+                out.append({"order_no": _first(r, "odno", "ODNO"), "orgno": _first(r, "ord_gno_brno", "ORD_GNO_BRNO"),
+                            "code": _first(r, "pdno", "PDNO"), "name": _first(r, "prdt_name", "PRDT_NAME"),
+                            "side": "buy" if _first(r, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD") == "02" else "sell",
+                            "qty": _to_int(_first(r, "ord_qty", "ORD_QTY")), "price": _to_int(_first(r, "ord_unpr", "ORD_UNPR")),
+                            "filled_qty": _to_int(_first(r, "tot_ccld_qty", "TOT_CCLD_QTY")),
+                            "psbl_qty": _to_int(_first(r, "psbl_qty", "PSBL_QTY")), "time": _first(r, "ord_tmd", "ORD_TMD"), "raw": r})
+            nk = (body.get("ctx_area_nk100") or "").strip()
+            if not nk or nk == params["CTX_AREA_NK100"]:
+                break
+            params = {**params, "CTX_AREA_FK100": (body.get("ctx_area_fk100") or "").strip(), "CTX_AREA_NK100": nk}
+        return out
+
     def cancel_order(self, order_no: str, orgno: str = "") -> dict:
         """정규 주문 잔량 전부 취소 (실전 TTTC0013U / 모의 VTTC0803U). 정정은 지원하지 않는다."""
         env = self.auth.env if self.auth.env in ("prod", "vps") else "prod"
@@ -522,6 +567,8 @@ ORDER_CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 ORDER_CANCEL_TR = {"prod": "TTTC0013U", "vps": "VTTC0803U"}
 PSBL_ORDER_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
 PSBL_ORDER_TR = "TTTC8908R"   # 모의는 headers() 가 VTTC8908R 로 치환
+OPEN_ORDERS_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
+OPEN_ORDERS_TR = "TTTC0084R"  # 정정취소가능주문 조회 — 실전 전용 (2026-09-06 사전 갭 취소)
 
 # ── 예약주문 TR (koreainvestment/open-trading-api 공식 예제 기준, 2026-09-05) ─────────
 RESV_ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-resv"

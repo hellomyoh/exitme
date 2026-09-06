@@ -21,6 +21,7 @@ const GROUPS: Group[] = [
   { title: "주식 실전 매매", items: [
     { href: "/simulator", label: "시뮬레이터", reset: true },
     { href: "/portfolio", label: "실전매매", reset: true },
+    { href: "/logs", label: "매매 로그" },   // 거래·주문·이벤트(실패 포함) 통합 로그 (2026-09-06 지시)
   ]},
   // 가이드 — 매매 공식별 설명 (2026-09-06 지시). 매매일지 그룹은 런타임에 이 앞에 삽입된다
   { title: "📖 가이드", items: [

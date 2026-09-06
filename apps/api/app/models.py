@@ -480,3 +480,22 @@ class AnalyticsEvent(Base):
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ActivityLog(Base):
+    """활동 로그 (0022, 2026-09-06 지시 "로깅 기능") — 실행·동기화·취소·대조 이벤트와 오류.
+
+    거래(trade_transactions)·주문(broker_orders)은 각자 테이블이 원천이라 여기 중복 기록하지 않는다 — GET /logs 가 셋을 합친다.
+    level: info | warn | error. data: 부속 값(JSON). 인덱스 (user_id, at) 는 마이그레이션에서.
+    """
+
+    __tablename__ = "activity_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    portfolio_id: Mapped[int | None] = mapped_column(ForeignKey("portfolios.id", ondelete="SET NULL"))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    level: Mapped[str] = mapped_column(Text, nullable=False, default="info")
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

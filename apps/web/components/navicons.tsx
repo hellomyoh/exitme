@@ -43,6 +43,9 @@ export function NavIcon({ kind, className = "h-[16px] w-[16px] shrink-0" }: { ki
         <path d="M4.5 5.5A1.5 1.5 0 0 1 6 4h4.5a1.5 1.5 0 0 1 1.5 1.5V20a2 2 0 0 0-2-1.5H4.5z" />
         <path d="M19.5 5.5A1.5 1.5 0 0 0 18 4h-4.5A1.5 1.5 0 0 0 12 5.5V20a2 2 0 0 1 2-1.5h5.5z" />
       </>)}
+      {kind === "log" && (<>
+        <path d="M4.5 5.5h15M4.5 10h15M4.5 14.5h8" /><circle cx="17.5" cy="16.5" r="3" /><path d="M17.5 14.9v1.7l1.2.8" />
+      </>)}
       {kind === "logout" && (<>
         <path d="M14.5 4h4a1.5 1.5 0 0 1 1.5 1.5v13a1.5 1.5 0 0 1-1.5 1.5h-4" /><path d="M10 8l-4 4 4 4M6.5 12h9" />
       </>)}
@@ -52,6 +55,6 @@ export function NavIcon({ kind, className = "h-[16px] w-[16px] shrink-0" }: { ki
 
 export const ICON_BY_LABEL: Record<string, string> = {
   "대시보드": "dashboard", "차트": "chart", "주문표": "orders", "시뮬레이터": "simulator",
-  "실전매매": "trade", "일반 설정": "settings", "알고리즘 설정": "sliders", "계정 관리": "users", "매매일지": "journal",
+  "실전매매": "trade", "매매 로그": "log", "일반 설정": "settings", "알고리즘 설정": "sliders", "계정 관리": "users", "매매일지": "journal",
   "매매 공식 개요": "book", "RAVG · 한국": "book", "TF · 미국 1배": "book", "LTM · 미국 레버리지": "book",
 };
