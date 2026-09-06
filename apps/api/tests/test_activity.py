@@ -34,18 +34,18 @@ def test_logs_merge_filters_and_isolation():
 
     c, h = _client()
     pid = c.post("/portfolios", json={"name": "로그포트", "market": "KR", "code_200": "069500"}, headers=h).json()["id"]
-    d0 = (date.today() - timedelta(days=3)).isoformat()
+    d0 = (datetime.now(KST).date() - timedelta(days=3)).isoformat()
     c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 1_000_000, "executed_at": d0 + "T15:30:00+09:00"}, headers=h)
     c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 5, "price": 100_000,
                                "executed_at": d0 + "T15:31:00+09:00", "memo": "테스트 매수"}, headers=h)
     sell_id = c.post("/positions", json={"portfolio_id": pid, "kind": "sell", "code": "069500", "qty": 2, "price": 110_000,
-                                         "executed_at": (date.today() - timedelta(days=1)).isoformat() + "T15:30:00+09:00"}, headers=h).json()["id"]
+                                         "executed_at": (datetime.now(KST).date() - timedelta(days=1)).isoformat() + "T15:30:00+09:00"}, headers=h).json()["id"]
     with SessionLocal() as s:
         uid = s.get(TradePortfolio, pid).user_id
-        s.add(BrokerOrder(portfolio_id=pid, broker_credential_id=None, plan_date=date.today(), line_key="grid1:K200:buy:limit:99000",
+        s.add(BrokerOrder(portfolio_id=pid, broker_credential_id=None, plan_date=datetime.now(KST).date(), line_key="grid1:K200:buy:limit:99000",
                           code="069500", instrument="K200", kind="grid1", side="buy", otype="limit", qty=5, price=99_000,
                           status="failed", mode="auto", message="KIS error 40310000 주문가능금액을 초과하였습니다"))
-        s.add(BrokerOrder(portfolio_id=pid, broker_credential_id=None, plan_date=date.today(), line_key="tp:K200:sell:limit:103000",
+        s.add(BrokerOrder(portfolio_id=pid, broker_credential_id=None, plan_date=datetime.now(KST).date(), line_key="tp:K200:sell:limit:103000",
                           code="069500", instrument="K200", kind="tp", side="sell", otype="limit", qty=2, price=103_000,
                           status="reserved", mode="reserve", rsvn_ord_seq="7"))
         log_event(s, uid, "sync.post_close", "장 마감 동기화 15:45 — 체결 1건 조회 · 신규 1건 등록", portfolio_id=pid)
@@ -89,16 +89,20 @@ def test_autoexec_approve_and_run_write_events(monkeypatch):
     from tests.test_autoexec import LINES, FakeKis, _setup_portfolio
 
     c, h = _client()
-    today = date.today()
-    pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
+    today = datetime.now(KST).date()
+    pid, aid = _setup_portfolio(c, h, today, LINES, gap_exact=None)
     c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
     monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
-    c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": [LINES[0], LINES[1]]}, headers=h)
+    r = c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": [LINES[0], LINES[1]]}, headers=h)
+    assert r.status_code == 200 and r.json()["approved"] == 2
     ev = c.get("/logs?type=event", headers=h).json()["items"]
     assert any(i["kind"] == "autoexec.approve" and "무인 실행 승인 2건" in i["text"] for i in ev)
+    # 실행은 DB 에 남은 다른 테스트의 오늘 승인 줄도 함께 처리한다 — 이 계좌만 넉넉한 가짜 클라이언트를 받게 해 결과를 고정한다
     fake = FakeKis(open_px=100_000, deposit=9_000_000, holdings={}, psbl_cash=9_000_000)
+    idle = FakeKis(open_px=100_000, deposit=0, holdings={})
     with SessionLocal() as s:
-        ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
+        ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST),
+                              client_factory=lambda cred: fake if cred.id == aid else idle, sleep_fn=lambda _s: None)
     ev = c.get("/logs?type=event", headers=h).json()["items"]
     run = next(i for i in ev if i["kind"] == "autoexec.run")
     assert run["level"] == "info" and "발주 2건" in run["text"] and run["portfolio"] == "무인"

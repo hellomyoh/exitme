@@ -34,17 +34,18 @@ ORDER_KIND_KO = {"grid1": "그리드 1차", "grid2": "그리드 2차", "grid3": 
 
 
 def _iso(dt: datetime) -> str:
-    """표시용 시각 — KST 로 맞춰 분 단위 ISO (DB 는 UTC 로 돌려줄 수 있다)."""
+    """표시용 시각 — KST 로 맞춰 초 단위 ISO (DB 는 UTC 로 돌려줄 수 있다). 초까지 있어야 같은 분의 순서가 보존된다."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=KST)
-    return dt.astimezone(KST).isoformat(timespec="minutes")
+    return dt.astimezone(KST).isoformat(timespec="seconds")
 # 주문 상태 → 수준: 실패·불일치는 error, 생략·취소·미체결·중복은 warn, 나머지 info
 ORDER_LEVEL = {"failed": "error", "mismatch": "error",
                "skipped": "warn", "skipped_gap": "warn", "gap_cancelled": "warn", "unfilled": "warn",
                "cancelled": "warn", "duplicate": "warn"}
 KIND_KO = {  # 이벤트 종류 표시명 (화면 배지)
     "autoexec.run": "무인 실행", "autoexec.paused": "무인 실행 정지", "autoexec.approve": "무인 승인", "autoexec.error": "무인 실행 오류",
-    "order.reserve": "예약주문 접수", "order.cancel": "주문 취소",
+    "autoexec.auto_approve": "자동 승인", "autoexec.auto_approve_setting": "완전 무인 설정",
+    "order.reserve": "예약주문 접수", "order.cancel": "주문 취소", "order.cancel_all": "전량 취소",
     "preopen.run": "사전 갭 확인", "preopen.cancel": "사전 갭 취소", "preopen.cancel_failed": "사전 갭 취소 실패",
     "preopen.unmatched": "사전 갭 취소 불가", "preopen.error": "사전 갭 확인 오류",
     "sync.post_close": "장 마감 동기화", "sync.error": "동기화 오류", "sync.reserved_failed": "예약주문 상태 조회 실패",

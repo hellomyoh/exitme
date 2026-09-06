@@ -26,7 +26,7 @@ def test_reconcile_kind_and_pause_only_on_dangerous_items():
     assert missing[0]["kind"] == "missing" and missing[0]["level"] == "info"
 
     c, h = _client()
-    pid, _ = _setup_portfolio(c, h, date.today() + timedelta(days=1), LINES, gap_exact=None)
+    pid, _ = _setup_portfolio(c, h, datetime.now(KST).date() + timedelta(days=1), LINES, gap_exact=None)
     from app.db import SessionLocal
     from app.models import TradePortfolio
     with SessionLocal() as s:
@@ -43,7 +43,7 @@ def test_reserve_refuses_line_already_approved_for_auto(monkeypatch):
     import app.broker as br
 
     c, h = _client()
-    tomorrow = date.today() + timedelta(days=1)
+    tomorrow = datetime.now(KST).date() + timedelta(days=1)
     pid, _ = _setup_portfolio(c, h, tomorrow, LINES, gap_exact=97500.0)
     c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
     assert c.post(f"/portfolio/{pid}/orders/approve", json={"date": tomorrow.isoformat(), "lines": [LINES[0]]}, headers=h).json()["approved"] == 1
@@ -69,7 +69,7 @@ def test_deposit_limit_fills_shallow_grid_first(monkeypatch):
     import app.autoexec as ae
 
     c, h = _client()
-    today = date.today()
+    today = datetime.now(KST).date()
     pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
     c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
     monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
@@ -91,7 +91,7 @@ def test_precheck_ledger_vs_account_mismatch_skips_and_pauses(monkeypatch):
     from app.db import SessionLocal
 
     c, h = _client()
-    today = date.today()
+    today = datetime.now(KST).date()
     pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
     c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
     c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 10, "price": 100000,
@@ -115,7 +115,7 @@ def test_precheck_plan_revalidation_at_execution(monkeypatch):
     from app.models import PortfolioPlan
 
     c, h = _client()
-    today = date.today()
+    today = datetime.now(KST).date()
     pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
     c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
     monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
@@ -141,7 +141,7 @@ def test_buyable_check_before_each_buy(monkeypatch):
     from app.db import SessionLocal
 
     c, h = _client()
-    today = date.today()
+    today = datetime.now(KST).date()
     pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
     c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
     monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
