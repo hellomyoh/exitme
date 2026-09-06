@@ -568,8 +568,9 @@ def _ltm_portfolio_orders(session: Session, pf_row, pid: int, lev_code: str) -> 
     w1, wL = target_weights(e_t, L)
     orders: list[dict] = []
     if abs(e_t - e_now) >= p.band * max(e_t, 0.5):
-        t1 = int(w1 * v / c1) if c1 > 0 else 0
-        tL = int(wL * v / cL) if (wL > 0 and cL > 0) else 0
+        v_inv = v * (1 - p.cash_reserve)  # 보수·수수료용 현금 여유 (엔진과 동일)
+        t1 = int(w1 * v_inv / c1) if c1 > 0 else 0
+        tL = int(wL * v_inv / cL) if (wL > 0 and cL > 0) else 0
         if e_t == 0:
             kind = "ltm_exit"
         elif q1 + qL == 0:
