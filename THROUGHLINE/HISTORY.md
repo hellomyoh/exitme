@@ -362,4 +362,10 @@
 - 원인: 지난 결과 목록의 시장 판정이 `etf.startsWith("QQQ")` 였다 → `LTM_QLD`/`LTM_TQQQ` 잡은 한국으로 분류되어 미국 목록에서 사라지고 한국 목록에 섞였다. 잡 자체는 정상 저장·완료(DB #140~142 DONE). 부수: 8건을 먼저 자른 뒤 시장을 걸러 다른 시장 잡이 많으면 목록이 비었고, 완료 직후 목록을 다시 읽지 않아 메뉴로 돌아오면 새 결과가 빠져 있었다.
 - 수정: 시장 판정을 `ETF_INFO[etf].market` 기준으로, 시장 필터 후 8건 자르기, 결과 표시 시 `loadHistory()` 재호출, 뱃지를 짧은 이름(TF / LTM·QLD / LTM·TQQQ / RAVG·QLD(구))으로.
 - 테스트: tsc, 헤드리스(미국 목록에 #142 LTM·QLD 표시·한국 목록에 LTM 없음·실행 후 재진입 시 새 잡이 첫 항목) — 커밋 메시지 참조.
-- Git commit: fix: simulator past results — classify LTM jobs as US, filter before slicing, refresh after run
+- Git commit: fix: simulator past results — classify LTM jobs as US, filter before slicing, refresh after run (#116)
+
+## [2026-09-06] feat | 매매일지 보유 평단 대비 일별 수익률 라인 (사용자 검토 요청 → "제안한 방식대로 구현")
+
+- 작업 내용: docs/mjournal-broker-link-review-20260905.md §3-2 참조. `GET /mjournals/{jid}/return-series`(종목별 보유 구간 % 시리즈·종합·현재 수익률·안내), DB 일봉 부족분은 KIS 일봉으로 보충·적재(`_ensure_daily_bars`, 일지 연결 계좌 키 → .env 키), 마지막 점은 연결 계좌 현재가. 현황 카드에 탭 "보유 수익률 (%)"(기본) / "누적 실현손익 (원)", 구간별 라인·0% 기준선·종합 점선·청산 종목 토글, 도넛 풍선에 평가 수익률·보유 기간. 기록 입력에 종목코드(선택) 필드(`EntryIn.code`) — 코드가 있어야 시세를 붙일 수 있다.
+- 테스트: `test_journal_return_series_fifo_avg_and_segments`, `test_journal_return_series_fetches_missing_bars` — 전체 스위트·tsc·헤드리스는 커밋 메시지 참조.
+- Git commit: feat: journal daily return vs average cost — return-series API, KIS bar backfill, chart tabs

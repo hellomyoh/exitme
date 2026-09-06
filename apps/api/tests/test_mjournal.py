@@ -363,3 +363,108 @@ def test_journal_valuation_from_broker_prices(monkeypatch):
     unk = next(x for x in d2["holdings"] if x["symbol"] == "미상장주")
     assert unk["price"] is None and unk["eval"] is None and d2["summary"]["priced"] is False and d2["summary"]["priced_count"] == 1
     assert c.get("/dashboard", headers=h).json()["journal"] == 1_520_200 + 100_000
+
+
+def _seed_bars(code: str, name: str, start: str, n: int, base: int, step: int):
+    """합성 일봉 — 평일만, 종가 = base + i*step. 반환: {date: close}"""
+    from datetime import date, timedelta
+
+    from app.db import SessionLocal
+    from app.services.ingest import get_or_create_instrument, upsert_daily_bars
+
+    closes = {}
+    d = date.fromisoformat(start)
+    rows = []
+    i = 0
+    while len(rows) < n:
+        if d.weekday() < 5:
+            c = base + i * step
+            rows.append({"trade_date": d, "open": c, "high": c + 10, "low": c - 10, "close": c, "volume": 100})
+            closes[d.isoformat()] = c
+            i += 1
+        d += timedelta(days=1)
+    with SessionLocal() as s:
+        inst = get_or_create_instrument(s, code, name, "KOSPI", type_="STOCK")
+        upsert_daily_bars(s, inst.id, rows, source="pykrx")
+        s.commit()
+    return closes
+
+
+def test_journal_return_series_fifo_avg_and_segments(monkeypatch):
+    """보유 평단 대비 일별 수익률 (2026-09-06): 평단은 FIFO 잔여 로트 기준으로 추가 매수·부분 매도 날부터 바뀌고,
+    청산 종목은 보유 구간만 그려지며, 시세 키가 없으면 DB 일봉만으로 그리고 안내를 남긴다."""
+    import app.mjournal as mj
+
+    monkeypatch.setattr(mj, "_kis_for_bars", lambda session, j: None)   # 네트워크 없음 — DB 일봉만
+    mj._PRICE_CACHE.clear()
+    ca = _seed_bars("990001", "테스트A", "2026-01-02", 70, 10000, 10)
+    cb = _seed_bars("990002", "테스트B", "2026-01-02", 70, 5000, 5)
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "수익률", "symbol": "테스트A", "fee_rate": 0.0, "tax_rate": 0.0}, headers=h).json()["id"]
+    for side, qty, price, d, sym, code in [
+        ("buy", 10, 10000, "2026-01-05", "테스트A", "990001"), ("buy", 10, 12000, "2026-01-20", "테스트A", "990001"),
+        ("sell", 15, 13000, "2026-02-10", "테스트A", "990001"),
+        ("buy", 4, 5000, "2026-01-05", "테스트B", "990002"), ("sell", 4, 5100, "2026-01-15", "테스트B", "990002"),
+    ]:
+        r = c.post(f"/mjournals/{jid}/entries", json={"side": side, "qty": qty, "price": price, "trade_date": d,
+                                                    "symbol": sym, "code": code}, headers=h)
+        assert r.status_code == 201, r.text
+    res = c.get(f"/mjournals/{jid}/return-series", headers=h)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    a = body["symbols"]["테스트A"]
+    assert a["held"] is True and a["qty"] == 5 and a["avg"] == 12000     # FIFO: 10@10,000 전부 + 5@12,000 매도 → 5@12,000 남음
+    assert a["since"] == "2026-01-20"                                      # 남은 로트의 매수일 = 보유 시작일
+    pts = {p["date"]: p for p in a["segments"][0]}
+    assert "2026-01-02" not in pts and pts["2026-01-05"]["avg"] == 10000        # 첫 매수일부터
+    assert abs(pts["2026-01-05"]["pct"] - (ca["2026-01-05"] / 10000 - 1)) < 1e-9
+    assert pts["2026-01-19"]["avg"] == 10000 and pts["2026-01-20"]["avg"] == 11000  # 추가 매수 당일부터 평단 11,000
+    assert abs(pts["2026-01-20"]["pct"] - (ca["2026-01-20"] / 11000 - 1)) < 1e-9
+    assert pts["2026-02-09"]["avg"] == 11000 and pts["2026-02-10"]["avg"] == 12000 and pts["2026-02-10"]["qty"] == 5
+    assert len(a["segments"]) == 1 and a["current_pct"] == a["segments"][0][-1]["pct"]  # 현재가 없음 → 마지막 종가
+    b = body["symbols"]["테스트B"]
+    assert b["held"] is False and len(b["segments"]) == 1
+    bd = [p["date"] for p in b["segments"][0]]
+    assert bd[0] == "2026-01-05" and bd[-1] == "2026-01-14" and "2026-01-15" not in bd  # 매도일부터는 점 없음
+    # 종합: B 청산 후(1/15~)는 A 만 → A 와 같은 값; 두 종목 보유 중(1/5~1/14)엔 가중 합
+    tot = {p["date"]: p["pct"] for p in body["total"]}
+    assert abs(tot["2026-02-10"] - pts["2026-02-10"]["pct"]) < 1e-9
+    exp = (10 * ca["2026-01-06"] + 4 * cb["2026-01-06"]) / (10 * 10000 + 4 * 5000) - 1
+    assert abs(tot["2026-01-06"] - exp) < 1e-9
+    assert body["priced"] is True and any("시세 키" in n for n in body["notes"])  # 오늘까지 봉이 없어 보충 시도 → 키 없음 안내
+
+
+def test_journal_return_series_fetches_missing_bars(monkeypatch):
+    """DB 에 일봉이 없는 종목은 KIS 일봉으로 받아 적재하고(Instrument 생성), 이후 호출은 DB 만 쓴다."""
+    import app.mjournal as mj
+    from app.services.kis_client import DailyBar
+    from datetime import date, timedelta
+
+    calls = []
+
+    class _FakeKis:
+        def fetch_daily(self, code, start, end):
+            calls.append((code, start, end))
+            out, d = [], date(2026, 3, 2)
+            while d <= min(end, date(2026, 3, 31)):
+                if d.weekday() < 5:
+                    c = 20000 + d.day * 10
+                    out.append(DailyBar(trade_date=d, open=20000, high=c + 100, low=19900, close=c, volume=1))
+                d += timedelta(days=1)
+            return out
+
+    monkeypatch.setattr(mj, "_kis_for_bars", lambda session, j: _FakeKis())
+    mj._PRICE_CACHE.clear()
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "보충", "symbol": "새종목", "fee_rate": 0.0, "tax_rate": 0.0}, headers=h).json()["id"]
+    c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 3, "price": 20000, "trade_date": "2026-03-03",
+                                             "symbol": "새종목", "code": "990003"}, headers=h)
+    body = c.get(f"/mjournals/{jid}/return-series", headers=h).json()
+    assert calls and calls[0][0] == "990003"
+    seg = body["symbols"]["새종목"]["segments"][0]
+    assert seg[0]["date"] == "2026-03-03" and abs(seg[0]["pct"] - (20030 / 20000 - 1)) < 1e-9
+    n_calls = len(calls)
+    body2 = c.get(f"/mjournals/{jid}/return-series", headers=h).json()
+    # 두 번째 호출: 3월 봉은 있고 꼬리(4월~오늘)만 부족 → 꼬리 구간 1회만 더 조회(가짜 클라이언트는 3월 이후 빈 응답)
+    assert len(calls) == n_calls + 1 and calls[-1][1] >= date(2026, 3, 31)
+    assert body2["symbols"]["새종목"]["segments"][0][0]["date"] == "2026-03-03"
