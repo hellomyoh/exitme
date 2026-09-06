@@ -86,12 +86,19 @@ def pf_auto_state(pf: TradePortfolio) -> dict:
             "auto_approve": auto_approve_cfg(pf), "auto_approve_last": st.get("auto_approve_last")}
 
 
+DAILY_BUY_CAP_PCT_DEFAULT = 20.0   # 하루 매수 총액 상한 — 총자산 대비 % (사용자 지시 2026-09-07 "기본 20%"). 0 = 상한 없음
+
+
 def auto_approve_cfg(pf: TradePortfolio) -> dict:
-    """포트별 자동 승인 설정 — params.auto_exec.auto_approve. 기본 꺼짐, 시장가 줄 예약 접수 기본 켬, 상한 없음."""
+    """포트별 자동 승인 설정 — params.auto_exec.auto_approve. 기본 꺼짐, 시장가 줄 예약 접수 기본 켬, 상한 총자산의 20%."""
     st = dict((((pf.params or {}).get("auto_exec") or {}).get("auto_approve")) or {})
-    cap = st.get("daily_buy_cap")
+    pct = st.get("daily_buy_cap_pct", DAILY_BUY_CAP_PCT_DEFAULT)
+    try:
+        pct = float(pct) if pct is not None else DAILY_BUY_CAP_PCT_DEFAULT
+    except (TypeError, ValueError):
+        pct = DAILY_BUY_CAP_PCT_DEFAULT
     return {"enabled": bool(st.get("enabled", False)), "market_reserve": bool(st.get("market_reserve", True)),
-            "daily_buy_cap": int(cap) if cap else None, "updated_at": st.get("updated_at")}
+            "daily_buy_cap_pct": pct, "updated_at": st.get("updated_at")}
 
 
 def _set_pf_auto_state(pf: TradePortfolio, **kw) -> None:

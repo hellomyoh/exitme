@@ -5,8 +5,10 @@
 만든다. 시장가 줄(레버리지 진입·청산)은 정규 주문 경로에 없으므로 옵션에 따라 **예약주문으로 자동 접수**한다(접수 창 15:40~).
 09:01 실행과 그 통제(시가 확인·갭 취소·원장 대조·계획 재대조·매수가능조회·자동 정지)는 그대로다.
 
-추가 안전장치: 하루 매수 총액 상한(선택, 원) — 계획 매수 합계가 넘으면 그날 승인하지 않고 포트를 정지한다(사람이 보지 않는
-운영이므로 배너로 드러나게). 정지된 포트·설정에서 매수·매도 모두 꺼진 사용자는 건너뛴다.
+추가 안전장치: 하루 매수 총액 상한 — **총자산 대비 %**(기본 20%, 0 = 없음, 사용자 지시 2026-09-07). 계획 매수 합계(지정가×수량 +
+시장가는 최근 종가×수량)가 신호 기준일 총자산 × 상한을 넘으면 그날 승인하지 않고 포트를 정지한다(사람이 보지 않는 운영이므로 배너로
+드러나게). 레짐 전환일의 레버리지 진입(총자산의 30~40%)은 20% 를 넘을 수 있다 — 그날은 정지되어 사람이 확인·승인한다.
+정지된 포트·설정에서 매수·매도 모두 꺼진 사용자는 건너뛴다.
 
 취소: `POST /portfolio/{pid}/orders/cancel-all` — 승인(철회)·예약주문(CTSC0009U)·발주된 정규 주문(TTTC0013U)을 모두 취소한다.
 `stop=true` 면 포트의 무인 운영도 정지(자동 승인 끔 + paused) — 긴급 정지 버튼.
@@ -40,8 +42,8 @@ ACTIVE_STATES = ("approved", "reserved", "submitted", "partial")   # 취소할 �
 
 class AutoApproveIn(BaseModel):
     enabled: bool
-    market_reserve: bool = True                       # 시장가 줄(레버리지)을 예약주문으로 자동 접수
-    daily_buy_cap: int | None = Field(default=None, ge=0)   # 하루 매수 총액 상한(원). None/0 = 상한 없음
+    market_reserve: bool = True                       # 시장가 줄(레버리지)을 예약주문으로 자동 접수 (사용자 지시 2026-09-07: 무인 접수)
+    daily_buy_cap_pct: float = Field(default=20.0, ge=0, le=100)   # 하루 매수 총액 상한 — 총자산 대비 % (기본 20, 0 = 없음)
 
 
 @router.put("/portfolio/{pid}/auto-exec/auto-approve")
@@ -59,11 +61,11 @@ def put_auto_approve(pid: int, body: AutoApproveIn, user_id: int = Depends(curre
             raise HTTPException(status_code=409, detail="설정 › 무인 실행에서 매수 또는 매도 허용을 먼저 켜세요 — 켠 방향의 지정가 줄만 자동 승인됩니다")
     now = datetime.now(KST)
     cfg = {"enabled": body.enabled, "market_reserve": body.market_reserve,
-           "daily_buy_cap": int(body.daily_buy_cap) if body.daily_buy_cap else None, "updated_at": now.isoformat(timespec="minutes")}
+           "daily_buy_cap_pct": float(body.daily_buy_cap_pct), "updated_at": now.isoformat(timespec="minutes")}
     _set_pf_auto_state(pf, auto_approve=cfg)
     log_event(session, user_id, "autoexec.auto_approve_setting",
               ("완전 무인 운영 켬 — 16:45 주문표 자동 승인" + (" · 시장가 줄 예약주문 자동 접수" if body.market_reserve else " · 시장가 줄은 수동")
-               + (f" · 하루 매수 상한 {cfg['daily_buy_cap']:,}원" if cfg["daily_buy_cap"] else "")) if body.enabled else "완전 무인 운영 끔",
+               + (f" · 하루 매수 상한 총자산의 {cfg['daily_buy_cap_pct']:g}%" if cfg["daily_buy_cap_pct"] else " · 하루 매수 상한 없음")) if body.enabled else "완전 무인 운영 끔",
               level="warn" if body.enabled else "info", portfolio_id=pf.id, data=cfg, at=now)
     session.commit()
     logger.info("auto-approve setting pid=%s %s", pf.id, cfg)
@@ -130,6 +132,22 @@ def _buy_total(session: Session, lines: list[dict], code_200: str, code_lev: str
     return total
 
 
+def _equity_for_cap(session: Session, pf: TradePortfolio, plan: dict) -> int:
+    """상한의 분모 = 신호 기준일 총자산 — 주문표 계산이 준 account.equity, 없으면 원장 현금 + 보유 로트×최근 종가."""
+    acct = plan.get("account") or {}
+    if acct.get("equity"):
+        return int(acct["equity"])
+    from app.cashcheck import ledger_cash
+    from app.models import PositionLot
+    from app.portfolios import latest_close
+
+    value = 0
+    for lot in session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pf.id, PositionLot.qty_open > 0)).all():
+        lc = latest_close(session, lot.instrument_id)
+        value += int(lot.qty_open) * (int(lc[0]) if lc else int(lot.price))
+    return ledger_cash(session, pf.id) + value
+
+
 def _auto_approve_portfolio(session: Session, pf: TradePortfolio, today: date, now: datetime,
                             client_factory, plan_fn, rec: dict) -> None:
     cfg = auto_approve_cfg(pf)
@@ -166,13 +184,15 @@ def _auto_approve_portfolio(session: Session, pf: TradePortfolio, today: date, n
         return
     plan_lines = {line_key(o): o for o in (snapshot.payload or {}).get("orders", [])}
     code_200, code_lev = _resolve_codes(session, pf)
-    # 하루 매수 총액 상한 — 넘으면 승인하지 않고 정지(배너로 드러나게)
-    cap = cfg.get("daily_buy_cap")
-    if cap:
+    # 하루 매수 총액 상한(총자산 대비 %) — 넘으면 승인하지 않고 정지(배너로 드러나게)
+    pct = float(cfg.get("daily_buy_cap_pct") or 0)
+    if pct > 0:
+        equity = _equity_for_cap(session, pf, plan)
+        cap = int(equity * pct / 100.0)
         total = _buy_total(session, lines, code_200, code_lev)
-        if total > int(cap):
-            rec["note"] = f"매수 합계 {total:,}원 > 상한 {int(cap):,}원"
-            pause_portfolio(pf, f"자동 승인 중단 — 실행일 {exec_day} 계획 매수 합계 {total:,}원이 하루 상한 {int(cap):,}원을 넘음. 계획을 확인한 뒤 다시 켜세요", now)
+        if total > cap:
+            rec["note"] = f"매수 합계 {total:,}원 > 상한 {pct:g}% ({cap:,}원, 총자산 {equity:,}원)"
+            pause_portfolio(pf, f"자동 승인 중단 — 실행일 {exec_day} 계획 매수 합계 {total:,}원이 하루 상한 {pct:g}%({cap:,}원, 총자산 {equity:,}원)를 넘음. 계획을 확인하고 필요하면 주문표에서 직접 승인한 뒤 다시 켜세요", now)
             _set_pf_auto_state(pf, auto_approve_last={"date": today.isoformat(), "at": now.isoformat(timespec="minutes"), "exec_day": exec_day.isoformat(),
                                                        "approved": 0, "reserved": 0, "skipped": len(lines), "failed": 0, "manual": [], "note": rec["note"]})
             return

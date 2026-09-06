@@ -104,8 +104,12 @@ def test_auto_approve_setting_guards():
     r = c.put(f"/portfolio/{pid2}/auto-exec/auto-approve", json={"enabled": True}, headers=h)
     assert r.status_code == 409 and "무인 실행" in r.json()["detail"]
     c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
-    j = c.put(f"/portfolio/{pid2}/auto-exec/auto-approve", json={"enabled": True, "market_reserve": False, "daily_buy_cap": 20_000_000}, headers=h).json()
-    assert j["auto_approve"]["enabled"] is True and j["auto_approve"]["market_reserve"] is False and j["auto_approve"]["daily_buy_cap"] == 20_000_000
+    j = c.put(f"/portfolio/{pid2}/auto-exec/auto-approve", json={"enabled": True, "market_reserve": False, "daily_buy_cap_pct": 15}, headers=h).json()
+    assert j["auto_approve"]["enabled"] is True and j["auto_approve"]["market_reserve"] is False and j["auto_approve"]["daily_buy_cap_pct"] == 15.0
+    # 기본값: 시장가 예약 접수 켬 · 상한 총자산의 20%
+    dflt = c.put(f"/portfolio/{pid2}/auto-exec/auto-approve", json={"enabled": True}, headers=h).json()["auto_approve"]
+    assert dflt["market_reserve"] is True and dflt["daily_buy_cap_pct"] == 20.0
+    assert c.put(f"/portfolio/{pid2}/auto-exec/auto-approve", json={"enabled": True, "daily_buy_cap_pct": 150}, headers=h).status_code == 422
     assert c.get(f"/portfolio/{pid2}/auto-exec", headers=h).json()["auto_approve"]["enabled"] is True
     us = c.post("/portfolios", json={"name": "미국", "market": "US"}, headers=h).json()["id"]
     assert c.put(f"/portfolio/{us}/auto-exec/auto-approve", json={"enabled": True}, headers=h).status_code == 409
@@ -113,7 +117,7 @@ def test_auto_approve_setting_guards():
     assert c.put(f"/portfolio/{pid2}/auto-exec/auto-approve", json={"enabled": False}, headers=h).json()["auto_approve"]["enabled"] is False
     ev = [i for i in c.get("/logs?type=event", headers=h).json()["items"] if i["kind"] == "autoexec.auto_approve_setting"]
     texts = [e["text"] for e in ev]
-    assert len(ev) == 2 and any("완전 무인 운영 켬" in t and "하루 매수 상한 20,000,000원" in t for t in texts) and any("완전 무인 운영 끔" in t for t in texts)
+    assert len(ev) == 3 and any("완전 무인 운영 켬" in t and "하루 매수 상한 총자산의 15%" in t for t in texts) and any("완전 무인 운영 끔" in t for t in texts)
 
 
 def test_auto_approve_batch_approves_limits_reserves_market_and_is_idempotent(monkeypatch):
@@ -180,15 +184,15 @@ def test_auto_approve_skips_paused_stale_plan_market_off_vps_and_cap(monkeypatch
     fake3 = FakeBroker()
     rec3 = _rec(_run(exec_day, fake3, aid3), pid3)
     assert rec3["approved"] == 3 and rec3["reserved"] == 0 and "모의 계좌" in rec3["manual"][0] and fake3.reserved == []
-    # 하루 매수 상한 초과 → 승인 0 + 정지 + 오류 로그
+    # 하루 매수 상한(총자산 대비 %) 초과 → 승인 0 + 정지. 총자산 5,000,000(원장 현금) · 매수 합계 789,000(=15.8%) → 상한 10% 면 초과
     c4, h4 = _client()
     pid4, aid4 = _setup(c4, h4, exec_day)
     c4.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h4)
-    c4.put(f"/portfolio/{pid4}/auto-exec/auto-approve", json={"enabled": True, "market_reserve": False, "daily_buy_cap": 500_000}, headers=h4)
-    rec4 = _rec(_run(exec_day, FakeBroker(), aid4), pid4)
-    assert rec4["approved"] == 0 and "상한" in rec4["note"]
+    c4.put(f"/portfolio/{pid4}/auto-exec/auto-approve", json={"enabled": True, "market_reserve": False, "daily_buy_cap_pct": 10}, headers=h4)
+    rec4 = _rec(_run(exec_day, FakeBroker(), aid4, lines=LINES[:3]), pid4)
+    assert rec4["approved"] == 0 and "상한 10%" in rec4["note"] and "500,000원" in rec4["note"]
     view = c4.get(f"/portfolio/{pid4}/auto-exec", headers=h4).json()
-    assert view["paused"] is True and "하루 상한" in view["paused_reason"]
+    assert view["paused"] is True and "하루 상한 10%" in view["paused_reason"] and "총자산 5,000,000원" in view["paused_reason"]
     assert c4.get(f"/portfolio/{pid4}/orders?date={exec_day.isoformat()}", headers=h4).json()["items"] == []
     # 정지 상태에서는 건너뜀
     rec5 = _rec(_run(exec_day, FakeBroker(), aid4), pid4)
