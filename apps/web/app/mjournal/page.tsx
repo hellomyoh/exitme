@@ -584,15 +584,23 @@ function MJournalPage() {
         <>
           {/* 카드 2줄(좌 2×2) + 우측 보유 패널(2줄 높이) — 보유 종목이 많아도 가독성 유지 (2026-09-05 지시) */}
           <div className="mb-4 grid gap-3 lg:grid-cols-3">
-          <div className="grid gap-3 sm:grid-cols-2 lg:col-span-2">
-            {/* 평가손익·총 손익 카드 추가 (2026-09-06 지시: 매수가 vs 현재가 수익률). 매수·매도 금액은 보조 줄로 */}
-            <Stat label="실현손익"
-              value={<>{fm(detail.summary.realized)}{detail.summary.return_pct != null &&
-                <span className="whitespace-nowrap text-[14px]"> ({pct(detail.summary.return_pct)})</span>}</>}
-              tone={detail.summary.realized > 0 ? "up" : detail.summary.realized < 0 ? "down" : "default"}
-              sub={<>매도 금액 <b className="text-ink">{fm(detail.summary.sell_amount)}</b> · 수익률 = 실현손익 ÷ 매도분 원가</>}
-              hint={`매매 비용 ${fm(detail.summary.cost)} (수수료 + 제세금) 차감 후 금액입니다`} />
-            <Stat label="평가손익"
+          {/* 카드 순서·크기 (2026-09-06 지시): 계좌 평가금액이 맨 앞, 다음 총 손익, 그 아래 평가손익·실현손익.
+              auto-rows-fr + h-full 로 네 카드를 같은 크기로 — 보조 줄 수가 달라도 높이가 어긋나지 않게 */}
+          <div className="grid auto-rows-fr gap-3 sm:grid-cols-2 lg:col-span-2">
+            {/* 계좌 평가금액 (2026-09-06 지시) — 주식 평가액 + 예수금. 일지가 계좌 주식을 전부 담고 있을 때만 표시 */}
+            {detail.summary.account_total != null && (
+              <Stat label="계좌 평가금액" className="h-full"
+                value={fm(detail.summary.account_total)}
+                tip="연결 계좌의 주식 평가액과 예수금을 더한 금액입니다. 이 일지가 계좌의 주식을 전부 담고 있을 때만 표시됩니다. 예수금은 D+2 정산 기준이라 매도 직후 인출 가능액과 다를 수 있고, 대시보드 총자산에는 주식 평가액만 반영됩니다."
+                sub={<>주식 <b className="text-ink">{fm(detail.summary.eval_total ?? 0)}</b> + 예수금 <b className="text-ink">{fm(detail.summary.account_deposit ?? 0)}</b></>}
+                hint="연결 계좌 잔고 기준 · 총자산에는 주식 평가액만 반영" />
+            )}
+            {/* 계좌 평가금액 카드가 없으면 총 손익이 첫 줄을 통째로 채운다 */}
+            <Stat label="총 손익 (실현 + 평가)" className={detail.summary.account_total == null ? "h-full sm:col-span-2" : "h-full"}
+              value={fm(detail.summary.total_pnl ?? detail.summary.realized)}
+              tone={(detail.summary.total_pnl ?? detail.summary.realized) > 0 ? "up" : (detail.summary.total_pnl ?? detail.summary.realized) < 0 ? "down" : "default"}
+              sub={<>매수 금액 <b className="text-ink">{fm(detail.summary.buy_amount)}</b> · 매도 금액 <b className="text-ink">{fm(detail.summary.sell_amount)}</b></>} />
+            <Stat label="평가손익" className="h-full"
               value={detail.summary.priced_count
                 ? <>{fm(detail.summary.unrealized_total ?? 0)}{detail.summary.unrealized_pct != null &&
                     <span className="whitespace-nowrap text-[14px]"> ({pct(detail.summary.unrealized_pct)})</span>}</>
@@ -605,22 +613,12 @@ function MJournalPage() {
                 ? <>보유 원가 <b className="text-ink">{fm(detail.holdings.reduce((a, h) => a + h.cost, 0))}</b> → 평가 <b className="text-ink">{fm(detail.summary.eval_total ?? 0)}</b>
                     {!detail.summary.priced && <span className="text-faint"> · 시세 없는 종목 {detail.holdings.length - (detail.summary.priced_count ?? 0)}개는 원가</span>}</>
                 : <>보유 원가 <b className="text-ink">{fm(detail.holdings.reduce((a, h) => a + h.cost, 0))}</b> · 시세 미연동</>} />
-            {/* 매매 비용은 카드를 없애고 실현손익 카드의 작은 글씨로 (2026-09-06 지시).
-                계좌 평가금액 카드가 있으면 2×2, 없으면 총 손익이 남은 줄을 채운다 */}
-            <div className={detail.summary.account_total == null ? "sm:col-span-2" : ""}>
-              <Stat label="총 손익 (실현 + 평가)"
-                value={fm(detail.summary.total_pnl ?? detail.summary.realized)}
-                tone={(detail.summary.total_pnl ?? detail.summary.realized) > 0 ? "up" : (detail.summary.total_pnl ?? detail.summary.realized) < 0 ? "down" : "default"}
-                sub={<>매수 금액 <b className="text-ink">{fm(detail.summary.buy_amount)}</b></>} />
-            </div>
-            {/* 계좌 평가금액 (2026-09-06 지시) — 주식 평가액 + 예수금. 일지가 계좌 주식을 전부 담고 있을 때만 표시 */}
-            {detail.summary.account_total != null && (
-              <Stat label="계좌 평가금액"
-                value={fm(detail.summary.account_total)}
-                tip="연결 계좌의 주식 평가액과 예수금을 더한 금액입니다. 이 일지가 계좌의 주식을 전부 담고 있을 때만 표시됩니다. 예수금은 D+2 정산 기준이라 매도 직후 인출 가능액과 다를 수 있고, 대시보드 총자산에는 주식 평가액만 반영됩니다."
-                sub={<>주식 <b className="text-ink">{fm(detail.summary.eval_total ?? 0)}</b> + 예수금 <b className="text-ink">{fm(detail.summary.account_deposit ?? 0)}</b></>}
-                hint="연결 계좌 잔고 기준 · 총자산에는 주식 평가액만 반영" />
-            )}
+            <Stat label="실현손익" className="h-full"
+              value={<>{fm(detail.summary.realized)}{detail.summary.return_pct != null &&
+                <span className="whitespace-nowrap text-[14px]"> ({pct(detail.summary.return_pct)})</span>}</>}
+              tone={detail.summary.realized > 0 ? "up" : detail.summary.realized < 0 ? "down" : "default"}
+              sub={<>수익률 = 실현손익 ÷ 매도분 원가</>}
+              hint={`매매 비용 ${fm(detail.summary.cost)} (수수료 + 제세금) 차감 후 금액입니다`} />
           </div>
           {(() => {
             const total = detail.holdings.reduce((a, h) => a + h.cost, 0);
