@@ -87,3 +87,33 @@ def test_legacy_us_ravg_pairs_rejected_and_ltm_job_runs():
         assert o["otype"] == "market" and o["kind"].startswith("ltm_") and o["instrument"] in ("K200", "LEV")
     acct = sig["account"]
     assert acct["equity"] > 0 and acct["qty_200"] >= 0 and acct["qty_lev"] >= 0
+
+
+def test_manual_us_portfolio_formula_select_and_change():
+    """실전매매 화면에서 미국 공식 선택 (2026-09-06 지시): 생성 시 etf 저장(기본 LTM_QLD), 변경은 PATCH, 주문표가 따라간다."""
+    client = TestClient(app, base_url="https://testserver")
+    h = {"Authorization": f"Bearer {make_user(client)}"}
+    # 기본값 = LTM_QLD
+    r = client.post("/portfolios", json={"name": "us-default", "market": "US"}, headers=h)
+    assert r.status_code == 201 and r.json()["etf"] == "LTM_QLD"
+    # 명시 선택 TF
+    r = client.post("/portfolios", json={"name": "us-tf", "market": "US", "etf": "QQQ_TF"}, headers=h)
+    assert r.status_code == 201
+    pid = r.json()["id"]
+    assert client.post("/portfolios", json={"name": "bad", "market": "US", "etf": "QQQ_QLD"}, headers=h).status_code == 422
+    items = client.get("/portfolios", headers=h).json()["items"]
+    assert {p["name"]: p["etf"] for p in items} == {"us-default": "LTM_QLD", "us-tf": "QQQ_TF"}
+    # 입금 후 주문표: TF → 공식 변경 → LTM (같은 보유 상태에서 규칙만 바뀐다)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 1_000_000,
+                                    "executed_at": "2023-09-07T15:30:00+09:00"}, headers=h)
+    sig = client.get(f"/signals/daily?portfolio_id={pid}", headers=h).json()
+    assert sig["strategy"] == "TF"
+    r = client.patch(f"/portfolios/{pid}", json={"name": "us-tf→ltm", "etf": "LTM_TQQQ"}, headers=h)
+    assert r.status_code == 200 and r.json()["etf"] == "LTM_TQQQ"
+    # TQQQ 봉이 없으면 정렬 데이터가 비어 INSUFFICIENT/오류가 될 수 있으므로 QLD 로 바꿔 확인
+    client.patch(f"/portfolios/{pid}", json={"name": "us-ltm", "etf": "LTM_QLD"}, headers=h)
+    sig = client.get(f"/signals/daily?portfolio_id={pid}", headers=h).json()
+    assert sig["strategy"] == "LTM" and sig["name_lev"] == "QLD"
+    # 한국 포트에는 공식 변경 불가
+    kr = client.post("/portfolios", json={"name": "kr", "market": "KR"}, headers=h).json()["id"]
+    assert client.patch(f"/portfolios/{kr}", json={"name": "kr", "etf": "QQQ_TF"}, headers=h).status_code == 422

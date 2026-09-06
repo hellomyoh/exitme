@@ -38,6 +38,7 @@
 | 챗봇 | `app/chat.py` `order_sheet` | 같은 디스패처 사용 — UI 와 동일 주문표 |
 | 웹 | `simulator/page.tsx` | 미국 카드 3종(LTM_QLD 기본), 부제 "LTM · TF 백테스트", 구 쌍 숨김 |
 | 웹 | `portfolio/page.tsx` | 주문 종류 라벨·설명(`ltm_entry/exit/lever_on/lever_off/rebal`), 레버리지 종목명 `name_lev`(QLD/TQQQ) |
+| 공식 선택 | `portfolios.py` `PortfolioIn.etf`/`RenameIn.etf`, `portfolio/page.tsx` | 미국 "새 실전매매 시작"에서 LTM·QLD(기본)/LTM·TQQQ/TF 선택 → `params.etf` 고정. 이름·색 편집에서 변경(미국 포트만, 다음 주문표부터). 탭 줄 공식 배지 → 가이드 링크 (2026-09-06) |
 
 주문 종류: `ltm_entry`(추세 진입) · `ltm_exit`(이탈→현금) · `ltm_lever_on`(노출 2.0) · `ltm_lever_off`(1배 복귀) · `ltm_rebal`(밴드 이탈 리밸런스).
 

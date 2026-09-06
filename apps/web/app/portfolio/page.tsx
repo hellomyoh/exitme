@@ -23,7 +23,14 @@ type Summary = {
   net_pnl: number; net_pnl_pct: number | null; unrealized_pnl_pct: number | null;
   twr: number | null; xirr: number | null; positions: Position[];
 };
-type PortfolioItem = { id: number; name: string; kind: string; market?: string; color?: string | null };
+type PortfolioItem = { id: number; name: string; kind: string; market?: string; color?: string | null; etf?: string | null };
+// 미국 포트 공식 (2026-09-06 지시) — 주문표 분기 키. 구형 포트(etf 없음)는 TF
+const US_FORMULAS: { key: string; label: string; short: string; guide: string; desc: string }[] = [
+  { key: "LTM_QLD", label: "LTM · QQQ + QLD", short: "LTM · QLD", guide: "/guide/ltm", desc: "미국 기본 — 추세 위·1년 수익 양·급락 없음이면 2배(QLD), 아니면 1배" },
+  { key: "LTM_TQQQ", label: "LTM · QQQ + TQQQ", short: "LTM · TQQQ", guide: "/guide/ltm", desc: "같은 규칙 · 2배 = QQQ 50% + TQQQ 50%" },
+  { key: "QQQ_TF", label: "TF · QQQ 1배", short: "TF", guide: "/guide/tf", desc: "200일선 위 전량 보유 / 2% 이탈 시 전량 현금 — 레버리지 없음" },
+];
+const formulaOf = (etf?: string | null) => US_FORMULAS.find((f) => f.key === (etf ?? "QQQ_TF")) ?? US_FORMULAS[2];
 
 // 탭 배경색 프리셋 — 라이트·다크 모두에서 20% 틴트로 사용 (2026-09-05 지시)
 const TAB_COLORS = ["#f97316", "#2563eb", "#059669", "#dc2626", "#7c3aed", "#0891b2", "#db2777", "#64748b"];
@@ -121,6 +128,7 @@ function PortfolioPage() {
   const [startMode, setStartMode] = useState<"fresh" | "holdings">("fresh");
   const [startCode200, setStartCode200] = useState("102110");  // KR 주력 조합 — 기본 TIGER (보수 연 0.05%, 2026-09-01 지시)
   const [startCash, setStartCash] = useState("");
+  const [startEtf, setStartEtf] = useState("LTM_QLD");  // US 공식 — 기본 LTM·QLD (2026-09-06 지시)
   const [holdings, setHoldings] = useState<{ code: string; qty: string; price: string }[]>([
     { code: market === "US" ? "QQQ" : "102110", qty: "", price: "" },
   ]);
@@ -144,6 +152,7 @@ function PortfolioPage() {
   const [boBusy, setBoBusy] = useState(false);
   const [boMsg, setBoMsg] = useState("");
   const [editName, setEditName] = useState("");
+  const [editEtf, setEditEtf] = useState("LTM_QLD");  // US 공식 변경 (2026-09-06 지시)
   const [editColor, setEditColor] = useState("");
   const [entryOpen, setEntryOpen] = useState(false);  // 체결 입력 폼 펼침 (2026-08-29 일지 개편)
   const [signal, setSignal] = useState<Signal | null>(null);
@@ -292,7 +301,7 @@ function PortfolioPage() {
   async function startPortfolio() {
     const name = newName.trim() || `실전매매 ${new Date().toISOString().slice(0, 10)}`;
     const res = await apiFetch("/portfolios", { method: "POST", body: JSON.stringify({
-      name, market, code_200: market === "KR" ? startCode200 : undefined }) });
+      name, market, code_200: market === "KR" ? startCode200 : undefined, etf: market === "US" ? startEtf : undefined }) });
     if (!res.ok) return;
     const { id } = (await res.json()) as { id: number };
     // 시작 항목(입금·보유분)은 '최근 종가일' 15:30 KST 로 기록 — 신호 기준일 종가 시점 상태에
@@ -435,12 +444,23 @@ function PortfolioPage() {
             비용 포함 (추정 수수료)
           </label>
           {sum?.as_of && <span className="text-xs text-faint">기준일 {sum.as_of} · 지연 시세</span>}
+          {/* 미국 포트 공식 배지 — 이 포트의 주문표 규칙 (2026-09-06 지시) */}
+          {market === "US" && sum && (() => {
+            const f = formulaOf(portfolios.find((p) => p.id === sum.portfolio.id)?.etf);
+            return (
+              <Link href={f.guide} title={`${f.desc} — 가이드 보기`}
+                className="rounded-lg border border-accent/40 bg-accent-dim px-2.5 py-1 text-[12.5px] font-semibold text-accent hover:border-accent">
+                공식 {f.short}
+              </Link>
+            );
+          })()}
           {/* 이름·배경색 편집 (2026-09-05 지시) — 탭이 많아지면 이름과 색으로 구분 */}
           <button className="rounded-lg border border-line bg-inset px-3 py-1.5 text-[13px] text-muted transition-colors hover:border-accent hover:text-accent"
             onClick={() => {
               if (!sum) return;
               setEditName(sum.portfolio.name);
               setEditColor(portfolios.find((p) => p.id === sum.portfolio.id)?.color ?? "");
+              setEditEtf(formulaOf(portfolios.find((p) => p.id === sum.portfolio.id)?.etf).key);
               setEditOpen(!editOpen);
             }}>✏️ 이름·색</button>
           {/* 파괴적 액션은 탭 줄과 분리하되 명확히 보이게 — 확인 대화상자로 이중 안전 (2026-09-02) */}
@@ -530,7 +550,7 @@ function PortfolioPage() {
 
       {editOpen && sum && (
         <Card className="mb-4 max-w-xl border-accent">
-          <CardTitle>포트 이름 · 탭 배경색</CardTitle>
+          <CardTitle>포트 이름 · 탭 배경색{market === "US" ? " · 매매 공식" : ""}</CardTitle>
           <div className="grid gap-3">
             <label className="grid gap-1 text-[13px] text-faint">이름 (60자 이내)
               <input className="input" value={editName} maxLength={60} onChange={(e) => setEditName(e.target.value)} /></label>
@@ -547,10 +567,24 @@ function PortfolioPage() {
                 ))}
               </div>
             </div>
+            {market === "US" && (
+              <div className="grid gap-1 text-[13px] text-faint">매매 공식
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {US_FORMULAS.map((f) => (
+                    <button key={f.key} onClick={() => setEditEtf(f.key)}
+                      className={`rounded-xl border p-3 text-left text-[13.5px] transition-colors ${editEtf === f.key ? "border-accent bg-accent-dim" : "border-line bg-inset hover:border-line-strong"}`}>
+                      <div className="font-bold text-ink">{f.label}</div>
+                      <div className="mt-0.5 text-[12px] leading-snug text-faint">{f.desc}</div>
+                    </button>
+                  ))}
+                </div>
+                <span className="text-[12px] text-faint">공식을 바꾸면 보유는 그대로 두고 <b className="text-muted">다음 주문표부터</b> 새 규칙으로 목표 비중에 맞추는 주문이 나옵니다.</span>
+              </div>
+            )}
             <div className="flex items-center gap-3">
               <button className="btn btn-primary" onClick={() => void (async () => {
                 const r = await apiFetch(`/portfolios/${sum.portfolio.id}`, {
-                  method: "PATCH", body: JSON.stringify({ name: editName.trim(), color: editColor }) });
+                  method: "PATCH", body: JSON.stringify({ name: editName.trim(), color: editColor, etf: market === "US" ? editEtf : undefined }) });
                 if (r.ok) { setEditOpen(false); void load(pid); }
                 else window.alert(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `변경 실패 (${r.status})`);
               })()}>저장</button>
@@ -598,6 +632,21 @@ function PortfolioPage() {
                   </button>
                 ))}
                 <span className="text-[12px] text-faint">레버리지는 KODEX 공통 · 주문표가 이 종목 기준으로 계산됩니다</span>
+              </div>
+            )}
+            {market === "US" && (
+              <div className="mb-1 grid gap-1.5 text-[13.5px]">
+                <span className="font-semibold text-muted">매매 공식 <span className="font-normal text-faint">— 이 포트의 주문표가 이 규칙으로 계산됩니다 · 나중에 이름·색 편집에서 바꿀 수 있습니다</span></span>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {US_FORMULAS.map((f) => (
+                    <button key={f.key} onClick={() => setStartEtf(f.key)}
+                      className={`rounded-xl border p-3 text-left transition-colors ${startEtf === f.key ? "border-accent bg-accent-dim" : "border-line bg-inset hover:border-line-strong"}`}>
+                      <div className="font-bold">{f.label}</div>
+                      <div className="mt-0.5 text-[12.5px] leading-snug text-faint">{f.desc}</div>
+                    </button>
+                  ))}
+                </div>
+                <span className="text-[12px] text-faint">어떤 공식을 고를지 모르겠다면 <Link href="/guide" className="text-accent underline underline-offset-2">가이드 · 매매 공식 개요</Link>를 보세요.</span>
               </div>
             )}
             {startMode === "holdings" && (
