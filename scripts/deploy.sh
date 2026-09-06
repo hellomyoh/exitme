@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # ExitMe 원격 서버 배포 스크립트 (2026-09-05 지시) — 태그(버전)를 받아 코드 체크아웃 → 이미지 재빌드 → 마이그레이션 → 헬스 검증.
 #
-#   사용법:  scripts/deploy.sh <태그|브랜치> [--stash] [--no-build] [--prune] [--port 12010]
+#   사용법:  scripts/deploy.sh <태그|브랜치> [--stash] [--no-build] [--prune] [--force] [--port 12010]
 #   예시:    scripts/deploy.sh v0.1.1            # 태그 v0.1.1 로 패치 배포
 #            scripts/deploy.sh v0.1.1 --stash    # 추적 파일 로컬 변경을 stash 로 치우고 진행 (변경은 보존됨)
 #            scripts/deploy.sh main              # main 최신으로 (개발·검증용)
 #            scripts/deploy.sh v0.1.1 --prune    # 배포 후 안 쓰는 이미지 정리
+#            scripts/deploy.sh v0.1.1 --force    # 같은 버전 재배포·하위 버전 롤백을 강제
+#            scripts/deploy.sh restart           # 코드 변경 없이 컨테이너만 재시작 (docker compose restart) 후 헬스 확인
+#            scripts/deploy.sh restart api web   # 일부 서비스만 재시작
+#
+#   태그 배포는 실행 중인 버전과 비교해 같은 버전이면 재빌드하지 않고 중지하고, 낮은 버전(롤백)도 중지한다 (2026-09-06 지시).
+#   의도한 재배포·롤백이면 --force. 브랜치 배포(main)는 코드가 바뀌어도 VERSION 이 같을 수 있어 경고만 하고 진행한다.
 #   다른 위치의 복사본으로 실행할 때: cd /path/to/exitme && bash /tmp/deploy.sh v0.1.1  (저장소는 현재 디렉터리)
 #
 #   운영 구성(docker-compose.prod.yml)은 소스를 이미지에 넣어 실행하므로 `restart` 만으로는 반영되지 않는다.
@@ -33,18 +39,20 @@ fi
 
 REF="${1:-}"
 if [[ -z "$REF" || "$REF" == "-h" || "$REF" == "--help" ]]; then
-  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
   exit 1
 fi
 shift
-BUILD=1; PRUNE=0; PORT=12010; STASH=0
+BUILD=1; PRUNE=0; PORT=12010; STASH=0; FORCE=0; SERVICES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-build) BUILD=0 ;;
     --prune) PRUNE=1 ;;
     --stash) STASH=1 ;;
+    --force) FORCE=1 ;;
     --port) PORT="${2:?--port 값 필요}"; shift ;;
-    *) echo "알 수 없는 옵션: $1" >&2; exit 1 ;;
+    --*) echo "알 수 없는 옵션: $1" >&2; exit 1 ;;
+    *) if [[ "$REF" == "restart" ]]; then SERVICES+=("$1"); else echo "알 수 없는 인자: $1" >&2; exit 1; fi ;;
   esac
   shift
 done
@@ -79,6 +87,33 @@ else
   log "배포 전: 실행 중인 서비스 없음(또는 헬스 응답 없음) — 첫 배포로 간주"
 fi
 
+# 헬스 응답을 최대 90초 기다려 OUT 에 담는다
+wait_health() {
+  OUT=""
+  for _i in $(seq 1 30); do
+    OUT="$(curl -fsS "http://localhost:$PORT/api/health" 2>/dev/null || true)"
+    [[ -n "$OUT" ]] && return 0
+    sleep 3
+  done
+  return 1
+}
+
+# R) 재시작 모드 — 코드·이미지 변경 없이 컨테이너만 다시 시작 (2026-09-06 지시). 코드 반영이 목적이면 태그 배포를 쓴다.
+if [[ "$REF" == "restart" ]]; then
+  log "docker compose restart ${SERVICES[*]:-(전체 서비스)}"
+  "${COMPOSE[@]}" restart ${SERVICES[@]+"${SERVICES[@]}"}
+  log "헬스 확인 http://localhost:$PORT/api/health"
+  wait_health || fail "헬스 응답 없음 — docker compose ps / logs 를 확인하세요"
+  echo "$OUT"
+  H_VER="$(echo "$OUT" | pick version)"; H_BUILD="$(echo "$OUT" | pick build_time)"
+  echo "✓ version   $H_VER (재시작 — 이미지 그대로, 코드 변경은 반영되지 않습니다)"
+  [[ -n "$H_BUILD" && "$H_BUILD" != "null" ]] && echo "· build_time $H_BUILD"
+  log "서비스 상태"
+  "${COMPOSE[@]}" ps --format 'table {{.Service}}\t{{.Status}}' 2>/dev/null || "${COMPOSE[@]}" ps
+  printf '\n\033[32m✓ 재시작 완료\033[0m\n'
+  exit 0
+fi
+
 # 0) 작업 트리에 추적 파일 변경이 있으면 덮어쓰지 않는다 (.env 등 미추적 파일은 무관).
 #    파일 모드(755/644)만 다른 것은 무시. 컨테이너가 호스트 파일을 다시 쓴 경우(개발 구성 bind mount 로 띄웠을 때
 #    next-env.d.ts·package-lock.json)가 가장 흔하다 — 어떤 파일인지와 처리법을 함께 보여준다.
@@ -98,17 +133,28 @@ if [[ -n "$DIRTY" ]]; then
   [[ $MANUAL -eq 1 ]] && echo "· 서버에서 직접 고친 파일(nginx 설정·compose 등)이면 보존이 필요합니다 — 커밋해서 올리거나 --stash 로 치우고 배포 후 git stash pop"
   if [[ $STASH -eq 1 ]]; then
     git stash push -m "deploy.sh auto-stash $(date -u +%FT%TZ) before $REF" >/dev/null
+    STASHED=1
     echo "→ --stash: 변경을 stash 에 보관하고 진행합니다 (복구: git stash pop)"
   else
     fail "추적 파일에 로컬 변경이 있습니다 — 위 안내대로 정리하거나 --stash 옵션으로 다시 실행하세요"
   fi
 fi
+STASHED="${STASHED:-0}"
+# 중지 시 저장소를 배포 전 상태로 되돌린다 (체크아웃·stash 복구) — 실행 중인 컨테이너는 이미지라 영향 없음
+PREV_REF="$(git symbolic-ref -q --short HEAD 2>/dev/null || git rev-parse HEAD)"
+abort() {
+  printf '\033[33m■ %s\033[0m\n' "$*"
+  git checkout -q "$PREV_REF" 2>/dev/null || true
+  if [[ $STASHED -eq 1 ]]; then git stash pop -q >/dev/null 2>&1 && echo "→ stash 로 치운 변경을 복구했습니다"; fi
+  exit 0
+}
 
 # 1) 코드 체크아웃 — 태그면 detached, 브랜치면 fast-forward
 log "git fetch --tags origin"
 git fetch --tags --prune origin
+IS_TAG=0
 if git rev-parse -q --verify "refs/tags/$REF" >/dev/null; then
-  git checkout -q --detach "tags/$REF"
+  git checkout -q --detach "tags/$REF"; IS_TAG=1
 elif git rev-parse -q --verify "refs/remotes/origin/$REF" >/dev/null; then
   git checkout -q "$REF"
   git pull -q --ff-only origin "$REF"
@@ -120,6 +166,20 @@ FILE_VER="v$(tr -d '[:space:]' < apps/api/app/VERSION)"
 log "체크아웃: $HEAD_DESC ($(git rev-parse --short HEAD)) · app/VERSION=$FILE_VER"
 if [[ "$REF" == v* && "$FILE_VER" != "$REF" ]]; then
   echo "⚠ app/VERSION($FILE_VER) 이 태그($REF) 와 다릅니다 — 태그 커밋에 VERSION 갱신이 빠졌을 수 있습니다 (AGENTS.md 버저닝 규칙)"
+fi
+
+# 1-1) 배포 전 버전 비교 — 같은 버전이면 재빌드하지 않고 중지, 낮은 버전(롤백)도 중지. --force 로 강제 (2026-09-06 지시)
+if [[ -n "$PREV_VER" && $FORCE -eq 0 ]]; then
+  case "$(vercmp "$FILE_VER" "$PREV_VER")" in
+    0)
+      if [[ $IS_TAG -eq 1 ]]; then
+        abort "실행 중인 버전($PREV_VER)과 같은 버전($FILE_VER)입니다 — 업데이트를 중지합니다. 재배포가 필요하면 --force 를 붙이세요"
+      else
+        echo "⚠ 실행 중인 버전($PREV_VER)과 VERSION 이 같습니다 — 브랜치 배포라 코드 변경만 반영합니다 (버전 표시는 그대로)"
+      fi ;;
+    -1)
+      abort "실행 중인 버전($PREV_VER)보다 낮은 버전($FILE_VER)입니다 — 롤백이 의도라면 --force 를 붙여 다시 실행하세요" ;;
+  esac
 fi
 
 # 2) 이미지 재빌드 + 기동 (변경된 서비스만 재생성)
@@ -142,13 +202,7 @@ DB_REV="$("${COMPOSE[@]}" exec -T api alembic current 2>/dev/null | grep -oE '^[
 
 # 4) 헬스 검증 — version·build_time·db_revision
 log "헬스 확인 http://localhost:$PORT/api/health"
-OUT=""
-for i in $(seq 1 30); do
-  OUT="$(curl -fsS "http://localhost:$PORT/api/health" 2>/dev/null || true)"
-  [[ -n "$OUT" ]] && break
-  sleep 3
-done
-[[ -n "$OUT" ]] || fail "헬스 응답 없음 — docker compose ps / logs 를 확인하세요"
+wait_health || fail "헬스 응답 없음 — docker compose ps / logs 를 확인하세요"
 echo "$OUT"
 H_VER="$(echo "$OUT" | pick version)"; H_BUILD="$(echo "$OUT" | pick build_time)"; H_DB="$(echo "$OUT" | pick db_revision)"
 
