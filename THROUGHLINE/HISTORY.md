@@ -348,4 +348,11 @@
 - 실측(비교 창): KR RAVG 15.9% / −21.0% / ×3.5 vs 보유 15.4% / −40.9%; US(2008-08~) TF 13.1% / −24.5% / ×9.2, LTM 19.8% / −40.5% / ×26, QQQ 보유 17.3% / −46.1% / ×17.6, QLD 보유 27.1% / −75.4%.
 - 부수 결함 수정: 미국 TF 포트 주문표(`_tf_portfolio_orders`)가 `Regime` 미임포트로 NameError — 수동 생성 미국 포트의 주문표가 실패하던 문제. 새 테스트가 TF 경로를 처음으로 실제 실행해 드러났다.
 - 테스트: `test_manual_us_portfolio_formula_select_and_change`(기본 LTM_QLD·명시 TF·구 키 422·목록 etf·PATCH 변경 후 주문표 전략 전환·한국 포트 422). 전체 스위트·tsc·헤드리스 결과는 커밋 메시지 참조.
-- Git commit: feat: choose TF/LTM per US portfolio; guide comparison charts and TF/LTM explanations
+- Git commit: feat: choose TF/LTM per US portfolio; guide comparison charts and TF/LTM explanations (#114)
+
+## [2026-09-06] change | 가이드 비교 개편 — 낙폭 그래프·위기 구간 표·같은 낙폭에서의 수익 (사용자 검토 4건 + "낙폭만 부각" 지시)
+
+- 검토 결론(실데이터): ① TF 는 실제로 보유보다 덜 번다(5년 구간 승률 1%) — 그래프 왜곡이 아니라 사실. RAVG·LTM 은 보유보다 높은데 로그 축에서 겹쳐 보였다. ② 2008 제외 시 TF 의 MDD 우위는 21%p→10%p 로 줄고(2009-07 이후 −24.5% vs −35%), 2020 같은 급락은 못 피하며(−24.5% vs −29%) 횡보장(2015~16)엔 보유보다 더 빠진다. LTM 은 2008 제외 시 MDD(−40.5%) 가 QQQ 보유(−35%)보다 크다 → "낙폭이 작다" 문구 삭제. RAVG 는 2008 없이도 위기마다 절반 이하(2020 −17% vs −38%, 2022 −14% vs −36%), −20% 아래 체류 0.2% vs 34%. ③ 낙폭이 그래프에 안 보임 → 낙폭(수면 아래) 그래프 도입. ④ 보유 대신 **같은 최대 낙폭으로 맞춘 보유**(비중 축소)와 비교 — RAVG 15.9% vs 7.8%, TF 13.1% vs 8.4%, LTM 19.8% vs 14.7%(QQQ)/13.4%(QLD).
+- 작업 내용: `components/guide-chart.tsx` 에 `DrawdownChart`(고점 대비 낙폭, 월중 최저, 면 겹침, 최저점 라벨, 호버)·`YearStrip`(연도별 수익 띠, 5%p 이상 우위 굵게) 추가, 자산곡선·낙폭 그래프에 위기 구간 음영(보유 −20% 이상 하락 국면, 고점→저점). 개요 페이지 블록을 ① 같은 낙폭에서의 수익 헤드라인 → ② 자산곡선 → ③ 낙폭 그래프 → ④ 위기 구간 표(보유/공식 낙폭·회복 기간) → ⑤ −20% 아래 체류 시간·낙폭 대비 수익 → ⑥ 연도별 띠 → 장점/단점/선택 순으로 재구성. 데이터 `compare-data.ts` v2(월말 곡선 + 월중 최저 낙폭 + 위기 표 + 체류 시간 + 위험 등가 + 연도별). TF 페이지 약점에 급락·횡보·5년 승률 명시 + "느린 하락장 보험, 보험료 연 4%p"; LTM 페이지에 "강점은 낙폭이 아니라 수익" 단락.
+- 테스트: tsc·헤드리스(그래프 6개·헤드라인·표·호버·모바일 폭) — 커밋 메시지 참조.
+- Git commit: change: guide comparison — drawdown charts, crisis table, risk-equal return headline
