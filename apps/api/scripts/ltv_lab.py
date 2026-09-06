@@ -18,8 +18,11 @@ from app.db import SessionLocal
 from app.models import Instrument, OhlcvDaily
 from app.strategy.ltv import LTVParams, LTVResult, buy_and_hold, run_ltv
 
-FEES = {"QQQ": 0.0020, "QLD": 0.0095, "TQQQ": 0.0084, "379800": 0.0009, "225040": 0.0025, "360750": 0.0007}
-MULT = {"QLD": 2.0, "TQQQ": 3.0, "225040": 2.0}
+FEES = {"QQQ": 0.0020, "QLD": 0.0095, "TQQQ": 0.0084, "379800": 0.0009, "225040": 0.0025, "360750": 0.0007,
+        "069500": 0.0015, "102110": 0.0015, "122630": 0.0064}
+MULT = {"QLD": 2.0, "TQQQ": 3.0, "225040": 2.0, "122630": 2.0}
+KR_CODES = {"069500", "102110", "122630", "379800", "225040", "360750"}
+KR_COMMISSION, KR_SLIPPAGE = 0.00015, 0.0005   # 국내 온라인 수수료 0.015% (RAVG 엔진 기본과 동일) + 슬리피지
 
 
 def load(session, code: str, d0: date, d1: date) -> dict[str, dict]:
@@ -125,6 +128,7 @@ def main() -> None:
     ap.add_argument("--sensitivity", action="store_true", help="후보 공식(LTM) 파라미터 민감도 표")
     ap.add_argument("--yearly", action="store_true", help="연도별 수익률: B&H · TF-1x · LTM")
     ap.add_argument("--laoer", action="store_true", help="라오어 무한매수 v2.2/v3.0 · VR 을 같은 조건으로 비교 (첫 종목 단독 + LTM 참조)")
+    ap.add_argument("--ravg", action="store_true", help="한국 쌍이면 운용 중인 RAVG v2.5 를 참조 행으로 추가")
     a = ap.parse_args()
     code1, _, code2 = a.pair.partition(":")
     code2 = code2 or None
@@ -147,8 +151,21 @@ def main() -> None:
             res.append(fmt(bh2))
         for label, p in variants(lev_mult, bars2 is not None):
             p = replace(p, fee_1x=FEES.get(code1, 0.002), fee_lev=FEES.get(code2 or "", 0.0095))
+            if code1 in KR_CODES:
+                p = replace(p, commission=KR_COMMISSION, slippage=KR_SLIPPAGE)
             r = run_ltv(bars1, bars2, a.capital, p, start_index=start_index, label=label)
             res.append(fmt(r))
+        if a.ravg and bars2 and code1 in KR_CODES:
+            # 운용 중인 RAVG v2.5 참조 — 같은 봉, 엔진 기본 비용(KODEX/TIGER 프로필)
+            from app.backtests import base_costs_for
+            from app.strategy.backtest import run_backtest
+            from app.strategy.params import Params
+            etf = "TIGER" if code1 == "102110" else "KODEX"
+            bt = run_backtest(bars1, bars2, a.capital, Params(**base_costs_for(etf)), start_index=start_index)
+            k = bt.kpi
+            res.append({"label": "RAVG v2.5 (운용 중)", "total": k["total_return"], "cagr": k["cagr"], "mdd": k["mdd"],
+                        "sharpe": k["sharpe"], "calmar": (k["cagr"] / abs(k["mdd"])) if (k["cagr"] is not None and k["mdd"] < 0) else None,
+                        "flips": "—", "rebal": k["trades"], "turnover": None, "tim": None, "avg_e": None, "days": len(bt.equity)})
         print(f"**{tag}**\n\n{HEADER}")
         for d in res:
             print(row(d))
@@ -229,6 +246,8 @@ def main() -> None:
     # ── 후보 공식 LTM (Leveraged Trend-Momentum): MA200 보유 게이트 + 고정 2x + 급락 브레이커 3%/20일 + 12M 모멘텀 확인
     LTM = replace(LTVParams(lev_multiple=lev_mult), sigma_target=None, e_max=2.0, shock_drop=0.03, shock_days=20, mom_filter=252,
                   fee_1x=FEES.get(code1, 0.002), fee_lev=FEES.get(code2 or "", 0.0095))
+    if code1 in KR_CODES:
+        LTM = replace(LTM, commission=KR_COMMISSION, slippage=KR_SLIPPAGE)
     if a.sensitivity and bars2:
         print("**민감도 — LTM 기준값에서 한 축씩 변형 (전 구간)**")
         print()
