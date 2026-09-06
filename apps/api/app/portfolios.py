@@ -370,26 +370,35 @@ def list_transactions(portfolio_id: int | None = None, limit: int = 500,
     ]}
 
 
+US_FORMULAS = "^(QQQ_TF|LTM_QLD|LTM_TQQQ)$"  # 미국 포트 공식 — 주문표 분기 키 (signals._us_portfolio_orders)
+
+
 class PortfolioIn(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     market: str = Field(default="KR", pattern="^(KR|US)$")
     code_200: str | None = Field(default=None, pattern="^(069500|102110)$")  # KR 주력 ETF (기본 TIGER, 2026-09-01)
+    etf: str | None = Field(default=None, pattern=US_FORMULAS)  # US 공식 선택 — 미지정 시 LTM_QLD (2026-09-06 지시)
 
 
 @router.post("/portfolios", status_code=201)
 def create_portfolio(body: PortfolioIn, user_id: int = Depends(current_user_id),
                      session: Session = Depends(get_session)) -> dict:
-    """실전매매 포트 추가 — 여러 실전매매 동시 진행 (2026-08-28 지시)."""
-    pf = TradePortfolio(user_id=user_id, name=body.name, kind="manual", market=body.market,
-                        params={"code_200": body.code_200} if body.code_200 else None)
+    """실전매매 포트 추가 — 여러 실전매매 동시 진행 (2026-08-28 지시). 미국 포트는 공식(etf)을 함께 고정한다."""
+    params: dict = {}
+    if body.market == "KR" and body.code_200:
+        params["code_200"] = body.code_200
+    if body.market == "US":
+        params["etf"] = body.etf or "LTM_QLD"  # 미국 기본 공식 = LTM·QLD (시뮬레이터 기본과 동일)
+    pf = TradePortfolio(user_id=user_id, name=body.name, kind="manual", market=body.market, params=params or None)
     session.add(pf)
     session.commit()
-    return {"id": pf.id, "name": pf.name, "market": pf.market}
+    return {"id": pf.id, "name": pf.name, "market": pf.market, "etf": params.get("etf")}
 
 
 class RenameIn(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     color: str | None = None  # "#rrggbb" = 탭 배경색 지정, "" = 해제, None = 유지 (2026-09-05 지시)
+    etf: str | None = Field(default=None, pattern=US_FORMULAS)  # 미국 포트 공식 변경 — 다음 주문표부터 적용 (2026-09-06)
 
 
 @router.patch("/portfolios/{pid}")
@@ -412,8 +421,13 @@ def rename_portfolio(pid: int, body: RenameIn, user_id: int = Depends(current_us
         else:
             raise HTTPException(status_code=422, detail="색상은 #rrggbb 형식이어야 합니다")
         pf.params = params  # JSONB 변경 감지 — 재할당 필수
+    if body.etf is not None:
+        if pf.market != "US":
+            raise HTTPException(status_code=422, detail="공식 선택은 미국 포트에만 적용됩니다")
+        # 공식 변경: 기존 보유는 그대로 두고 다음 주문표부터 새 규칙으로 목표 비중에 맞추는 주문이 나온다
+        pf.params = {**(pf.params or {}), "etf": body.etf}
     session.commit()
-    return {"id": pf.id, "name": pf.name, "color": (pf.params or {}).get("color")}
+    return {"id": pf.id, "name": pf.name, "color": (pf.params or {}).get("color"), "etf": (pf.params or {}).get("etf")}
 
 
 @router.delete("/portfolios/{pid}")
@@ -437,7 +451,8 @@ def list_portfolios(user_id: int = Depends(current_user_id),
                     session: Session = Depends(get_session)) -> dict:
     rows = session.scalars(select(TradePortfolio).where(TradePortfolio.user_id == user_id)).all()
     return {"items": [{"id": r.id, "name": r.name, "kind": r.kind, "backtest_id": r.backtest_id,
-                       "market": r.market, "color": (r.params or {}).get("color")} for r in rows]}
+                       "market": r.market, "color": (r.params or {}).get("color"),
+                       "etf": (r.params or {}).get("etf")} for r in rows]}  # US 공식 키 (TF 구형 포트는 None → TF)
 
 
 @router.get("/portfolio/summary")

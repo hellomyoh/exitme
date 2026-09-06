@@ -340,4 +340,12 @@
 
 - 작업 내용: 사이드바에 "📖 가이드" 그룹(매매 공식 개요 · RAVG · TF · LTM) 추가 — 매매일지 그룹 뒤, 설정 앞. `/guide`(세 공식 비교표·공통 원칙·시뮬레이터→실전 흐름·용어), `/guide/ravg`(레짐·노출·그리드·매도·레버리지 두 트랙·안전장치·하루 흐름·주문표 라벨), `/guide/tf`(두 줄 규칙·2% 완충·200일선 이유·실측), `/guide/ltm`(세 층 구조·안전장치 4종·라벨·실측·KOSPI 미적용 이유). 공용 조각 `components/guide.tsx`(GuideShell 탭·Section·Lead·Steps·Bullets·Table·ProsCons·Labels). 수식·계수는 쓰지 않고 '무엇을 왜 하는지'만 서술. 실측 숫자는 당일 로컬 DB 결과(TF 11.9%/−24.5%/29회, LTM 18.7%/−40.5%, 18.8%/−36.9%)만 인용.
 - 테스트: tsc 클린, 헤드리스로 4 페이지 렌더·탭 활성·사이드바 그룹 순서 확인 (아래 커밋 기준).
-- Git commit: feat: add guide menu with plain-language pages for RAVG, TF and LTM
+- Git commit: feat: add guide menu with plain-language pages for RAVG, TF and LTM (#113)
+
+## [2026-09-06] feat | 미국 실전매매 공식 선택(TF/LTM) + 가이드 보강 — 비교 그래프·표, TF/LTM 설명 추가 (사용자 지시 3건)
+
+- 작업 내용: ① 실전매매(미국) "새 실전매매 시작"에 **매매 공식 선택**(LTM·QLD 기본 / LTM·TQQQ / TF·QQQ 1배) 추가 — `POST /portfolios` `etf`(미지정 시 LTM_QLD), 이름·색 편집 패널에서 **공식 변경**(`PATCH /portfolios/{id}` `etf`, 미국 포트만·다음 주문표부터 적용), 탭 줄에 공식 배지(가이드 링크), 포트 목록 응답에 `etf`. 이전에는 수동 생성 미국 포트가 항상 TF 였고 LTM 은 시뮬레이터 전환으로만 만들 수 있었다. ② 가이드 TF 페이지에 "비싸게 사서 싸게 파는 것 아닌가?"(손익 비대칭 표·2008/2020 사례), "전량 매수·매도가 어떻게 수익이 되나"(후행 200일선·2020~2026 경로 표), "TF 의 장점 — 수익이 아니라 낙폭"(5항·선택 기준) 추가. LTM 페이지에 "왜 TF 위에 레버리지를 얹으면 수익이 커지나"(게이트 동일·재진입 1배·비교표·선택 기준) 추가 — 대화에서 답한 내용을 그대로 옮김. ③ 가이드 개요에 **공식별 비교 섹션**: 한국/미국 구분 요약표(장점·단점·선택 이유), 공식별 블록(전략 vs 단순 보유 자산곡선 그래프 — 인라인 SVG 로그축·호버, 요약 지표표, 장점/단점/이럴 때 선택). 그래프 데이터는 실데이터로 엔진을 돌린 월말 곡선(`app/guide/compare-data.ts`, 기준 2026-09-04): 한국 RAVG(TIGER 200 + KODEX 레버리지, 2018-01~) vs TIGER 200 보유, 미국 TF·LTM(QLD) vs QQQ 보유(+QLD 보유), 미국은 두 공식이 모두 판정을 시작한 2008-08 부터 같은 창.
+- 실측(비교 창): KR RAVG 15.9% / −21.0% / ×3.5 vs 보유 15.4% / −40.9%; US(2008-08~) TF 13.1% / −24.5% / ×9.2, LTM 19.8% / −40.5% / ×26, QQQ 보유 17.3% / −46.1% / ×17.6, QLD 보유 27.1% / −75.4%.
+- 부수 결함 수정: 미국 TF 포트 주문표(`_tf_portfolio_orders`)가 `Regime` 미임포트로 NameError — 수동 생성 미국 포트의 주문표가 실패하던 문제. 새 테스트가 TF 경로를 처음으로 실제 실행해 드러났다.
+- 테스트: `test_manual_us_portfolio_formula_select_and_change`(기본 LTM_QLD·명시 TF·구 키 422·목록 etf·PATCH 변경 후 주문표 전략 전환·한국 포트 422). 전체 스위트·tsc·헤드리스 결과는 커밋 메시지 참조.
+- Git commit: feat: choose TF/LTM per US portfolio; guide comparison charts and TF/LTM explanations

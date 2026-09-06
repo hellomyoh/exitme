@@ -386,6 +386,7 @@ def _tf_portfolio_orders(session: Session, pf_row, pid: int) -> dict:
     from app.backtests import load_aligned_bars as _load
     from app.models import Instrument
     from app.strategy.trendfilter import TF_CASH_RESERVE, TF_EXIT_BUFFER, TF_MA, run_tf_backtest
+    from app.strategy.regime import Regime  # 모듈 상단 import 정리 때 빠져 미국 TF 포트 주문표가 NameError 로 실패하던 결함 (2026-09-06)
 
     bars, _, _ = _load(session, date(1990, 1, 1), date(2100, 1, 1), codes=("QQQ", "QQQ"))
     result = run_tf_backtest(bars, MODEL_CAPITAL)
