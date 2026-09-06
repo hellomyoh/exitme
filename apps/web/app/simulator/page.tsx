@@ -27,13 +27,19 @@ const FLAG_LABELS: [string, string, string][] = [
   ["f4_leverage", "④ 레버리지 모듈", "Emax 1.30 · E>1 초과분만"],
   ["f5_gap_filter", "⑤ 갭 필터 + 잔여예산", "갭 하락 방어 · 예산 초과 미발주"],
 ];
-type EtfKey = "KODEX" | "TIGER" | "QQQ_QLD" | "QQQ_TQQQ" | "QQQ_TF";
-const ETF_INFO: Record<EtfKey, { label: string; fee: number; market: "KR" | "US"; legacy?: boolean }> = {
+type EtfKey = "KODEX" | "TIGER" | "QQQ_TF" | "LTM_QLD" | "LTM_TQQQ" | "QQQ_QLD" | "QQQ_TQQQ";
+const ETF_INFO: Record<EtfKey, { label: string; fee: number; market: "KR" | "US"; legacy?: boolean; hidden?: boolean; desc?: string }> = {
   TIGER: { label: "TIGER 200 (기본)", fee: 0.0005, market: "KR" },
   KODEX: { label: "KODEX 200", fee: 0.0015, market: "KR" },
-  QQQ_TF: { label: "QQQ 추세 필터 (미국 기본)", fee: 0.002, market: "US" },
-  QQQ_QLD: { label: "QQQ + QLD — RAVG 전략 (비교용)", fee: 0.002, market: "US", legacy: true },
-  QQQ_TQQQ: { label: "QQQ + TQQQ — RAVG 전략 (비교용)", fee: 0.002, market: "US", legacy: true },
+  // 미국 (2026-09-06 지시): LTM 채택, RAVG 비교용 쌍 삭제(기존 기록 라벨용으로만 남김)
+  LTM_QLD: { label: "QQQ + QLD — LTM (미국 기본)", fee: 0.002, market: "US",
+    desc: "MA200 위 보유 · 12개월 모멘텀 양이고 20일 내 −3% 급락 없으면 2배(QLD 100%), 아니면 1배 · 2% 이탈 시 현금" },
+  LTM_TQQQ: { label: "QQQ + TQQQ — LTM", fee: 0.002, market: "US",
+    desc: "같은 규칙 · 노출 2.0 = QQQ 50% + TQQQ 50% (3배는 반만)" },
+  QQQ_TF: { label: "QQQ 추세 필터 (TF · 1배)", fee: 0.002, market: "US",
+    desc: "MA200 위 전량 보유 / 2% 관통 시 전량 현금 — 레버리지 없음" },
+  QQQ_QLD: { label: "QQQ + QLD — RAVG (구 비교용)", fee: 0.002, market: "US", legacy: true, hidden: true },
+  QQQ_TQQQ: { label: "QQQ + TQQQ — RAVG (구 비교용)", fee: 0.002, market: "US", legacy: true, hidden: true },
 };
 
 export default function SimulatorPageWrapper() {
@@ -54,8 +60,8 @@ function SimulatorPage() {
   const market = marketOf(sp);
   const fm = (v: number) => fmtMoneyM(market, v);
   const fpx = (v: number) => fmtPriceM(market, v);
-  const ETF_KEYS = (Object.keys(ETF_INFO) as EtfKey[]).filter((k) => ETF_INFO[k].market === market);  // RAVG 페어도 비교용으로 선택 가능 (2026-09-01 지시)
-  const [etf, setEtf] = useState<EtfKey>(market === "US" ? "QQQ_TF" : "TIGER");  // KR 기본 TIGER (2026-09-01)
+  const ETF_KEYS = (Object.keys(ETF_INFO) as EtfKey[]).filter((k) => ETF_INFO[k].market === market && !ETF_INFO[k].hidden);
+  const [etf, setEtf] = useState<EtfKey>(market === "US" ? "LTM_QLD" : "TIGER");  // KR 기본 TIGER (2026-09-01) · US 기본 LTM (2026-09-06)
   // 자본 입력은 표기 통화 (미국: 달러) — 전송 시 API 단위(센트)로 변환
   const [capital, setCapital] = useState(market === "US" ? String(DEFAULT_CAPITAL.US / 100) : "100000000");
   const [dateFrom, setDateFrom] = useState(new Date(Date.now() - 365 * 86400e3).toISOString().slice(0, 10)); // 기본 1년 전 (2026-08-28 지시)
@@ -277,7 +283,8 @@ function SimulatorPage() {
 
   return (
     <main>
-      <PageTitle title={`시뮬레이터 · ${MARKET_LABEL[market]}`} sub="RAVG v2.5 백테스트 — 조건 설정 → 실행 → 결과. 모의 계산이며 투자 권유가 아닙니다." />
+      <PageTitle title={`시뮬레이터 · ${MARKET_LABEL[market]}`}
+        sub={`${market === "US" ? "LTM · TF 백테스트" : "RAVG v2.5 백테스트"} — 조건 설정 → 실행 → 결과. 모의 계산이며 투자 권유가 아닙니다.`} />
       <MarketSwitch />
 
       {/* 스텝 인디케이터 */}
@@ -303,7 +310,7 @@ function SimulatorPage() {
                 <button key={k} onClick={() => setEtf(k)}
                   className={`rounded-xl border p-4 text-left transition-colors ${etf === k ? "border-accent bg-accent-dim" : "border-line bg-inset hover:border-line-strong"}`}>
                   <div className="font-bold">{ETF_INFO[k].label}</div>
-                  <div className="mt-0.5 text-xs text-faint">총보수 연 {(ETF_INFO[k].fee * 100).toFixed(2)}%{ETF_INFO[k].market === "KR" ? " · 레버리지는 KODEX 공통" : ETF_INFO[k].legacy ? " · 그리드+레버리지 (미국 비권장 — 비교 검증용)" : " · MA200 위 전량 보유 / 2% 관통 시 전량 현금"}</div>
+                  <div className="mt-0.5 text-xs text-faint">총보수 연 {(ETF_INFO[k].fee * 100).toFixed(2)}%{ETF_INFO[k].market === "KR" ? " · 레버리지는 KODEX 공통" : ` · ${ETF_INFO[k].desc ?? ""}`}</div>
                 </button>
               ))}
             </div>

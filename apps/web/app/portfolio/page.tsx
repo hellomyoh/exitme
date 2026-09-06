@@ -38,7 +38,7 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; exec_day?: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; text: string }[] } | null };
+type Signal = { status: string; exec_day?: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; text: string }[] } | null };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -46,6 +46,7 @@ const ORDER_KIND_KO: Record<string, string> = {
   grid1: "그리드 1차", grid2: "그리드 2차", grid3: "그리드 3차", tp: "익절", reduce: "축소",
   lev_strat: "레버 전략", lev_tact1: "레버 전술1", lev_tact2: "레버 전술2", lev_tact_exit: "전술 이탈", lev_liq: "레버 청산",
   tf_entry: "추세 진입", tf_exit: "추세 이탈",
+  ltm_entry: "LTM 진입", ltm_exit: "LTM 이탈(현금)", ltm_lever_on: "레버리지 ON", ltm_lever_off: "레버리지 OFF", ltm_rebal: "LTM 리밸런스",
 };
 
 const toneCls = { up: "text-up", down: "text-down", default: "text-ink" };
@@ -75,6 +76,11 @@ function orderCondDesc(o: OrderRow, ind: Record<string, number> | undefined): st
     lev_liq: "레버리지 전량 청산 (레짐 이탈/변동성 초과)",
     tf_entry: "종가가 MA200 위 — 다음날 시가 전량 매수",
     tf_exit: "종가가 MA200 −2% 관통 — 다음날 시가 전량 매도",
+    ltm_entry: "종가가 MA200 위로 올라옴 — 다음날 시가에 목표 노출로 진입",
+    ltm_exit: "종가가 MA200 −2% 관통 — 다음날 시가 전량 현금",
+    ltm_lever_on: "12개월 모멘텀 양 · 최근 20일 −3% 급락 없음 — 레버리지로 노출 2.0",
+    ltm_lever_off: "모멘텀 음전환 또는 급락 브레이커(20일) — 레버리지를 풀어 1배로",
+    ltm_rebal: "목표 노출과 10% 이상 어긋남 — 시장가 리밸런스",
   };
   return map[o.kind] ?? "";
 }
@@ -882,7 +888,7 @@ function PortfolioPage() {
                     <td className="py-2"><Badge tone={o.kind.startsWith("lev") ? "up" : o.kind === "tp" ? "ok" : "accent"}>{ORDER_KIND_KO[o.kind] ?? o.kind}</Badge></td>
                     <td className="py-2">
                       {(() => {
-                        const full = o.instrument === "K200" ? (signal?.name_200 ?? (market === "US" ? "QQQ" : "KODEX 200")) : (market === "US" ? "레버리지(QLD/TQQQ)" : "KODEX 레버리지");
+                        const full = o.instrument === "K200" ? (signal?.name_200 ?? (market === "US" ? "QQQ" : "KODEX 200")) : (signal?.name_lev ?? (market === "US" ? "레버리지(QLD/TQQQ)" : "KODEX 레버리지"));
                         const short = o.instrument === "K200" ? full.split(" ")[0] : "레버";
                         return <><span className="hidden sm:inline">{full}</span><span className="sm:hidden">{short}</span></>;
                       })()}

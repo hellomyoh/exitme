@@ -464,7 +464,7 @@ def get_daily_signal(date_: date | None = Query(default=None, alias="date"),
             base = _live_us_model(session, _user)
             if base["status"] != "OK":
                 return base
-            base.update(_tf_portfolio_orders(session, pf_row, portfolio_id))
+            base.update(_us_portfolio_orders(session, pf_row, portfolio_id))  # TF 또는 LTM (포트 params.etf)
             return base
         # 내 실전 포트 기준 주문표 (2026-08-28 검토 반영) — 주문·계좌 현황을 내 포트 기준으로 교체.
         # 배치 스냅샷이 없거나 실패 상태여도 포트 기준 주문표는 시세로 직접 계산해 준다 (2026-09-05):
@@ -521,3 +521,83 @@ def get_signal_history(_user: int = Depends(current_user_id),
         ]}
     except Exception:
         return {"items": []}
+
+
+def _us_portfolio_orders(session: Session, pf_row, pid: int) -> dict:
+    """미국 포트 전략 디스패처 (2026-09-06): params.etf 가 LTM_* 면 LTM, 아니면 TF(구형·기본)."""
+    etf = str((pf_row.params or {}).get("etf") or "QQQ_TF")
+    if etf.startswith("LTM_"):
+        return _ltm_portfolio_orders(session, pf_row, pid, "TQQQ" if etf.endswith("TQQQ") else "QLD")
+    return _tf_portfolio_orders(session, pf_row, pid)
+
+
+def _ltm_portfolio_orders(session: Session, pf_row, pid: int, lev_code: str) -> dict:
+    """미국 포트 기준 LTM 주문표 (2026-09-06 채택) — 규칙은 app/strategy/ltm.py 한 곳(ltm_states)에 있다.
+
+    목표 노출 E(0 / 1 / 2) 를 현재 보유(QQQ·레버리지)와 비교해 시장가 리밸런스 주문을 만든다. 차이가 목표의 10% 미만이면
+    주문 없음. 전량 현금(E=0)·첫 진입은 즉시. 다음 거래일 시가 체결 전제(B안).
+    """
+    from app.backtests import load_aligned_bars as _load
+    from app.models import Instrument, PortfolioPlan
+    from app.strategy.ltm import ltm_states, params_for, target_weights
+
+    bars_1x, bars_lev, _ = _load(session, date(1990, 1, 1), date(2100, 1, 1), codes=("QQQ", lev_code))
+    p = params_for(lev_code)
+    st = ltm_states([float(b["close"]) for b in bars_1x], p)[-1]
+    base_day = date.fromisoformat(bars_1x[-1]["date"])
+    exec_day = _next_exec_day(base_day)
+    lot_rows, cash = _state_before(session, pid, exec_day)
+    q1 = qL = 0
+    for l in lot_rows:
+        code = session.get(Instrument, l["instrument_id"]).code
+        if code == "QQQ":
+            q1 += l["qty"]
+        else:
+            qL += l["qty"]  # 레버리지 레그(다른 레버리지 종목이 섞여 있으면 같은 레그로 취급해 청산·리밸런스 대상)
+    c1, cL = float(bars_1x[-1]["close"]), float(bars_lev[-1]["close"])
+    v = cash + q1 * c1 + qL * cL
+    common = {"basis": "portfolio", "strategy": "LTM", "portfolio": {"id": pf_row.id, "name": pf_row.name},
+              "exec_day": exec_day.isoformat(), "signal_date": base_day.isoformat(),
+              "code_200": "QQQ", "name_200": "QQQ", "code_lev": lev_code, "name_lev": lev_code,
+              "account": {"cash": cash, "qty_200": q1, "qty_lev": qL, "equity": round(v)}, "gap_cancel_below": None}
+    if st is None:
+        return {**common, "status": "INSUFFICIENT_HISTORY", "orders": [], "e_target": None, "regime": None}
+    L = p.lev_multiple
+    e_t = st["e_target"]
+    e_now = ((q1 * c1 + qL * cL * L) / v) if v > 0 else 0.0
+    w1, wL = target_weights(e_t, L)
+    orders: list[dict] = []
+    if abs(e_t - e_now) >= p.band * max(e_t, 0.5):
+        t1 = int(w1 * v / c1) if c1 > 0 else 0
+        tL = int(wL * v / cL) if (wL > 0 and cL > 0) else 0
+        if e_t == 0:
+            kind = "ltm_exit"
+        elif q1 + qL == 0:
+            kind = "ltm_entry"
+        elif e_t > 1.0 and e_now <= 1.05:
+            kind = "ltm_lever_on"
+        elif e_t <= 1.0 and e_now > 1.05:
+            kind = "ltm_lever_off"
+        else:
+            kind = "ltm_rebal"
+        for inst, q_now, q_tgt in (("K200", q1, t1), ("LEV", qL, tL)):
+            d = q_tgt - q_now
+            if d != 0:
+                orders.append({"instrument": inst, "side": "buy" if d > 0 else "sell", "otype": "market",
+                               "qty": abs(d), "price": None, "kind": kind})
+        orders.sort(key=lambda o: 0 if o["side"] == "sell" else 1)  # 매도(현금 확보) 먼저
+    regime = "BEAR" if not st["on"] else ("BULL" if e_t > 1.0 else "NEUTRAL")
+    out = {**common, "status": "OK", "regime": regime, "e_target": e_t, "w_200": w1, "w_lev": wL,
+           "indicators": {"close": c1, "ma200": st["ma"], "gap_to_ma200": c1 / st["ma"] - 1, "exit_level": st["exit_level"],
+                          "mom12": st["mom"], "shock_days_left": st["shock_left"], "exposure": e_now},
+           "orders": orders}
+    row = session.scalar(select(PortfolioPlan).where(PortfolioPlan.portfolio_id == pid, PortfolioPlan.trade_date == exec_day))
+    payload = {"regime": regime, "signal_date": base_day.isoformat(), "orders": orders, "gap_cancel_below": None,
+               "account": out["account"], "e_target": e_t, "strategy": "LTM"}
+    from app.dashboard import kst_today
+    if row is None:
+        session.add(PortfolioPlan(portfolio_id=pid, trade_date=exec_day, payload=payload))
+    elif exec_day > kst_today():
+        row.payload = payload
+    session.commit()
+    return out

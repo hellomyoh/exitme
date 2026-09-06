@@ -321,3 +321,9 @@
 - 작업 내용: 자격이 포트에 1:1 종속(포트마다 키 재입력)이던 구조를 **계정 단위 계좌 목록 + 포트 참조**로 변경(0017: broker_credentials.portfolio_id 제거·label 추가, portfolios.broker_credential_id FK ON DELETE SET NULL, 기존 연결은 마이그레이션에서 이관). 일반 설정에 '증권사 계좌' 카드(등록·계좌 조회로 상품코드 확인·연결된 포트 표시·삭제), 실전매매는 **드롭다운 선택**만(키 입력 없음, 미등록 시 설정 링크 안내). 한 계좌를 여러 포트에 재사용 가능, 계좌 삭제 시 연결 자동 해제.
 - 테스트: 계좌 CRUD·마스킹·재사용(두 포트 연결)·타인 계좌 연결 차단·삭제 시 해제·미연결 409 — 전체 161 passed, tsc 클린, E2E(설정 등록 → 실전매매 선택 → 연결됨) 확인.
 - Git commit: change: manage broker accounts in settings, select them per portfolio
+
+## [2026-09-06] feat | 미국 매매 공식 LTM 적용 — 시뮬레이터·실전 주문표, 미국 RAVG 쌍 삭제 (사용자 지시 "LTM 을 미국 주식 거래 매매공식으로 적용… TF 만 남기고")
+
+- 작업 내용: features/feature-us-ltm.md 참조. 연구(docs/ltv-strategy-study-20260906.md)에서 채택한 LTM 을 제품 엔진으로 옮김 — `app/strategy/ltm.py`(`ltm_states` 규칙 단일 구현: MA200 게이트·2% 이탈, 12M 모멘텀>0 ∧ 20일 내 −3% 급락 없음 → 노출 2.0, 아니면 1.0, OFF 현금; 밴드 10%; 다음날 시가 시장가; 정수 주; `BacktestResult` 반환). 시뮬레이터 미국 옵션 = `LTM_QLD`(기본)·`LTM_TQQQ`·`QQQ_TF`, **RAVG 미국 쌍(QQQ_QLD/QQQ_TQQQ) 삭제**(신규 잡 422, 기존 기록은 라벨만). `run_engine` 디스패치(잡·일지·전환·워커 공통), 미국 포트 주문표를 포트 `params.etf` 로 TF/LTM 분기(`_us_portfolio_orders`, 챗봇 order_sheet 동일), LTM 주문 종류 라벨·설명·레버리지 종목명(QLD/TQQQ) 표기. 한국은 RAVG 유지(연구 §10).
+- 테스트: `tests/test_ltm.py`(비중·게이트·급락 브레이커·상승장 레버리지·TQQQ 50/50·하락장 현금·보유 시작) + `tests/test_ltm_api.py`(구 쌍 422, LTM 잡 완주·일지 종류, 실전 전환 → `/signals/daily` 전략 LTM) — 전체 스위트 결과는 아래 Git commit 시점 기록 참조.
+- Git commit: feat: adopt LTM as the US trading formula, drop US RAVG pairs (keep TF)
