@@ -412,4 +412,9 @@
 - 검토: 매매일지만 배경색·주황 숫자를 써 대시보드와 분위기가 달랐고, 실전매매는 카드 셋이 모두 24px 라 핵심이 없었으며, 시뮬레이터는 총수익률이 다른 지표와 같은 크기였다.
 - 규칙: ① 페이지마다 **핵심 카드 하나**(총자산·총자산·총수익률·계좌 평가금액) — 값 24px 굵게, 첫 자리. ② 핵심 표시는 숫자 색이 아니라 **카드 장식**(`.card-hero`: 왼쪽 3px 주황 선 + 주황 5% 배경 + 옅은 주황 테두리). 숫자는 검정 또는 손익 부호색만 — '숫자 색 = 손익 부호' 규칙을 네 페이지에서 동일하게. ③ 나머지 카드 19px(대시보드 한국·미국 20→19, 실전매매 순손익·수익률 24→19). ④ 라벨 13px·보조 12.5px·안내 11px 통일.
 - 구현: `Stat` 에 `hero` 옵션(+ label ReactNode) 추가, 대시보드 상단 카드 3개를 수제 마크업에서 공용 Stat 으로 교체(같은 타이포·간격), 실전매매·시뮬레이터·매매일지에 hero 지정. 매매일지의 임시 `!bg-accent-dim`·주황 숫자는 제거.
-- Git commit: change: unify card hierarchy — one hero card per page, sign colors only on P&L
+- Git commit: change: unify card hierarchy — one hero card per page, sign colors only on P&L (#126)
+
+## [2026-09-06] docs | KRX 애프터마켓 개장(9/14) 영향 검토 — 매매 공식 수정 없음 (사용자 지시)
+
+- 작업 내용: docs/krx-aftermarket-20260914-review.md. 보도 확인: 시간외 단일가 폐지 → KRX 애프터마켓 16:00~20:00 실시간 체결(전일 종가 ±30%), 시간외 종가매매(15:40~16:00) 유지, 프리마켓 2027년 말로 연기, **ETF·ETN 제외**, NXT ETF 는 11월부터. 결론: RAVG 의 신호 앵커(KRX 정규장 15:30 종가, 시장코드 J)·실행(다음 날 09:00 예약주문)·갭 취소 전제가 그대로라 공식 수정 없음. 운영 보완 후보: 20:15 체결 동기화 추가(주식 애프터마켓 체결), 9/14 첫 주 예약주문 창·일봉 종가 확인, 11월 NXT ETF 개시 후 갭 빈도 관찰. ASSUMPTIONS 에 신호 앵커 명시.
+- Git commit: docs: review KRX after-market launch (2026-09-14) — no formula change, ops follow-ups

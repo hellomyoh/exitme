@@ -12,6 +12,7 @@
 | [regime-buffer-study-20260831.md](regime-buffer-study-20260831.md) | 운영자 | 절제 ③ 후속 — v1 복귀·완충 확대 기각, MA200 이탈 완충 ε=2% 권고 (3차 검증 완료) |
 | [us-transfer-study-20260831.md](us-transfer-study-20260831.md) | 운영자 | 한·미 동일 알고리즘 적용 검증 — 파라미터 고원 확인, 세금·환율·운영 선결 조건 |
 | [ltv-strategy-study-20260906.md](ltv-strategy-study-20260906.md) | 운영자 | 미국 지수 추세 자산용 신규 공식 LTM 연구 — 문헌·4차 개선 반복·민감도·국내 상장 S&P 판정 |
+| [krx-aftermarket-20260914-review.md](krx-aftermarket-20260914-review.md) | 운영자 | KRX 애프터마켓 개장(2026-09-14) 영향 검토 — ETF 제외로 공식 수정 없음, 운영 보완(20:15 동기화·예약주문 창 확인), 11월 NXT ETF 관찰 항목 |
 | [order-formula-study-20260903.md](order-formula-study-20260903.md) | 운영자 | 주문표 공식 수리 검토 — E 탄력성·그리드 반사원리 검증, 예산 가중 50/30/20 후보 (미채택) |
 | [yearly-trade-frequency-20260903.md](yearly-trade-frequency-20260903.md) | 운영자 | 2020~2026 연도별 시뮬레이션·체결 횟수 분해 (평균 주 1.3회, 2022년 방어 17.1%p) |
 - [market-research/](market-research/README.md) — 유사 서비스 시장 조사(11건, 기능·유료화 모델·ExitMe 시사점, 2026-09-05)
