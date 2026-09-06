@@ -10,7 +10,7 @@
                 (설정에서 그 방향이 허용돼 있어야 버튼이 동작. 시장가 줄은 제외 → 예약주문으로)
 전날 16:45      [완전 무인, 2026-09-07 지시] 워커 auto_approve_plan (app/autoapprove.py) → 자동 승인이 켜진 국내 포트별:
                   정지 상태·설정 모두 꺼짐이면 건너뜀(로그) → 다음 실행일 주문표 계산·스냅샷 저장(_portfolio_orders)
-                  → 실행일 ≤ 오늘(오늘 일봉 미적재)이면 건너뜀 → 하루 매수 상한 초과면 승인 없이 정지
+                  → 실행일 ≤ 오늘(오늘 일봉 미적재)이면 건너뜀 → 하루 매수 상한(총자산 대비 %, 기본 20%) 초과면 승인 없이 정지
                   → 허용 방향의 지정가 줄 approved(자동 승인) · 시장가 줄은 옵션이면 예약주문 접수(실전·접수 창 안), 아니면 '수동 필요' 로그
                   → params.auto_exec.auto_approve_last + 활동 로그. 이미 살아 있는 줄은 건너뜀(멱등)
                 긴급 정지: 화면 [⛔ 무인 중지 + 전량 취소] → POST …/orders/cancel-all {stop:true} → 승인 철회·예약 취소·정규 주문 취소 + 정지 + 자동 승인 끔
@@ -43,7 +43,7 @@
 | 훅 | `broker.py` | `STATUS_KO` 확장, 주문 목록 응답에 `auto_exec`, 취소 엔드포인트가 무인 줄 처리(승인 철회 / 정규 주문 취소), `run_post_close_sync` 가 확정·정지 |
 | 계획 | `signals.py` | `PortfolioPlan.payload.gap_cancel_exact`(정확값) 추가 — 시가 판정용 |
 | 워커 | `worker.py` | `auto-exec-open` 09:01 mon–fri, `max_retries=0`, 휴장일 스킵 · `preopen-gap-cancel` 08:57 mon–fri (2026-09-06 밤) |
-| 완전 무인 | `app/autoapprove.py` `run_auto_approve`, `PUT /portfolio/{pid}/auto-exec/auto-approve`, `POST /portfolio/{pid}/orders/cancel-all`, `worker.py` `auto-approve-plan` 16:45 | 포트별 자동 승인(기본 꺼짐)·시장가 예약 접수 옵션·하루 매수 상한. 전량 취소(승인·예약·발주) + stop 이면 정지·자동 승인 끔. 상태는 `auto_exec_view` 의 `auto_approve`·`auto_approve_last` |
+| 완전 무인 | `app/autoapprove.py` `run_auto_approve`, `PUT /portfolio/{pid}/auto-exec/auto-approve`, `POST /portfolio/{pid}/orders/cancel-all`, `worker.py` `auto-approve-plan` 16:45 | 포트별 자동 승인(기본 꺼짐)·시장가 예약 접수 옵션(기본 켬)·하루 매수 상한 `daily_buy_cap_pct`(총자산 대비 %, 기본 20, 0 = 없음). 전량 취소(승인·예약·발주) + stop 이면 정지·자동 승인 끔. 상태는 `auto_exec_view` 의 `auto_approve`·`auto_approve_last` |
 | 사전 갭 취소 | `app/preopen.py` `run_preopen_cancel`, `services/kis_client.py` `fetch_expected`(FHKST01010200)·`list_open_orders`(TTTC0084R 실전 전용) | 예상체결가 ≤ 기준 → 그리드 가격과 같은 200 ETF 매수 미체결 취소. `BrokerOrder.status=gap_cancelled`, `params.preopen_cancel.last_run`. 설정 `auto_exec.preopen_cancel` 기본 켜짐 |
 | 로그 | `app/activity.py` `log_event`, `GET /logs`, `models.ActivityLog`(0022) | 거래(원장)·주문(BrokerOrder)·이벤트(ActivityLog) 병합. 기록 지점: 무인 실행 요약·정지·승인, 예약주문 접수·취소, 사전 갭 취소, 장 마감 동기화 결과·오류, 예수금 대조 경고·보정, 거래 삭제 |
 | 웹 | `portfolio/page.tsx`, `settings/page.tsx`, `logs/page.tsx` | 승인 버튼·확인창·상태·배너·사전 갭 확인 한 줄 / 무인 실행 탭(매수·매도·사전 갭 취소 스위치) / 매매 로그(기간·유형·수준·포트·검색 필터) |

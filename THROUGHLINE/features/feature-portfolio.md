@@ -62,7 +62,7 @@
 
 - `POST /positions`(거래 등록), `GET /portfolio/summary`, `GET /portfolios/{id}/positions`, `PATCH /positions/{id}`(목표·손절·메모).
 - `GET /portfolio/summary` 확장(2026-09-02): `principal`(납입원금 = 입금−출금), `net_pnl`, `net_pnl_pct`(÷principal, 분모≤0→null), `unrealized_pnl_pct`(÷보유원가, 원가 0→null), `invested_cost`(보유원가) 필드 추가 — 기존 키 비파괴.
-- 완전 무인(2026-09-07): `PUT /portfolio/{pid}/auto-exec/auto-approve {enabled, market_reserve, daily_buy_cap}`, `POST /portfolio/{pid}/orders/cancel-all {stop, since}` → {cancelled, failed, filled_untouched, items, auto_exec}. `GET /portfolio/{pid}/auto-exec` 응답에 `auto_approve`·`auto_approve_last`.
+- 완전 무인(2026-09-07): `PUT /portfolio/{pid}/auto-exec/auto-approve {enabled, market_reserve, daily_buy_cap_pct}` (상한은 총자산 대비 %, 기본 20, 0 = 없음), `POST /portfolio/{pid}/orders/cancel-all {stop, since}` → {cancelled, failed, filled_untouched, items, auto_exec}. `GET /portfolio/{pid}/auto-exec` 응답에 `auto_approve`·`auto_approve_last`.
 - 매매 로그(2026-09-06): `GET /logs?days=&portfolio_id=&type=all|trade|order|event&level=all|warn|error&q=&limit=` — 거래 원장·BrokerOrder·ActivityLog(0022) 병합, 최신순, KST 시각. 사전 갭 취소: `GET /portfolio/{pid}/orders` 응답에 `preopen.last_run`, 설정 `auto_exec.preopen_cancel`.
 - 예수금 연동(2026-09-06): `GET /broker/accounts/{aid}/balance?market=` (잔고 요약: deposit·deposit_d1·deposit_d2·total_eval·holdings[strategy]), `POST /portfolios` 에 `credential_id`, `GET /portfolio/{pid}/cash-check[?refresh=true]`, `POST /portfolio/{pid}/cash-check/align`, `GET /portfolio/{pid}/broker` 응답에 `cash_check`.
 

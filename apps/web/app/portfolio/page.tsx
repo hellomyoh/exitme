@@ -158,7 +158,7 @@ function PortfolioPage() {
     status: string; status_ko: string; message: string | null; mode?: string };
   // 무인 실행 상태 (2026-09-06, ADR-008) — 설정 허용 스위치 + 포트 정지 상태 + 마지막 실행 요약
   // 완전 무인(자동 승인, 2026-09-07 지시) — 16:45 주문표 자동 승인 설정·마지막 실행
-  type AutoApprove = { enabled: boolean; market_reserve: boolean; daily_buy_cap: number | null; updated_at?: string | null };
+  type AutoApprove = { enabled: boolean; market_reserve: boolean; daily_buy_cap_pct: number; updated_at?: string | null };
   type AutoApproveLast = { date: string; at: string; exec_day: string; approved: number; reserved: number; skipped: number; failed: number; manual: string[]; note?: string | null };
   type AutoExec = { allowed: { buy: boolean; sell: boolean; preopen_cancel?: boolean }; paused: boolean; paused_reason: string | null; paused_at: string | null;
     fail_streak: number; last_run: { date: string; at: string; open: number | null; gap_hit: boolean; submitted: number; skipped_gap: number; skipped: number; failed: number; note?: string } | null;
@@ -231,11 +231,11 @@ function PortfolioPage() {
     if (r.ok) { setBoMsg("무인 실행을 다시 켰습니다"); void load(pid); }
   }
   // 완전 무인 운영 (2026-09-07 지시) — 자동 승인 설정 저장 · 살아 있는 주문 전량 취소(긴급 정지)
-  const aa: AutoApprove = ae?.auto_approve ?? { enabled: false, market_reserve: true, daily_buy_cap: null };
+  const aa: AutoApprove = ae?.auto_approve ?? { enabled: false, market_reserve: true, daily_buy_cap_pct: 20 };
   const [aaOpen, setAaOpen] = useState(false);
-  const [aaForm, setAaForm] = useState<{ enabled: boolean; market_reserve: boolean; cap: string }>({ enabled: false, market_reserve: true, cap: "" });
-  useEffect(() => { setAaForm({ enabled: aa.enabled, market_reserve: aa.market_reserve, cap: aa.daily_buy_cap ? String(aa.daily_buy_cap) : "" }); },
-    [aa.enabled, aa.market_reserve, aa.daily_buy_cap]);
+  const [aaForm, setAaForm] = useState<{ enabled: boolean; market_reserve: boolean; cap: string }>({ enabled: false, market_reserve: true, cap: "20" });
+  useEffect(() => { setAaForm({ enabled: aa.enabled, market_reserve: aa.market_reserve, cap: String(aa.daily_buy_cap_pct ?? 20) }); },
+    [aa.enabled, aa.market_reserve, aa.daily_buy_cap_pct]);
   const kstToday = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
   const liveOrders = (bo?.items ?? []).filter((i) => ["approved", "reserved", "submitted", "partial"].includes(i.status) && i.plan_date >= kstToday);
   async function saveAutoApprove() {
@@ -243,9 +243,10 @@ function PortfolioPage() {
     if (aaForm.enabled && !aa.enabled && !window.confirm(
       "완전 무인 운영을 켭니다.\n\n· 매일 16:45 에 다음 실행일 주문표를 계산해 설정에서 허용한 방향의 지정가 줄을 자동 승인합니다 — 사람이 승인하지 않아도 09:01 에 발주됩니다.\n· 시장가 줄(레버리지 진입·청산)은 옵션에 따라 예약주문으로 자동 접수합니다.\n· 09:01 의 시가 확인·갭 취소·원장 대조·매수가능조회·자동 정지는 그대로 작동합니다.\n· 하루 매수 상한을 넘는 계획은 승인하지 않고 포트를 정지합니다.\n\n결과는 매매 로그와 이 화면에서 확인하세요. 계속할까요?")) return;
     setBoBusy(true); setBoMsg("");
-    const cap = aaForm.cap.trim() ? priceToApi(market, aaForm.cap) : null;
+    const capPct = aaForm.cap.trim() === "" ? 20 : Number(aaForm.cap.replace(",", "."));
+    if (!Number.isFinite(capPct) || capPct < 0 || capPct > 100) { setBoMsg("하루 매수 상한은 0~100 사이의 %로 입력하세요 (0 = 없음)"); return; }
     const r = await apiFetch(`/portfolio/${sum.portfolio.id}/auto-exec/auto-approve`, { method: "PUT",
-      body: JSON.stringify({ enabled: aaForm.enabled, market_reserve: aaForm.market_reserve, daily_buy_cap: cap }) });
+      body: JSON.stringify({ enabled: aaForm.enabled, market_reserve: aaForm.market_reserve, daily_buy_cap_pct: capPct }) });
     const j = (await r.json().catch(() => ({}))) as AutoExec & { detail?: string };
     setBoBusy(false);
     if (!r.ok) { setBoMsg(j.detail ?? `저장 실패 (${r.status})`); return; }
@@ -1060,7 +1061,7 @@ function PortfolioPage() {
               <span className={`rounded-md px-2 py-0.5 text-[12px] font-semibold ${aa.enabled ? "bg-accent-dim text-accent" : "bg-raised text-faint"}`}>{aa.enabled ? "켜짐" : "꺼짐"}</span>
               <span className="text-muted">
                 {aa.enabled
-                  ? `16:45 주문표 자동 승인${aa.market_reserve ? " · 시장가 줄은 예약주문 자동 접수" : " · 시장가 줄은 수동"}${aa.daily_buy_cap ? ` · 하루 매수 상한 ${fm(aa.daily_buy_cap)}` : ""}`
+                  ? `16:45 주문표 자동 승인${aa.market_reserve ? " · 시장가 줄은 예약주문 자동 접수" : " · 시장가 줄은 수동"}${aa.daily_buy_cap_pct ? ` · 하루 매수 상한 총자산의 ${aa.daily_buy_cap_pct}%` : " · 하루 매수 상한 없음"}`
                   : "장 마감 후 주문표를 자동 승인해 매일 승인 없이 09:01 에 발주하려면 켜세요"}
               </span>
               <button className="btn !py-1" disabled={boBusy} onClick={() => setAaOpen((o) => !o)}>{aaOpen ? "닫기" : "설정"}</button>
@@ -1087,8 +1088,8 @@ function PortfolioPage() {
                 <label className="flex items-center gap-2"><input type="checkbox" className="h-4 w-4 accent-[#c2410c]" checked={aaForm.market_reserve} onChange={(e) => setAaForm({ ...aaForm, market_reserve: e.target.checked })} />
                   <span><b className="text-ink">시장가 줄은 예약주문으로 자동 접수</b> <span className="text-faint">— 레버리지 진입·청산. 끄면 그 줄은 수동(로그에 '수동 필요')</span></span></label>
                 <label className="flex flex-wrap items-center gap-2">
-                  <span><b className="text-ink">하루 매수 상한</b> <span className="text-faint">({unit}, 비우면 없음) — 계획 매수 합계가 넘으면 승인하지 않고 정지</span></span>
-                  <input className="input w-44 !py-1.5" placeholder="예: 20000000" value={aaForm.cap} onChange={(e) => setAaForm({ ...aaForm, cap: e.target.value })} /></label>
+                  <span><b className="text-ink">하루 매수 상한</b> <span className="text-faint">(총자산 대비 %, 기본 20 · 0 = 없음) — 계획 매수 합계(시장가는 최근 종가로 근사)가 넘으면 승인하지 않고 정지. 레짐 전환일의 레버리지 진입은 20% 를 넘을 수 있어 그날은 정지됩니다</span></span>
+                  <span className="inline-flex items-center gap-1"><input className="input w-24 !py-1.5" placeholder="20" value={aaForm.cap} onChange={(e) => setAaForm({ ...aaForm, cap: e.target.value })} /><span className="text-muted">%</span></span></label>
                 <div className="flex flex-wrap items-center gap-2">
                   <button className="btn btn-primary !py-1.5" disabled={boBusy} onClick={() => void saveAutoApprove()}>저장</button>
                   <span className="text-[12px] text-faint">설정 › 무인 실행의 매수·매도 허용이 켜진 방향만 승인됩니다. 정지 상태에서는 자동 승인도 멈춥니다.</span>
