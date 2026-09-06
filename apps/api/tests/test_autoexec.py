@@ -120,6 +120,9 @@ def test_execution_gap_cancel_limits_and_sync(monkeypatch):
     today = date.today()
     pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=97500.0)
     c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
+    # 원장에 069500 10주 등록 — 09:01 사전 대조(원장 vs 계좌)를 통과하려면 계좌 보유와 같아야 한다
+    c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 10, "price": 100000,
+                               "executed_at": (today - timedelta(days=2)).isoformat() + "T15:30:00+09:00"}, headers=h)
     # 승인은 09:00 이전이어야 한다 → 승인 시각을 이른 시각으로 흉내
     monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
     r = c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": LINES[:3]}, headers=h).json()
