@@ -387,4 +387,16 @@
 - 작업 내용: docs/mjournal-broker-link-review-20260905.md §3-3 참조. `fetch_balance()` 로 잔고 조회에서 예수금(output2)까지 함께 읽어 현재가 캐시(120초)에 담는다 — 추가 API 호출 없음. 일지가 **계좌 주식을 전부 담고 있을 때만**(계좌 보유 ⊆ 일지 보유, 수량 일치, 일지에 계좌 밖 종목 없음) `account_total = 주식 평가액 + 예수금` 을 계산해 "계좌 평가금액" 카드로 보인다. 커버리지가 깨지면(부분 관리·수동 종목 섞임) 카드를 감춘다. 대시보드 총자산에는 예수금을 넣지 않는다(한 계좌를 여러 일지에 연결할 수 있어 중복). 예수금 D+2 기준은 풍선말에 명시.
 - 실데이터 확인: 연금저축 주식 1,392,445 + 예수금 96,022 = 1,488,467 / 한투-삼성 2,810,500 + 5,035 = 2,815,535, 두 일지 모두 커버리지 충족.
 - 테스트: `test_journal_account_total_only_when_journal_covers_account`(합계·대시보드 미포함·계좌 밖 종목·수량 불일치) — 전체 201 passed.
-- Git commit: feat: journal account value card — stock valuation plus cash from the linked account
+- Git commit: feat: journal account value card — stock valuation plus cash from the linked account (#122)
+
+## [2026-09-06] change | 매매일지 카드 순서·크기 (사용자 지시)
+
+- 작업 내용: 계좌 평가금액 → 총 손익 → 평가손익 → 실현손익 순. `auto-rows-fr` + `Stat className="h-full"`(Stat 에 className prop 추가) 로 네 카드 동일 크기 — 래퍼 div 가 카드 높이를 칸에 못 맞추던 문제 해소. 매도 금액은 총 손익 카드로.
+- Git commit: change: journal cards — account value first, equal-size 2x2 grid (#123)
+
+## [2026-09-06] fix | 대시보드 매매일지 자산 — 계좌 단위 제외를 종목 단위 제외로 (사용자 검토 요청 → 승인)
+
+- 원인: 2026-09-05 규칙 "일지가 실전매매 포트와 같은 증권사 계좌면 총자산에서 일지 제외"가, 포트가 **현금만** 들고 있고 주식은 일지에 있는 실데이터에서 일지 주식 4,202,945원을 통째로 누락시켰다(대시보드 매매일지 0원). 범례의 "취득원가"도 고정 문구여서 현재가 평가와 어긋났다.
+- 수정: `journal_assets` 가 같은 계좌 포트의 **실제 보유 종목**(잔여 로트 > 0, 코드 → 정규화 이름 매칭)만 일지에서 빼고 나머지 종목 가치는 총자산에 넣는다(`value` = 포함분, `excluded` 목록, `counted` = 전부 겹칠 때만 False). 대시보드 표는 "포함 / 일부 포함 — 제외 종목 / 제외", 범례는 "평가액 / 일부 취득원가 / 취득원가"를 상태별로.
+- 테스트: `test_journal_same_account_as_portfolio_dedupes_by_instrument`(현금만 → 전부 포함, 같은 종목 보유 → 그 종목만 제외·이름 매칭, 전부 겹침 → 제외). 기존 계좌 단위 테스트를 대체.
+- Git commit: fix: dashboard journal assets — exclude only instruments the linked portfolio actually holds

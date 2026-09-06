@@ -216,20 +216,39 @@ def test_journal_close_reopen_and_dashboard_assets():
     assert c.post(f"/mjournals/{a}/entries", json={"side": "buy", "qty": 1, "price": 1000}, headers=h).status_code == 201
 
 
-def test_journal_same_account_as_portfolio_not_double_counted():
-    """같은 증권사 계좌가 실전매매 포트에도 연결돼 있으면 매매일지 자산은 총자산에 넣지 않는다(counted=False)."""
+def test_journal_same_account_as_portfolio_dedupes_by_instrument():
+    """같은 증권사 계좌를 실전매매 포트도 쓰면 **포트가 실제 보유한 종목만** 일지에서 빼고 나머지는 총자산에 넣는다
+    (2026-09-06: 계좌 단위로 통째로 빼던 규칙이 현금만 있는 포트 때문에 일지 주식 전부를 누락시켰다)."""
     c, h = _client()
     acct = c.post("/broker/accounts", json={"label": "연금", "app_key": "PS" + "k" * 34, "app_secret": "S" * 180,
                                             "account_no": "10040029-22"}, headers=h).json()
     pid = c.post("/portfolios", json={"name": "연금 포트"}, headers=h).json()["id"]
     c.put(f"/portfolio/{pid}/broker", json={"credential_id": acct["id"]}, headers=h)
+    # 포트는 현금만 (입금) — 일지의 주식과 겹치는 종목 없음
+    c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 3_000_000, "executed_at": "2026-01-02T15:30:00+09:00"}, headers=h)
     jid = c.post("/mjournals", json={"name": "연금 일지", "symbol": "kodex 200", "fee_rate": 0.0, "tax_rate": 0.0}, headers=h).json()["id"]
     c.put(f"/mjournals/{jid}/broker", json={"credential_id": acct["id"]}, headers=h)
     c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 2, "price": 100000, "trade_date": "2026-01-02"}, headers=h)
+    c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 3, "price": 50000, "symbol": "기타주", "trade_date": "2026-01-03"}, headers=h)
     d = c.get("/dashboard", headers=h).json()
     j = next(x for x in d["journals"] if x["id"] == jid)
-    assert j["counted"] is False and "같은 증권사 계좌" in j["note"] and j["cost"] == 200_000
-    assert d["journal"] == 0  # 표시는 하되 총자산에는 미포함
+    assert j["counted"] is True and j["note"] is None and j["excluded"] == [] and j["value"] == 350_000
+    assert d["journal"] == 350_000 and d["cash"] == 3_000_000   # 일지 주식 + 포트 현금 — 둘 다 총자산에
+
+    # 포트가 같은 종목(KODEX 200, 069500)을 실제 보유하면 그 종목만 일지에서 빠진다 (이름 매칭 — 일지 기록엔 코드 없음)
+    c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 5, "price": 100000,
+                               "executed_at": "2026-01-05T15:30:00+09:00"}, headers=h)
+    d2 = c.get("/dashboard", headers=h).json()
+    j2 = next(x for x in d2["journals"] if x["id"] == jid)
+    assert j2["counted"] is True and j2["value"] == 150_000                       # 기타주만 남음
+    assert [x["symbol"] for x in j2["excluded"]] == ["kodex 200"] and "제외" in j2["note"]
+    assert d2["journal"] == 150_000
+
+    # 일지 종목이 전부 겹치면 counted=False, 총자산에는 실전매매 쪽만
+    c.post(f"/mjournals/{jid}/entries", json={"side": "sell", "qty": 3, "price": 51000, "symbol": "기타주", "trade_date": "2026-01-06"}, headers=h)
+    d3 = c.get("/dashboard", headers=h).json()
+    j3 = next(x for x in d3["journals"] if x["id"] == jid)
+    assert j3["counted"] is False and "실전매매 쪽만 포함" in j3["note"] and d3["journal"] == 0
 
 
 def test_reset_assets_wipes_everything_but_account():

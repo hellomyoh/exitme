@@ -88,7 +88,7 @@ type Dash = { portfolios?: PortRow[]; total_trend?: number[]; kr_trend?: number[
   kr_stock: Breakdown; us_stock: Breakdown;  // us_stock 값 단위: 센트
   manual_assets: { id: number; name: string; category: string; value: number }[];
 };
-type JournalAsset = { id: number; name: string; symbol: string; cost: number; realized: number; return_pct: number | null;
+type JournalAsset = { excluded?: { symbol: string; code: string | null; value: number }[]; id: number; name: string; symbol: string; cost: number; realized: number; return_pct: number | null;
   value?: number; priced?: boolean; unrealized?: number | null; unrealized_pct?: number | null;   // 현재가 평가 (2026-09-06)
   holdings: { symbol: string; qty: number; cost: number; price?: number | null; eval?: number | null }[]; entries: number; counted: boolean; note: string | null };
 type TrendSeries = { portfolio_id: number; name: string; market: string; currency: string;
@@ -288,7 +288,13 @@ export default function DashboardPage() {
             <div className="grid gap-2 text-[14.5px]">
               <span><i className="mr-2 inline-block h-2 w-2 rounded-full bg-accent" />주식 <b>{dash ? fmtWon(dash.stock) : "—"}</b></span>
               <span><i className="mr-2 inline-block h-2 w-2 rounded-full bg-down" />현금 <b>{dash ? fmtWon(dash.cash) : "—"}</b></span>
-              <span><i className="mr-2 inline-block h-2 w-2 rounded-full" style={{ background: "#0891b2" }} />매매일지 <b>{dash ? fmtWon(dash.journal ?? 0) : "—"}</b> <span className="text-[11.5px] text-faint">취득원가</span></span>
+              <span><i className="mr-2 inline-block h-2 w-2 rounded-full" style={{ background: "#0891b2" }} />매매일지 <b>{dash ? fmtWon(dash.journal ?? 0) : "—"}</b> <span className="text-[11.5px] text-faint">{(() => {
+                // 평가 기준 표기 (2026-09-06): 총자산에 들어간 일지가 모두 현재가면 '평가액', 섞이면 '일부 취득원가', 아니면 '취득원가'
+                const js = (dash?.journals ?? []).filter((x) => x.counted && (x.value ?? 0) > 0);
+                if (js.length === 0) return "";
+                const n = js.filter((x) => x.priced).length;
+                return n === js.length ? "평가액" : n === 0 ? "취득원가" : "일부 취득원가";
+              })()}</span></span>
               <span><i className="mr-2 inline-block h-2 w-2 rounded-full" style={{ background: "#7c3aed" }} />기타 <b>{dash ? fmtWon(dash.other) : "—"}</b></span>
             </div>
           </div>
@@ -382,7 +388,11 @@ export default function DashboardPage() {
                         {j.return_pct != null && j.realized !== 0 && ` (${(j.return_pct * 100).toFixed(1)}%)`}
                       </td>
                       <td className="py-2.5 pl-6 text-[12.5px]">
-                        {j.counted ? <span className="text-ok">포함</span> : <span className="text-faint" title={j.note ?? ""}>제외 — {j.note}</span>}
+                        {j.counted
+                          ? ((j.excluded?.length ?? 0) > 0
+                            ? <span className="text-warn" title={j.note ?? ""}>일부 포함 — {j.note}</span>
+                            : <span className="text-ok">포함</span>)
+                          : <span className="text-faint" title={j.note ?? ""}>제외 — {j.note}</span>}
                       </td>
                     </tr>
                   ))}
