@@ -385,7 +385,7 @@ def _tf_portfolio_orders(session: Session, pf_row, pid: int) -> dict:
     """
     from app.backtests import load_aligned_bars as _load
     from app.models import Instrument
-    from app.strategy.trendfilter import TF_EXIT_BUFFER, TF_MA, run_tf_backtest
+    from app.strategy.trendfilter import TF_CASH_RESERVE, TF_EXIT_BUFFER, TF_MA, run_tf_backtest
 
     bars, _, _ = _load(session, date(1990, 1, 1), date(2100, 1, 1), codes=("QQQ", "QQQ"))
     result = run_tf_backtest(bars, MODEL_CAPITAL)
@@ -410,7 +410,7 @@ def _tf_portfolio_orders(session: Session, pf_row, pid: int) -> dict:
         orders.append({"instrument": "LEV", "side": "sell", "otype": "market",
                        "qty": qty_lev, "price": None, "kind": "tf_exit"})
     if want_hold:
-        est = int((cash + (qty_lev * close if qty_lev else 0)) / close) if close else 0
+        est = int((cash + (qty_lev * close if qty_lev else 0)) * (1 - TF_CASH_RESERVE) / close) if close else 0  # 보수용 현금 여유
         if est > 0:
             orders.append({"instrument": "K200", "side": "buy", "otype": "market",
                            "qty": est, "price": None, "kind": "tf_entry"})

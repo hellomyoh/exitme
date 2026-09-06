@@ -121,6 +121,7 @@ def run_ltm_backtest(bars_1x: list[dict], bars_lev: list[dict], capital: float,
 
     first = start_index if start_index is not None else 0
     cash = float(capital)
+    fee_due = 0.0  # 현금이 바닥일 때 이연된 보수 — 다음 매도 대금에서 정산 (현금 음수 방지)
     q1 = qL = 0
     cost1 = costL = 0.0      # 레그별 평균 매입가(수수료 포함)
     buy_i1 = buy_iL = first
@@ -143,7 +144,7 @@ def run_ltm_backtest(bars_1x: list[dict], bars_lev: list[dict], capital: float,
     total = max(n - 1 - first, 1)
 
     def exec_orders(orders: tuple[Order, ...], i: int) -> None:
-        nonlocal cash, q1, qL, cost1, costL, buy_i1, buy_iL
+        nonlocal cash, q1, qL, cost1, costL, buy_i1, buy_iL, fee_due
         # 매도 먼저(현금 확보) → 매수
         for o in sorted(orders, key=lambda x: 0 if x.side == "sell" else 1):
             px_open = o1[i] if o.instrument == K200 else oL[i]
@@ -158,6 +159,9 @@ def run_ltm_backtest(bars_1x: list[dict], bars_lev: list[dict], capital: float,
                 trades.append(ClosedTrade(o.instrument, o.kind, q, cost, fill, bi, i, proceeds - q * cost))
                 fills.append(Fill(dates[i], o.instrument, "sell", o.kind, round(fill), q))
                 cash += proceeds
+                paid = min(fee_due, cash)
+                cash -= paid
+                fee_due -= paid
                 if o.instrument == K200:
                     q1 -= q
                 else:
@@ -184,14 +188,16 @@ def run_ltm_backtest(bars_1x: list[dict], bars_lev: list[dict], capital: float,
         if pending:
             exec_orders(pending, nxt)
             pending = ()
-        # ② 보수 일할
-        if q1 > 0:
-            cash -= q1 * c1[nxt] * p.fee_1x / 365.0
-        if qL > 0:
-            cash -= qL * cL[nxt] * p.fee_lev / 365.0
+        # ② 보수 일할 — 현금 한도까지만 차감, 나머지는 이연(fee_due)
+        fee = (q1 * c1[nxt] * p.fee_1x if q1 > 0 else 0.0) + (qL * cL[nxt] * p.fee_lev if qL > 0 else 0.0)
+        if fee > 0:
+            fee /= 365.0
+            pay = min(fee, max(cash, 0.0))
+            cash -= pay
+            fee_due += fee - pay
         # ③ 종가 판정 → 다음 계획
         st = states[nxt]
-        v = cash + q1 * c1[nxt] + qL * cL[nxt]
+        v = cash + q1 * c1[nxt] + qL * cL[nxt] - fee_due
         e_now = ((q1 * c1[nxt] + qL * cL[nxt] * L) / v) if v > 0 else 0.0
         orders: tuple[Order, ...] = ()
         if st is None:

@@ -17,6 +17,7 @@
 ## 구현
 
 - 엔진 `app/strategy/trendfilter.py` — `BacktestResult` 를 그대로 채워 시뮬레이터·일지·전환 재사용
+- 매수 수량은 현금의 **99%** 로 산정(`TF_CASH_RESERVE` 1%, 엔진·실전 주문표 동일, 2026-09-06) — 전액 매수 뒤 일할 보수(연 0.20%) 차감으로 현금이 음수가 되어 전환 포트에 음수 현금이 시드되던 결함 방지(LTM 에서 발견된 같은 결함). 여유가 소진되면 보수는 이연(`fee_due`)되어 다음 매도 대금에서 정산 — 현금 곡선은 구조적으로 음수가 되지 않고 평가액에 미지급 보수가 차감 반영된다
 - 디스패치 `backtests.run_engine` — `etf == "QQQ_TF"` 면 TF, 그 외 RAVG. 잡·저널·전환·워커 공통
 - 신호 `_live_us_model`·`_tf_portfolio_orders` — 미국 주문표는 TF 기준 (전량 매수/전량 현금/유지)
 - 시뮬레이터 미국 옵션 (2026-09-06 개정): 기본은 LTM(`LTM_QLD`, [feature-us-ltm.md](feature-us-ltm.md)), TF 는 `QQQ_TF` "QQQ 추세 필터 (TF · 1배)" 로 유지. RAVG 페어(QQQ_QLD/QQQ_TQQQ)는 삭제 — 신규 잡 422, 기존 기록 라벨만 유지

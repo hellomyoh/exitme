@@ -328,4 +328,10 @@
 - 테스트: `tests/test_ltm.py`(비중·게이트·급락 브레이커·상승장 레버리지·TQQQ 50/50·하락장 현금·보유 시작) + `tests/test_ltm_api.py`(구 쌍 422, LTM 잡 완주·일지 종류, 실전 전환 → `/signals/daily` 전략 LTM) — 전체 스위트 결과는 아래 Git commit 시점 기록 참조.
 - Git commit: feat: adopt LTM as the US trading formula, drop US RAVG pairs (keep TF) (#109)
 - 후속 수정(같은 날): 실데이터 e2e(LTM_QLD 2015~2026 잡 → 전환)에서 시드 현금이 −$388 로 나옴 — 전액 투자 후 일할 보수가 현금을 음수로 밀던 결함. 목표 수량을 평가액의 99% 로 산정(`cash_reserve` 1%, 엔진·주문표 동일). 실데이터 대조 QQQ+QLD CAGR 18.7% / MDD −40.5% / Sharpe 0.80. (TF 엔진도 같은 방식으로 보수를 현금에서 차감하나 이번 범위 밖 — 별도 검토 대상)
-- Git commit: fix: keep a 1% cash reserve in LTM sizing so fees cannot drive cash negative
+- Git commit: fix: keep a 1% cash reserve in LTM sizing so fees cannot drive cash negative (#110)
+
+## [2026-09-06] fix | TF 엔진 현금 여유 1% — 장기 보유 시 보수 차감으로 현금 음수 방지 (사용자 지시 "요거까지 처리하고 tag 생성")
+
+- 작업 내용: LTM 에서 고친 것과 같은 결함이 TF 에도 있었다(전량 매수 뒤 일할 보수 0.20% 를 현금에서 차감 → 장기 보유 시 음수). `TF_CASH_RESERVE` 1% 를 두어 매수 수량을 현금의 99% 로 산정 — 백테스트 엔진(체결·계획)과 실전 주문표(`_tf_portfolio_orders`) 동일. 추가로 TF·LTM 두 엔진 모두 현금이 바닥나면 보수를 **이연(fee_due)** 해 다음 매도 대금에서 정산하도록 바꿔(평가액에는 차감 반영) 현금 곡선이 구조적으로 음수가 되지 않게 했다 — 여유 1% 만으로는 급등 장기 보유(합성 상승장 테스트)에서 보수가 여유를 넘어섰기 때문. 실데이터 TF QQQ 2007~2026: CAGR 11.9% / MDD −24.5% / 거래 29회, 최소 현금 +$6,494.
+- 테스트: `test_tf_cash_never_negative_on_long_hold`(1,500봉 상승장 보유 — 현금 최소 ≥ 0, 잔여 < 2%), LTM 상승장 테스트에도 현금 ≥ 0 단언 추가. 전체 스위트 결과는 커밋 메시지 참조.
+- Git commit: fix: keep a 1% cash reserve in TF sizing as well; bump version to 0.3.1

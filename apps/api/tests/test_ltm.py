@@ -46,6 +46,7 @@ def test_backtest_uptrend_holds_leverage_and_result_shape():
     assert len(r.dates) == len(r.equity) == len(r.exposures) == len(r.regimes)
     assert r.kpi["total_return"] > 0 and "BULL" in r.regimes
     assert 1.8 <= r.exposures[-1] <= 2.2 and r.qty_lev[-1] > 0            # QLD 100% 근처
+    assert min(r.cash_curve) >= 0                                          # 보수 차감에도 현금 음수 없음 (여유 1%)
     assert any(f.kind == "ltm_entry" for f in r.fills) and any(f.kind in ("ltm_lever_on", "ltm_entry") for f in r.fills)
     assert r.final_lots and all(l["instrument"] in ("K200", "LEV") for l in r.final_lots)
     assert r.plans[-1].status == "OK" and "mom12" in r.plans[-1].indicators
