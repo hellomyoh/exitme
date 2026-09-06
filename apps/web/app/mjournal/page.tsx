@@ -7,7 +7,7 @@
  *  일지 간 완전 분리(2026-09-05 지시): 화면의 모든 숫자·그래프·종목 목록은 선택한 일지 하나의 것만 쓴다
  *  (예전 '전체 현황'은 전 일지 합산이라 새 일지에 다른 일지 종목이 보이는 것처럼 오해를 낳았다). */
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { createChart, IChartApi, LineSeries } from "lightweight-charts";
+import { createChart, IChartApi, LineSeries, LineStyle } from "lightweight-charts";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch, ensureSession } from "../../lib/api";
@@ -230,13 +230,24 @@ function BrokerImport({ detail, accts, onChanged }: { detail: Detail; accts: Acc
 const fm = (v: number) => `${v.toLocaleString()}원`;
 const OV_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
 
-/** 이 일지 현황 그래프 (2026-09-05 지시) — 통계 카드 아래 배치. 선택한 일지 하나의 데이터만 쓴다.
- *  좌: 종목별 보유 비중 도넛(취득원가 기준 — 시세 미연동 명시), 우: 종목별 누적 실현손익 라인. */
+/** 이 일지 현황 그래프 (2026-09-05 지시 · 2026-09-06 개편) — 통계 카드 아래 배치. 선택한 일지 하나의 데이터만 쓴다.
+ *  좌: 종목별 보유 비중 도넛(평가액, 시세 없으면 취득원가). 우: 탭 두 개 —
+ *  ① 보유 평단 대비 일별 수익률(%) — /mjournals/{id}/return-series (DB 일봉 + KIS 보충, 마지막 점은 연결 계좌 현재가)
+ *  ② 종목별 누적 실현손익(원) — 매도 기록만으로 계산. 보유 종목에 수익률이 있으면 ①이 기본. */
+type RetPoint = { date: string; pct: number; close: number; avg: number; qty: number; live?: boolean };
+type RetSeries = {
+  symbols: Record<string, { code: string | null; held: boolean; qty: number; avg: number | null; since: string | null; current_pct: number | null; segments: RetPoint[][] }>;
+  total: { date: string; pct: number }[]; priced: boolean; notes: string[]; asof: string | null;
+};
+
 function Overview({ detail }: { detail: Detail }) {
   const [tip, setTip] = useState<{ x: number; y: number; title: string; color: string;
     rows: { label: string; value: string; tone?: "up" | "down" }[] } | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
   const api = useRef<IChartApi | null>(null);
+  const [ret, setRet] = useState<RetSeries | null>(null);
+  const [mode, setMode] = useState<"pct" | "realized">("pct");
+  const [showClosed, setShowClosed] = useState(false);
   const held = detail.holdings;                    // 서버가 원가 내림차순으로 준다
   const useEval = detail.summary.priced === true;  // 전 종목 현재가가 있으면 평가액 비중 (2026-09-06)
   const weightOf = (h: Holding) => (useEval ? (h.eval ?? 0) : h.cost);
@@ -246,10 +257,35 @@ function Overview({ detail }: { detail: Detail }) {
   const withSeries = Object.entries(detail.series)
     .filter(([, pts]) => pts.length >= 1)
     .map(([symbol, pts]) => ({ symbol, pts, realized: pts[pts.length - 1].value }));
+  const retEntries = ret ? Object.entries(ret.symbols) : [];
+  const heldPct = retEntries.filter(([, v]) => v.held && v.segments.length > 0);
+  const closedPct = retEntries.filter(([, v]) => !v.held && v.segments.length > 0);
+  const pctSyms = showClosed ? [...heldPct, ...closedPct] : heldPct;
+  const lastOf = (v: RetSeries["symbols"][string]) => v.segments[v.segments.length - 1]?.[v.segments[v.segments.length - 1].length - 1];
+  const holdDays = (sym: string) => {  // 현재 보유의 시작일(남은 로트 중 최초 매수일)부터 오늘까지
+    const v = ret?.symbols[sym];
+    if (!v?.held || !v.since) return null;
+    return Math.max(0, Math.round((Date.now() - new Date(v.since).getTime()) / 86400e3));
+  };
+
+  useEffect(() => {  // 수익률 시리즈 — 일지가 바뀌거나 기록이 추가되면 다시 읽는다
+    let alive = true;
+    setRet(null);
+    void apiFetch(`/mjournals/${detail.id}/return-series`).then(async (r) => {
+      if (!alive || !r.ok) return;
+      const body = (await r.json()) as RetSeries;
+      setRet(body);
+      setMode(Object.values(body.symbols).some((v) => v.held && v.segments.length > 0) ? "pct" : "realized");
+    }).catch(() => { /* 보조 정보 — 실패해도 일지는 떠야 한다 */ });
+    return () => { alive = false; };
+  }, [detail.id, detail.rows.length]);
 
   useEffect(() => {
-    if (!chartRef.current || withSeries.length === 0) return;
-    api.current?.remove();
+    if (!chartRef.current) return;
+    api.current?.remove(); api.current = null;
+    const drawPct = mode === "pct" && pctSyms.length > 0;
+    const drawReal = mode === "realized" && withSeries.length > 0;
+    if (!drawPct && !drawReal) return;
     const korUnit = (v: number) => {  // 축 금액 억/만 자동 단위 (2026-09-05 지시)
       const a = Math.abs(v);
       if (a >= 1e8) return `${(v / 1e8).toFixed(a >= 1e9 ? 0 : 1)}억`;
@@ -257,27 +293,49 @@ function Overview({ detail }: { detail: Detail }) {
       return `${Math.round(v).toLocaleString()}`;
     };
     const chart = createChart(chartRef.current, {
-      localization: { priceFormatter: korUnit },
+      localization: { priceFormatter: drawPct ? (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` : korUnit },
       layout: { background: { color: "transparent" }, textColor: "#9aa1ad", attributionLogo: false, fontSize: 11 },
       grid: { vertLines: { visible: false }, horzLines: { color: "#eef0f3" } },
       height: 190, autoSize: true, rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
     });
     api.current = chart;
-    for (const it of withSeries) {
-      const pts = it.pts.map((p) => ({ time: p.date, value: p.value }));
-      if (pts.length === 1) {  // 점 하나로는 라인이 안 보임 — 전날 0 에서 출발
-        const d0 = new Date(pts[0].time);
-        d0.setDate(d0.getDate() - 1);
-        pts.unshift({ time: d0.toISOString().slice(0, 10), value: 0 });
+    if (drawPct) {
+      let zeroLine = false;
+      for (const [sym, v] of pctSyms) {
+        v.segments.forEach((seg, i) => {  // 보유 구간마다 별도 라인 — 청산 뒤 재매수 구간을 직선으로 잇지 않는다
+          const s = chart.addSeries(LineSeries, {
+            color: symColor(sym), lineWidth: 2, title: i === 0 ? sym : "",
+            lineStyle: v.held ? LineStyle.Solid : LineStyle.Dotted, priceLineVisible: false,
+            lastValueVisible: i === v.segments.length - 1,
+          });
+          s.setData(seg.map((p) => ({ time: p.date, value: p.pct * 100 })));
+          if (!zeroLine) {  // 0% 기준선
+            s.createPriceLine({ price: 0, color: "#c9ced6", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
+            zeroLine = true;
+          }
+        });
       }
-      chart.addSeries(LineSeries, { color: symColor(it.symbol), lineWidth: 2, title: it.symbol }).setData(pts);
+      if (heldPct.length >= 2 && ret && ret.total.length > 1) {
+        chart.addSeries(LineSeries, { color: "#17181c", lineWidth: 2, lineStyle: LineStyle.Dashed, title: "종합", priceLineVisible: false })
+          .setData(ret.total.map((p) => ({ time: p.date, value: p.pct * 100 })));
+      }
+    } else {
+      for (const it of withSeries) {
+        const pts = it.pts.map((p) => ({ time: p.date, value: p.value }));
+        if (pts.length === 1) {  // 점 하나로는 라인이 안 보임 — 전날 0 에서 출발
+          const d0 = new Date(pts[0].time);
+          d0.setDate(d0.getDate() - 1);
+          pts.unshift({ time: d0.toISOString().slice(0, 10), value: 0 });
+        }
+        chart.addSeries(LineSeries, { color: symColor(it.symbol), lineWidth: 2, title: it.symbol }).setData(pts);
+      }
     }
     chart.timeScale().fitContent();
     return () => { try { api.current?.remove(); } catch { /* noop */ } api.current = null; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail.id, JSON.stringify(detail.series), JSON.stringify(detail.symbols)]);
+  }, [detail.id, mode, showClosed, JSON.stringify(ret), JSON.stringify(detail.series), JSON.stringify(detail.symbols)]);
 
-  if (held.length === 0 && withSeries.length === 0) return null;
+  if (held.length === 0 && withSeries.length === 0 && closedPct.length === 0) return null;
   const R = 52, r0 = 30, C = 64;
   let angle = -Math.PI / 2;
   const paths = held.map((h) => {
@@ -289,9 +347,11 @@ function Overview({ detail }: { detail: Detail }) {
     const la = a1 - a0 > Math.PI ? 1 : 0;
     return { h, frac, d: `M${pt(a0, R)} A${R},${R} 0 ${la} 1 ${pt(a1, R)} L${pt(a1, r0)} A${r0},${r0} 0 ${la} 0 ${pt(a0, r0)} Z` };
   });
+  const drawable = (mode === "pct" && pctSyms.length > 0) || (mode === "realized" && withSeries.length > 0);
+  const tone = (v: number | null | undefined): "up" | "down" | undefined => v == null ? undefined : v >= 0 ? "up" : "down";
   return (
     <Card className="relative mb-4">
-      <CardTitle>{detail.name} 현황 <span className="normal-case text-faint">· 이 일지만 · 보유 비중은 {detail.summary.priced ? "평가액(현재가)" : "취득원가"}, 수익 라인은 종목별 누적 실현손익{detail.summary.priced_count ? "" : " (시세 미연동)"}</span></CardTitle>
+      <CardTitle>{detail.name} 현황 <span className="normal-case text-faint">· 이 일지만 · 보유 비중은 {detail.summary.priced ? "평가액(현재가)" : "취득원가"}, 수익 라인은 {mode === "pct" ? "보유 평단 대비 일별 수익률" : "종목별 누적 실현손익"}{detail.summary.priced_count ? "" : " (시세 미연동)"}</span></CardTitle>
       <div className="grid gap-6 lg:grid-cols-[auto_1fr]">
         <div className="flex items-center gap-4">
           {held.length > 0 && (
@@ -300,14 +360,17 @@ function Overview({ detail }: { detail: Detail }) {
                 <path key={i} d={d} fill={symColor(h.symbol)} opacity={0.85}
                   onMouseMove={(e) => {
                     const box = (e.currentTarget.ownerSVGElement!.closest(".card") as HTMLElement).getBoundingClientRect();
-                    const pct = h.matched > 0 ? h.realized / h.matched : null;  // 실현 수익률 (매도분 원가 대비)
+                    const rp = h.matched > 0 ? h.realized / h.matched : null;  // 실현 수익률 (매도분 원가 대비)
+                    const days = holdDays(h.symbol);
                     setTip({ x: e.clientX - box.left + 12, y: e.clientY - box.top + 12,
                              title: h.symbol, color: symColor(h.symbol),
                              rows: [
-                               { label: "보유", value: `${h.qty.toLocaleString()}주` },
+                               { label: "보유", value: `${h.qty.toLocaleString()}주 · 평단 ${h.avg_price.toLocaleString()}원` },
                                { label: "원가 · 비중", value: `${fm(h.cost)} · ${(frac * 100).toFixed(1)}%` },
-                               { label: "실현 수익률", value: pct != null ? `${pct >= 0 ? "+" : ""}${(pct * 100).toFixed(1)}%` : "— (매도 없음)",
-                                 tone: pct == null ? undefined : pct >= 0 ? "up" : "down" },
+                               { label: "평가 수익률", value: h.unrealized_pct != null ? `${pct(h.unrealized_pct)} (${h.price_source ?? "현재가"})` : "— (시세 없음)",
+                                 tone: tone(h.unrealized_pct) },
+                               { label: "실현 수익률", value: rp != null ? pct(rp) : "— (매도 없음)", tone: tone(rp) },
+                               ...(days != null ? [{ label: "보유 기간", value: `${days}일` }] : []),
                              ] });
                   }}
                   onMouseLeave={() => setTip(null)} />
@@ -320,24 +383,53 @@ function Overview({ detail }: { detail: Detail }) {
                 title={`${h.qty.toLocaleString()}주 · 원가 ${fm(h.cost)}`}>
                 <i className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: symColor(h.symbol) }} />
                 {h.symbol} <b className="text-ink">{total > 0 ? ((weightOf(h) / total) * 100).toFixed(0) : 0}%</b>
+                {h.unrealized_pct != null && <b className={h.unrealized_pct >= 0 ? "text-up" : "text-down"}>{pct(h.unrealized_pct)}</b>}
               </span>
             ))}
             {held.length === 0 && <span className="text-faint">현재 보유 없음</span>}
           </div>
         </div>
         <div className="min-w-0">
-          <div className="mb-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-muted">
-            <span className="font-semibold text-faint">누적 실현손익 (종목별)</span>
-            {withSeries.map((it) => (
-              <span key={it.symbol} className="inline-flex items-center gap-1.5">
-                <i className="h-2 w-2 rounded-full" style={{ background: symColor(it.symbol) }} />
-                {it.symbol} <b className={it.realized > 0 ? "text-up" : it.realized < 0 ? "text-down" : "text-ink"}>
-                  {it.realized >= 0 ? "+" : ""}{it.realized.toLocaleString()}원</b>
-              </span>
-            ))}
-            {withSeries.length === 0 && <span className="text-faint">매도(실현) 기록이 생기면 추이가 그려집니다.</span>}
+          <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-muted">
+            <span className="inline-flex rounded-lg border border-line bg-inset p-0.5">
+              <button onClick={() => setMode("pct")}
+                className={`rounded-md px-2 py-0.5 ${mode === "pct" ? "bg-surface font-semibold text-ink shadow-sm" : "text-faint hover:text-ink"}`}>보유 수익률 (%)</button>
+              <button onClick={() => setMode("realized")}
+                className={`rounded-md px-2 py-0.5 ${mode === "realized" ? "bg-surface font-semibold text-ink shadow-sm" : "text-faint hover:text-ink"}`}>누적 실현손익 (원)</button>
+            </span>
+            {mode === "pct" ? (<>
+              {heldPct.map(([sym, v]) => (
+                <span key={sym} className="inline-flex items-center gap-1.5" title={`평단 ${v.avg?.toLocaleString()}원 · ${v.qty.toLocaleString()}주${lastOf(v)?.live ? " · 마지막 점은 현재가" : ""}`}>
+                  <i className="h-2 w-2 rounded-full" style={{ background: symColor(sym) }} />
+                  {sym} <b className={(v.current_pct ?? 0) > 0 ? "text-up" : (v.current_pct ?? 0) < 0 ? "text-down" : "text-ink"}>{pct(v.current_pct)}</b>
+                </span>
+              ))}
+              {heldPct.length >= 2 && ret && ret.total.length > 0 && (
+                <span className="inline-flex items-center gap-1.5">
+                  <i className="h-0.5 w-3 border-t-2 border-dashed border-ink" />종합 <b className={ret.total[ret.total.length - 1].pct >= 0 ? "text-up" : "text-down"}>{pct(ret.total[ret.total.length - 1].pct)}</b>
+                </span>
+              )}
+              {closedPct.length > 0 && (
+                <button className="text-faint underline underline-offset-2 hover:text-ink" onClick={() => setShowClosed(!showClosed)}>
+                  {showClosed ? "청산 종목 숨기기" : `청산 종목 ${closedPct.length}개 보기`}
+                </button>
+              )}
+              {!ret && <span className="text-faint">수익률 불러오는 중…</span>}
+              {ret && heldPct.length === 0 && <span className="text-faint">{held.length ? "시세가 없어 보유 수익률을 그릴 수 없습니다" : "보유 종목이 없습니다 — 누적 실현손익 탭을 보세요"}</span>}
+            </>) : (<>
+              {withSeries.map((it) => (
+                <span key={it.symbol} className="inline-flex items-center gap-1.5">
+                  <i className="h-2 w-2 rounded-full" style={{ background: symColor(it.symbol) }} />
+                  {it.symbol} <b className={it.realized > 0 ? "text-up" : it.realized < 0 ? "text-down" : "text-ink"}>
+                    {it.realized >= 0 ? "+" : ""}{it.realized.toLocaleString()}원</b>
+                </span>
+              ))}
+              {withSeries.length === 0 && <span className="text-faint">매도(실현) 기록이 생기면 추이가 그려집니다.</span>}
+            </>)}
           </div>
-          {withSeries.length > 0 && <div ref={chartRef} className="h-[190px]" />}
+          {mode === "pct" && ret && ret.notes.length > 0 && <p className="mb-1 text-[12px] text-faint">{ret.notes.join(" · ")}</p>}
+          {drawable && <div ref={chartRef} className="h-[190px]" />}
+          {mode === "pct" && drawable && <p className="mt-1 text-[11.5px] text-faint">그날 종가 ÷ 그날 시점 평단 − 1. 추가 매수·부분 매도로 평단이 바뀐 날부터 반영. 점선 = 청산 종목의 보유 구간.</p>}
         </div>
       </div>
       {tip && (
@@ -375,8 +467,8 @@ function MJournalPage() {
   const [showNew, setShowNew] = useState(spNew);
   const [nf, setNf] = useState({ name: "", symbol: "", broker: "", fee: "0.015", tax: "0.23" });
   const NEW_SYM = "__new__";
-  const [ef, setEf] = useState({ side: "buy", symbol: "", newSymbol: "", qty: "", price: "",
-    date: new Date().toISOString().slice(0, 10), reason: "" });
+  const [ef, setEf] = useState({ side: "buy", symbol: "", newSymbol: "", code: "", qty: "", price: "",
+    date: new Date().toISOString().slice(0, 10), reason: "" });  // code: 새 종목의 종목코드(선택) — 시세·수익률 라인 연결 (2026-09-06)
   const [msg, setMsg] = useState("");
   const [accts, setAccts] = useState<Acct[]>([]);          // 설정에 등록된 증권사 계좌 (0018)
   const [showImport, setShowImport] = useState(false);
@@ -431,8 +523,9 @@ function MJournalPage() {
     if (!symbol) { setMsg("종목명을 입력하세요"); return; }
     const r = await apiFetch(`/mjournals/${jid}/entries`, { method: "POST", body: JSON.stringify({
       side: ef.side, qty: Number(ef.qty), price: Number(ef.price), symbol,
-      trade_date: ef.date, reason: ef.reason.trim() || undefined }) });
-    if (r.ok) { setEf({ ...ef, symbol, newSymbol: "", qty: "", price: "", reason: "" }); void load(jid); }
+      trade_date: ef.date, reason: ef.reason.trim() || undefined,
+      code: ef.symbol === NEW_SYM && ef.code.trim() ? ef.code.trim().toUpperCase() : undefined }) });
+    if (r.ok) { setEf({ ...ef, symbol, newSymbol: "", code: "", qty: "", price: "", reason: "" }); void load(jid); }
     else setMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `등록 실패 (${r.status})`);
   }
 
@@ -625,11 +718,14 @@ function MJournalPage() {
                   {detail.symbols.map((s) => <option key={s} value={s}>{s}</option>)}
                   <option value={NEW_SYM}>＋ 새 종목…</option>
                 </select></label>
-              {ef.symbol === NEW_SYM && (
+              {ef.symbol === NEW_SYM && (<>
                 <label className="grid gap-1 text-[12.5px] text-faint">새 종목명
                   <input className="input w-36 !py-2" placeholder="예: 휴메딕스" value={ef.newSymbol}
                     onChange={(e) => setEf({ ...ef, newSymbol: e.target.value })} /></label>
-              )}
+                <label className="grid gap-1 text-[12.5px] text-faint" title="6자리 종목코드를 넣으면 시세를 붙여 보유 수익률 라인이 그려집니다">종목코드 (선택)
+                  <input className="input w-24 !py-2" placeholder="005930" maxLength={6} value={ef.code}
+                    onChange={(e) => setEf({ ...ef, code: e.target.value })} /></label>
+              </>)}
               <label className="grid gap-1 text-[12.5px] text-faint">수량(주)
                 <input className="input w-24 !py-2" value={ef.qty} onChange={(e) => setEf({ ...ef, qty: e.target.value })} /></label>
               <label className="grid gap-1 text-[12.5px] text-faint">단가(원)

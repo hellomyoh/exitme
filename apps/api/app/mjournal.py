@@ -53,6 +53,7 @@ class EntryIn(BaseModel):
     trade_date: date | None = None
     reason: str | None = Field(default=None, max_length=200)
     symbol: str | None = Field(default=None, max_length=60)  # 생략 = 일지 기본 종목 (0015)
+    code: str | None = Field(default=None, pattern="^[0-9A-Z]{6}$")  # 종목코드(선택) — 있으면 시세·수익률 라인에 연결 (2026-09-06)
 
 
 @router.get("/mjournals")
@@ -203,7 +204,7 @@ def add_entry(jid: int, body: EntryIn, user_id: int = Depends(current_user_id),
                                 detail=f"{sym} 매도 수량({body.qty})이 해당일 보유({max(held, 0)}주)를 초과합니다")
     session.add(ManualJournalEntry(journal_id=j.id, side=body.side, trade_date=d,
                                    qty=body.qty, price=body.price, symbol=sym,
-                                   reason=(body.reason or "").strip() or None))
+                                   reason=(body.reason or "").strip() or None, code=body.code))
     session.commit()
     return {"saved": True}
 
@@ -626,3 +627,197 @@ def enrich_valuation(session: Session, j: ManualJournal, entries: list[ManualJou
     s["priced"] = bool(computed["holdings"]) and priced_count == len(computed["holdings"])
     s["priced_count"] = priced_count
     return computed
+
+
+# ── 보유 평단 대비 일별 수익률 (2026-09-06 지시) ─────────────────────────────────────────────────
+
+def _kis_for_bars(session: Session, j: ManualJournal):
+    """일봉 보충용 KIS 클라이언트 — 일지 연결 계좌 키 → .env 시세 키 순. 없으면 None (시세 미연동 표기)."""
+    from app.config import get_settings
+    from app.services.kis_auth import KisAuth
+    from app.services.kis_client import KisClient
+
+    settings = get_settings()
+    if j.broker_credential_id:
+        cred = session.get(BrokerCredential, j.broker_credential_id)
+        if cred is not None and cred.user_id == j.user_id:
+            return KisClient(KisAuth(cred.app_key, cred.app_secret, cred.env, wait_on_rate_limit=False))
+    if settings.kis_app_key and settings.kis_app_secret:
+        return KisClient(KisAuth(settings.kis_app_key, settings.kis_app_secret, settings.kis_env, wait_on_rate_limit=False))
+    return None
+
+
+def _ensure_daily_bars(session: Session, j: ManualJournal, codes: dict[str, str], start: date, end: date):
+    """codes: code → 표시 이름. DB 일봉이 구간을 못 덮으면 KIS 일봉으로 보충해 적재한다(이후는 16:05 일봉 배치가 이어 붙임).
+    반환: (code → {일자: 종가}, 안내 문구들). 6자리 국내 코드만 다룬다."""
+    from dataclasses import asdict
+
+    from app.models import Instrument, OhlcvDaily
+    from app.services.ingest import get_or_create_instrument, upsert_daily_bars
+
+    out: dict[str, dict[date, int]] = {}
+    notes: list[str] = []
+    client = None
+    client_tried = False
+    stale_before = end - timedelta(days=4)  # 주말·휴장 여유 — 이보다 오래된 마지막 봉이면 꼬리를 보충
+
+    def load(inst_id: int):
+        return session.scalars(select(OhlcvDaily).where(OhlcvDaily.instrument_id == inst_id,
+                                                        OhlcvDaily.trade_date >= start, OhlcvDaily.trade_date <= end)
+                               .order_by(OhlcvDaily.trade_date)).all()
+
+    for code, name in codes.items():
+        if not (len(code) == 6 and code.isalnum()):
+            continue
+        inst = session.scalar(select(Instrument).where(Instrument.code == code))
+        rows = load(inst.id) if inst is not None else []
+        need: list[tuple[date, date]] = []
+        if not rows:
+            need.append((start, end))
+        else:
+            if rows[0].trade_date > start + timedelta(days=10):
+                need.append((start, rows[0].trade_date - timedelta(days=1)))
+            if rows[-1].trade_date < stale_before:
+                need.append((rows[-1].trade_date + timedelta(days=1), end))
+        if need:
+            if not client_tried:
+                client_tried = True
+                try:
+                    client = _kis_for_bars(session, j)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("journal bars: kis client init failed: %s", exc)
+                    client = None
+                if client is None:
+                    notes.append("시세 키가 없어 일봉을 보충하지 못했습니다 — 설정에서 증권사 계좌를 연결하거나 .env 에 KIS 키를 넣으세요")
+            if client is not None:
+                if inst is None:
+                    inst = get_or_create_instrument(session, code, name or code, "KOSPI", type_="STOCK")
+                for a, b in need:
+                    try:
+                        bars = client.fetch_daily(code, a, b)
+                    except Exception as exc:  # noqa: BLE001 — 시세는 보조 정보, 실패해도 있는 구간은 그린다
+                        logger.warning("journal bars: fetch_daily %s %s~%s failed: %s", code, a, b, exc)
+                        notes.append(f"{name or code} 일봉 조회 실패 — 있는 구간만 표시")
+                        continue
+                    if bars:
+                        upsert_daily_bars(session, inst.id, [asdict(x) for x in bars], source="kis")
+                session.commit()
+                rows = load(inst.id)
+        out[code] = {r.trade_date: int(r.close_raw) for r in rows}
+    return out, notes
+
+
+def _fifo_apply(lots: list[list], e: ManualJournalEntry) -> list[list]:
+    """lots: [qty, price, buy_date] — FIFO 매도 차감. 남은 로트의 가장 이른 매수일이 '보유 시작일'."""
+    if e.side == "buy":
+        lots.append([e.qty, e.price, e.trade_date])
+        return lots
+    rem = e.qty
+    for l in lots:
+        take = min(l[0], rem)
+        l[0] -= take
+        rem -= take
+        if rem <= 0:
+            break
+    return [l for l in lots if l[0] > 0]
+
+
+@router.get("/mjournals/{jid}/return-series")
+def journal_return_series(jid: int, user_id: int = Depends(current_user_id),
+                          session: Session = Depends(get_session)) -> dict:
+    """보유 평단 대비 일별 수익률 — 종목별 구간(보유 중인 날만) + 일지 종합 (2026-09-06 지시).
+
+    평단 = 그날 시점 FIFO 잔여 로트 원가 ÷ 수량 (일지 보유 카드의 평단과 같은 값). 추가 매수·부분 매도로 바뀐 날부터 반영.
+    시세는 DB 일봉(부족분은 KIS 로 보충·적재), 마지막 점은 연결 계좌 현재가가 있으면 오늘 값으로 덧붙인다.
+    """
+    from app.dashboard import kst_today
+
+    j = _owned(session, jid, user_id)
+    entries = sorted(session.scalars(select(ManualJournalEntry).where(ManualJournalEntry.journal_id == jid)).all(),
+                     key=lambda e: (e.trade_date, e.id))
+    if not entries:
+        return {"symbols": {}, "total": [], "priced": False, "notes": [], "asof": None}
+
+    def sym_of(e: ManualJournalEntry) -> str:
+        return (e.symbol or j.symbol).strip()
+
+    code_of: dict[str, str] = {}
+    for e in entries:
+        if e.code:
+            code_of.setdefault(sym_of(e), e.code)
+    today = kst_today()
+    start = entries[0].trade_date - timedelta(days=10)
+    closes, notes = _ensure_daily_bars(session, j, {c: s for s, c in code_of.items()}, start, today)
+    no_code = sorted({sym_of(e) for e in entries} - set(code_of))
+    if no_code:
+        notes.append("종목 코드가 없어 시세를 붙일 수 없는 종목: " + ", ".join(no_code))
+    live = _broker_price_map(session, j)
+
+    symbols: dict[str, dict] = {}
+    total_num: dict[date, float] = {}   # 일자별 보유 평가액 합 (보유 중이고 그날 종가가 있는 종목만)
+    total_den: dict[date, float] = {}   # 일자별 보유 원가 합
+    for sym in sorted({sym_of(e) for e in entries}):
+        code = code_of.get(sym)
+        px = closes.get(code, {}) if code else {}
+        ents = [e for e in entries if sym_of(e) == sym]
+        days = sorted(d for d in px if d >= ents[0].trade_date)
+        lots: list[list] = []
+        k = 0
+        segments: list[list[dict]] = []
+        cur: list[dict] = []
+        for d in days:
+            while k < len(ents) and ents[k].trade_date <= d:
+                lots = _fifo_apply(lots, ents[k])
+                k += 1
+            qty = sum(l[0] for l in lots)
+            if qty <= 0:
+                if cur:
+                    segments.append(cur)
+                    cur = []
+                continue
+            cost = sum(l[0] * l[1] for l in lots)
+            avg = cost / qty
+            c = px[d]
+            cur.append({"date": d.isoformat(), "pct": c / avg - 1, "close": c, "avg": round(avg), "qty": qty})
+            total_num[d] = total_num.get(d, 0.0) + qty * c
+            total_den[d] = total_den.get(d, 0.0) + cost
+        if cur:
+            segments.append(cur)
+        lots_now: list[list] = []
+        for e in ents:
+            lots_now = _fifo_apply(lots_now, e)
+        qty_now = sum(l[0] for l in lots_now)
+        avg_now = (sum(l[0] * l[1] for l in lots_now) / qty_now) if qty_now > 0 else None
+        since = min(l[2] for l in lots_now).isoformat() if lots_now else None  # 현재 보유의 시작일(남은 로트 중 최초 매수일)
+        current_pct = None
+        live_row = (live.get(code) if code else None) or live.get("name:" + _norm(sym))
+        if qty_now > 0 and avg_now:
+            if live_row and live_row.get("price"):
+                lp = int(live_row["price"])
+                current_pct = lp / avg_now - 1
+                pt = {"date": today.isoformat(), "pct": current_pct, "close": lp, "avg": round(avg_now), "qty": qty_now, "live": True}
+                if segments and segments[-1] and segments[-1][-1]["date"] == today.isoformat():
+                    segments[-1][-1] = pt
+                    total_num[today] = total_num.get(today, 0.0) - segments[-1][-1]["qty"] * 0  # 종가 점을 현재가로 대체 (아래에서 재합산)
+                elif segments:
+                    segments[-1].append(pt)
+                else:
+                    segments.append([pt])
+            elif segments:
+                current_pct = segments[-1][-1]["pct"]
+        symbols[sym] = {"code": code, "held": qty_now > 0, "qty": qty_now, "avg": round(avg_now) if avg_now else None,
+                        "since": since, "current_pct": current_pct, "segments": segments}
+    # 오늘 종합: 현재가가 있는 보유 종목은 현재가로 다시 합산 (종가 점과 섞이지 않게 오늘 값은 전량 재계산)
+    live_num = live_den = 0.0
+    for sym, v in symbols.items():
+        if v["held"] and v["segments"] and v["segments"][-1] and v["segments"][-1][-1].get("live"):
+            pt = v["segments"][-1][-1]
+            live_num += pt["qty"] * pt["close"]
+            live_den += pt["qty"] * pt["avg"]
+    if live_den > 0:
+        total_num[today], total_den[today] = live_num, live_den
+    total = [{"date": d.isoformat(), "pct": total_num[d] / total_den[d] - 1} for d in sorted(total_den) if total_den[d] > 0]
+    held_syms = [s for s, v in symbols.items() if v["held"]]
+    priced_syms = [s for s in held_syms if symbols[s]["segments"]]
+    return {"symbols": symbols, "total": total, "priced": bool(held_syms) and len(priced_syms) == len(held_syms),
+            "notes": notes, "asof": today.isoformat()}
