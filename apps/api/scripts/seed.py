@@ -37,6 +37,10 @@ KNOWN_NAMES = {
     **DEFAULT_CODES,
     "102110": ("TIGER 200", "KOSPI"),
     "123320": ("TIGER 레버리지", "KOSPI"),
+    # 국내 상장 미국지수 ETF — LTV 전략 연구용 (2026-09-06). KRX 이름 조회(pykrx)가 차단돼 이름을 고정한다
+    "379800": ("KODEX 미국S&P500", "KOSPI"),          # 상장 2021-04, 환노출
+    "360750": ("TIGER 미국S&P500", "KOSPI"),          # 상장 2020-08, 환노출
+    "225040": ("TIGER 미국S&P500레버리지(합성 H)", "KOSPI"),  # 상장 2015-07, 2배·환헤지
 }
 CALENDAR_PROXY = "069500"
 
