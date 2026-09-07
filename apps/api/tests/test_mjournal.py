@@ -635,3 +635,89 @@ def test_return_series_resolves_code_by_name(monkeypatch):
     assert sym["segments"] and sym["segments"][0], "수익률 라인 구간이 그려져야 한다"
     assert rs["priced"] is True
     assert not any("시세를 붙일 수 없는" in n for n in rs["notes"])
+
+
+def _fake_balance(monkeypatch, rows, deposit):
+    """연결 계좌 잔고 대역 — KisTradingClient.fetch_balance 를 대체."""
+    import app.mjournal as mj
+    from app.services import kis_client
+
+    class _Fake:
+        def __init__(self, *a, **kw):
+            pass
+
+        def fetch_balance(self):
+            return {"holdings": rows, "deposit": deposit}
+
+    mj._PRICE_CACHE.clear()
+    monkeypatch.setattr(kis_client, "KisTradingClient", _Fake)
+
+
+def test_capital_basis_journal_when_not_linked(monkeypatch):
+    """총 자본금 (2026-09-07 지시): 계좌 미연동이면 **일지 기준** — 등록 보유 수량×현재가, 예수금 없음.
+
+    회귀 대상: 연동 여부에 따라 카드가 통째로 사라져 두 일지의 화면 구성이 달라지던 문제.
+    """
+    from datetime import date as _date
+
+    import app.mjournal as mj
+    from app.db import SessionLocal
+    from app.services.ingest import get_or_create_instrument, upsert_daily_bars
+
+    mj._PRICE_CACHE.clear()
+    mj._CLOSE_MISS.clear()
+    with SessionLocal() as s:
+        inst = get_or_create_instrument(s, "102110", "TIGER 200", "KOSPI")
+        upsert_daily_bars(s, inst.id, [{"trade_date": _date(2026, 9, 4), "open": 100_000, "high": 100_000,
+                                        "low": 100_000, "close": 120_000, "volume": 1}], source="kis")
+        s.commit()
+
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "미연동", "symbol": "TIGER 200", "fee_rate": 0.0, "tax_rate": 0.0},
+                 headers=h).json()["id"]
+    c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 10, "price": 100_000, "code": "102110",
+                                              "trade_date": "2026-09-01"}, headers=h)
+    d = c.get(f"/mjournals/{jid}", headers=h).json()
+    s, hold = d["summary"], d["holdings"][0]
+    # 시세는 테스트 DB 상태(기존 봉 우선, ON CONFLICT DO NOTHING)에 따라 달라지므로 자기일관으로 검증
+    assert hold["price"] is not None, "종가가 붙어야 한다"
+    assert s["capital_basis"] == "journal"
+    assert s["capital_total"] == s["capital_stock"] == 10 * hold["price"]   # 등록 수량 × 현재가
+    assert s["capital_deposit"] is None                                     # 예수금 개념 없음
+    assert abs(s["capital_return_pct"] - (10 * hold["price"] - 1_000_000) / 1_000_000) < 1e-9
+    assert s["account_mismatch"] == []
+
+
+def test_capital_basis_account_covered_and_mismatch(monkeypatch):
+    """연동 시 **계좌 기준** — 잔고 주식 + 예수금. 커버리지 일치면 수익률 표시, 불일치면 사유와 함께 미표시."""
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "연동", "symbol": "삼성전자", "fee_rate": 0.0, "tax_rate": 0.0},
+                 headers=h).json()["id"]
+    acct = c.post("/broker/accounts", json={"label": "위탁", "app_key": "PS" + "q" * 34, "app_secret": "S" * 180,
+                                            "account_no": "68800037-01"}, headers=h).json()
+    c.put(f"/mjournals/{jid}/broker", json={"credential_id": acct["id"]}, headers=h)
+
+    # ① 커버리지 일치 — 잔고 = 일지 (삼성전자 10주)
+    _fake_balance(monkeypatch, [{"code": "005930", "name": "삼성전자", "qty": 10, "avg_price": 70_000,
+                                 "buy_amount": 700_000, "price": 80_000, "eval_amount": 800_000}], 96_159)
+    c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 10, "price": 70_000, "code": "005930",
+                                              "trade_date": "2026-09-01"}, headers=h)
+    s1 = c.get(f"/mjournals/{jid}", headers=h).json()["summary"]
+    assert s1["capital_basis"] == "account" and s1["account_covered"] is True
+    assert s1["capital_stock"] == 800_000 and s1["capital_deposit"] == 96_159
+    assert s1["capital_total"] == 896_159                       # 계좌 잔고만으로 구성 (일지 평가액과 안 섞임)
+    assert abs(s1["capital_return_pct"] - 100_000 / 700_000) < 1e-9
+    assert s1["account_mismatch"] == []
+
+    # ② 계좌에 일지 밖 종목이 더 있음 — 총액은 계좌 전체, 수익률은 범위가 달라 미표시
+    import app.mjournal as mj
+    mj._PRICE_CACHE.clear()
+    _fake_balance(monkeypatch, [{"code": "005930", "name": "삼성전자", "qty": 10, "avg_price": 70_000,
+                                 "buy_amount": 700_000, "price": 80_000, "eval_amount": 800_000},
+                                {"code": "000660", "name": "SK하이닉스", "qty": 5, "avg_price": 200_000,
+                                 "buy_amount": 1_000_000, "price": 220_000, "eval_amount": 1_100_000}], 96_159)
+    s2 = c.get(f"/mjournals/{jid}", headers=h).json()["summary"]
+    assert s2["capital_basis"] == "account" and s2["account_covered"] is False
+    assert s2["capital_total"] == 800_000 + 1_100_000 + 96_159   # 카드는 사라지지 않는다
+    assert s2["capital_return_pct"] is None                       # 범위 불일치 → 수익률 미표시
+    assert [(m["symbol"], m["journal_qty"], m["account_qty"]) for m in s2["account_mismatch"]] == [("SK하이닉스", 0, 5)]
