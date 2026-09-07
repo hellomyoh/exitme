@@ -114,7 +114,10 @@ class AccountIn(BaseModel):
 
 
 def _acct_out(row: BrokerCredential, linked_names: list[str] | None = None) -> dict:
+    from app.autoexec import account_auto_exec  # 계좌별 무인 스위치 (0024) — 순환 import 방지로 지연 import
+
     return {"id": row.id, "label": row.label or f"{_mask(row.account_no)}",
+            "auto_exec": account_auto_exec(row),
             "env": row.env, "acnt_prdt_cd": row.acnt_prdt_cd,
             # 저장된 값은 항상 마스킹해서만 내보낸다 (수정 화면에서 현재 값 식별용)
             "app_key": _mask(row.app_key), "app_secret": _mask(row.app_secret, 2, 2),
@@ -147,9 +150,12 @@ def create_account(body: AccountIn, user_id: int = Depends(current_user_id),
         raise HTTPException(status_code=422,
                             detail="계좌번호는 종합계좌 8자리(예: 12345678) 또는 12345678-01 형식이어야 합니다")
     key, secret = check_credential(body.app_key, body.app_secret)
+    from app.autoexec import user_auto_exec  # 새 계좌의 무인 스위치 = 사용자 기본값 (0024)
+
     row = BrokerCredential(user_id=user_id, label=body.label.strip() or f"{cano}-{prdt}",
                            env=body.env, app_key=key,
-                           app_secret=secret, account_no=cano, acnt_prdt_cd=prdt)
+                           app_secret=secret, account_no=cano, acnt_prdt_cd=prdt,
+                           auto_exec=user_auto_exec(session, user_id))
     session.add(row)
     session.commit()
     return _acct_out(row)

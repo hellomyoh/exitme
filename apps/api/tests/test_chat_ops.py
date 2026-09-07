@@ -66,10 +66,10 @@ def test_auto_exec_status_and_recent_logs_tools_are_user_scoped():
                           status="approved", mode="auto"))
         s.commit()
     st = _run_tool("auto_exec_status", {}, uid)
-    assert st["settings"] == {"buy": True, "sell": False, "preopen_cancel": True}
+    assert st["settings"]["default"] == {"buy": True, "sell": False, "preopen_cancel": True} and st["settings"]["accounts"] == []
     assert st["notify"]["enabled"] is True and st["notify"]["ready"] is True and "chat_id" not in st["notify"] and "token" not in str(st["notify"])
     p = next(x for x in st["portfolios"] if x["portfolio_id"] == pid)
-    assert p["name"] == "챗상태" and p["broker_linked"] is False and p["paused"] is False and p["auto_approve"]["enabled"] is False
+    assert p["name"] == "챗상태" and p["broker_linked"] is False and p["paused"] is False and p["auto_approve"]["enabled"] is True   # 기본 켬
     assert p["auto_approve"]["daily_buy_cap_pct"] == 20.0 and p["live_orders"] == {"count": 1, "by_status": {"approved": 1, "reserved": 0, "submitted": 0, "partial": 0}}
     assert p["cash_check"] is None and p["preopen_last_run"] is None
     one = _run_tool("auto_exec_status", {"portfolio_id": pid}, uid)

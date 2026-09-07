@@ -78,12 +78,14 @@ STRATEGY_PLAIN = """## 전략 개념 (핵심 개념 설명 — 상세 수식은 
 OPERATIONS_KNOWLEDGE = """## 운영 기능 지식 (2026-09-06~07 도입 — 화면 위치와 동작)
 - 증권사 연동: 설정 › 증권사 계좌에 KIS 앱키·계좌 등록 → 실전매매 '증권사 연동'에서 포트에 연결. 최근 7일 체결 가져오기, 15:45/17:10 장 마감 동기화(체결 가져오기·주문 상태 확정·예수금 대조).
 - 예약주문: 주문표에서 줄을 체크해 '선택 주문 등록하기' → KIS 예약주문(접수 창 15:40~다음 영업일 07:30, 실전 계좌만). 09:00 동시호가에 들어간다.
-- 무인 실행(ADR-008): 설정 › 무인 실행에서 무인 매수·매도 허용을 각각 켠다(기본 꺼짐). 주문표에서 지정가 줄을 '🤖 무인 실행 승인'하면 실행일 09:01 워커가
+- 무인 실행(ADR-008): 설정 › 무인 실행에서 **증권사 계좌별로** 무인 매수·매도 허용을 각각 켠다(기본 꺼짐, 2026-09-07 계좌별로 변경). 포트에 연결된 계좌의 스위치가
+  승인·자동 승인·09:01 실행의 판정 기준이다(승인 전·발주 직전에 다시 검사). 주문표에서 지정가 줄을 '🤖 무인 실행 승인'하면 실행일 09:01 워커가
   시가 확인 → 갭 취소 기준 이하면 그리드 매수 생략 → 앱 원장 보유 vs 계좌 잔고 대조 → 계획 재대조 → 매도 먼저, 매수는 줄마다 매수가능조회 후 지정가 발주.
   시장가 줄은 대상 외(예약주문). 발주 2회 연속 실패·사전 대조 불일치·장 마감 대조의 계획 외 거래/초과 체결이면 자동 정지 — 주문표 배너의 '다시 켜기'로 해제.
 - 사전 갭 취소(취소만 무인, 기본 켜짐 — 설정 › 무인 실행 세 번째 스위치): 08:57 에 200 ETF 예상체결가가 갭 취소 기준 이하면 미체결 주문 중 오늘 그리드 가격과 같은
   200 ETF 매수를 취소(앱 예약주문·HTS 직접 주문 모두, 다른 가격·매도는 건드리지 않음). 결과는 주문표 위 '🕗 장 시작 전 갭 확인' 한 줄.
-- 완전 무인(자동 승인): 주문표 위 '🤖 완전 무인 운영 › 설정'에서 포트별로 켠다(기본 꺼짐). 16:45 에 다음 실행일 주문표를 계산해 허용 방향의 지정가 줄을 자동 승인,
+- 완전 무인(자동 승인): 포트별 옵션이며 **기본 켜짐**(2026-09-07 밤 지시 "표에서 체크하지 않아도 자동 발주"). 계좌의 무인 매수 또는 매도 허용이 켜져 있으면 16:45 에 다음 실행일
+  주문표를 계산해 허용 방향의 지정가 줄을 자동 승인(08:40 보완 실행, 켜는 즉시 1회, '지금 승인 실행' 버튼), 매수만 허용이면 매수 줄만 승인되고 매도 줄은 '수동 필요'.
   시장가 줄(레버리지)은 옵션이면 예약주문 자동 접수. 하루 매수 상한(총자산 대비 %, 기본 20%) 초과면 승인하지 않고 정지. '전량 취소'는 승인·예약·발주 주문을 모두 거두고,
   '⛔ 무인 중지 + 전량 취소'는 정지까지 한다. 이미 체결된 주문은 취소 불가(반대 매매로 정리).
 - 예수금 대조: 15:45 동기화가 원장 현금과 계좌 D+2 예수금을 비교, 허용 오차(1만원 또는 총자산 0.1%) 초과면 주문표 위 경고. '차액을 입출금으로 등록'으로 맞춤(자동 수정 없음).
@@ -166,7 +168,7 @@ TOOLS = [
 def _auto_exec_status(session, user_id: int, pid) -> dict:
     """무인 운영 상태 요약 — 화면(주문표 패널·설정)과 같은 원천. 읽기 전용, user_id 스코프. 채팅 ID·토큰은 내보내지 않는다."""
     from sqlalchemy import select
-    from app.autoexec import auto_exec_view, user_auto_exec
+    from app.autoexec import auto_exec_settings_view, auto_exec_view
     from app.cashcheck import pf_cash_check
     from app.dashboard import kst_today
     from app.models import BrokerOrder, TradePortfolio
@@ -181,7 +183,10 @@ def _auto_exec_status(session, user_id: int, pid) -> dict:
         return {"error": "portfolio not found"}
     today = kst_today()
     n = user_notify(session, user_id)
-    out: dict = {"settings": user_auto_exec(session, user_id),
+    sv = auto_exec_settings_view(session, user_id)
+    out: dict = {"settings": {"default": sv["default"],
+                              "accounts": [{"id": a["id"], "label": a["label"], "env": a["env"], "auto_exec": a["auto_exec"],
+                                            "linked_portfolios": a["linked_portfolios"]} for a in sv["accounts"]]},
                  "notify": {"enabled": n["enabled"], "ready": n["ready"], "events": n["events"]},
                  "portfolios": []}
     for pf in pfs:
@@ -191,6 +196,7 @@ def _auto_exec_status(session, user_id: int, pid) -> dict:
         view = auto_exec_view(session, pf)
         out["portfolios"].append({
             "portfolio_id": pf.id, "name": pf.name, "broker_linked": bool(pf.broker_credential_id),
+            "account": view.get("account"), "allowed": view["allowed"],
             "paused": view["paused"], "paused_reason": view["paused_reason"], "fail_streak": view["fail_streak"],
             "last_run": view["last_run"], "auto_approve": view["auto_approve"], "auto_approve_last": view["auto_approve_last"],
             "preopen_last_run": pf_preopen_state(pf).get("last_run"), "cash_check": pf_cash_check(pf),

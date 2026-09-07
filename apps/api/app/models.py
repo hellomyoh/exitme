@@ -286,6 +286,8 @@ class BrokerCredential(TimestampMixin, Base):
     account_no: Mapped[str] = mapped_column(EncryptedText, nullable=False)     # 🔒 종합계좌 8자리
     acnt_prdt_cd: Mapped[str] = mapped_column(Text, nullable=False, default="01")
     last_import_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 무인 실행 허용 — 계좌별 (0024, 2026-09-07 지시) {"buy", "sell", "preopen_cancel"}. 계좌가 진실의 원천, user_settings.auto_exec 는 새 계좌 기본값
+    auto_exec: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
 
 class PositionLot(Base):

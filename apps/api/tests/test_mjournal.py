@@ -1,6 +1,7 @@
 """수동 매매일지 — FIFO 계산·요율·소유 격리 (2026-09-05)."""
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -549,7 +550,28 @@ def test_journal_account_total_only_when_journal_covers_account(monkeypatch):
     assert s2["account_covered"] is False and s2["account_total"] is None
 
 
-def test_valuation_price_coverage_and_backfill(monkeypatch):
+@pytest.fixture
+def _clean_bars():
+    """이 파일의 두 테스트가 공유 CI DB 에 넣는 2026-09-01~04 가짜 일봉(102110·069500·005930)을 끝나면 지운다.
+
+    남겨 두면 069500 의 '마지막 일봉'이 2026-09-04·종가 30,000 이 되어 주문표 기준일·전환 평가를 쓰는 다른 테스트
+    (test_signals·test_portfolios) 2건이 깨진다 — 2026-09-07 전체 스위트에서 실측. 실패해도 정리되도록 fixture 로."""
+    from datetime import date as _date
+
+    from sqlalchemy import delete, select
+
+    from app.db import SessionLocal
+    from app.models import Instrument, OhlcvDaily
+
+    yield
+    with SessionLocal() as s:
+        ids = select(Instrument.id).where(Instrument.code.in_(["102110", "069500", "005930"]))
+        s.execute(delete(OhlcvDaily).where(OhlcvDaily.instrument_id.in_(ids),
+                                           OhlcvDaily.trade_date.between(_date(2026, 9, 1), _date(2026, 9, 4))))
+        s.commit()
+
+
+def test_valuation_price_coverage_and_backfill(monkeypatch, _clean_bars):
     """다종목 평가 커버리지 (2026-09-07 지시 ①+③): DB 미적재 종목은 KIS 일봉으로 보충,
     코드 없는 행은 종목명으로 instruments 매칭, 끝내 못 구한 종목은 summary.unpriced 로 드러난다.
 
@@ -602,7 +624,7 @@ def test_valuation_price_coverage_and_backfill(monkeypatch):
     assert abs(s["unrealized_pct"] - 250_000 / 1_850_000) < 1e-9
 
 
-def test_return_series_resolves_code_by_name(monkeypatch):
+def test_return_series_resolves_code_by_name(monkeypatch, _clean_bars):
     """수익률 차트 코드 해석 (2026-09-07): 코드 미입력 종목도 이름 매칭으로 라인이 그려진다.
 
     회귀 대상: 평가(도넛·카드)에는 뜨는 종목이 차트에서만 '코드 없음'으로 빠지던 화면 간 불일치.
@@ -617,7 +639,8 @@ def test_return_series_resolves_code_by_name(monkeypatch):
     mj._CLOSE_MISS.clear()
     with SessionLocal() as s:
         inst = get_or_create_instrument(s, "005930", "삼성전자", "KOSPI", type_="STOCK")
-        upsert_daily_bars(s, inst.id, [{"trade_date": _date(2026, 9, d), "open": 80_000, "high": 80_000,
+        # high 는 close 이상이어야 검증기를 통과한다 — 종전엔 high < close 로 전부 거부됐고, 앞 테스트가 남긴 09-04 봉에 기대어 통과했었다 (2026-09-07)
+        upsert_daily_bars(s, inst.id, [{"trade_date": _date(2026, 9, d), "open": 80_000, "high": 80_000 + d * 100,
                                         "low": 80_000, "close": 80_000 + d * 100, "volume": 1}
                                        for d in (1, 2, 3, 4)], source="kis")
         s.commit()

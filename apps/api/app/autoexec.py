@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import current_user_id
-from app.broker import (STATUS_KO, OrderLineIn, _client, _cred, _order_out, _owned, _resolve_codes,
+from app.broker import (STATUS_KO, OrderLineIn, _acct_out, _client, _cred, _order_out, _owned, _resolve_codes,
                         humanize_kis_error, line_key)
 from app.db import get_session
 from app.models import BrokerCredential, BrokerOrder, PortfolioPlan, TradePortfolio, UserSettings
@@ -40,12 +40,37 @@ GRID_KINDS_PREFIX = "grid"      # 갭 취소 대상(그리드 매수) 종류 접
 
 # ── 설정: 사용자 단위 허용 스위치 ───────────────────────────────────────────────────
 
-def user_auto_exec(session: Session, user_id: int) -> dict:
-    row = session.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
-    v = (row.auto_exec if row else None) or {}
+def _switches(v: dict | None) -> dict:
+    v = v or {}
     # preopen_cancel: 장 시작 전 예상 시가 갭 취소 (2026-09-06 지시, app.preopen) — 취소만 하는 보호 동작이라 기본 켜짐
     return {"buy": bool(v.get("buy", False)), "sell": bool(v.get("sell", False)),
             "preopen_cancel": bool(v.get("preopen_cancel", True))}
+
+
+def user_auto_exec(session: Session, user_id: int) -> dict:
+    """사용자 기본값 — 새 계좌에 적용되고 '일괄 적용'의 저장소. 승인·실행 판정에는 쓰지 않는다(계좌별 스위치가 진실, 0024)."""
+    row = session.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
+    return _switches(row.auto_exec if row else None)
+
+
+def account_auto_exec(cred: BrokerCredential | None) -> dict:
+    """계좌별 허용 스위치 (0024, 2026-09-07 지시 "무인 실행을 등록된 증권사 계좌별로 설정") — 승인·09:01 실행·자동 승인·사전 갭 취소가
+    모두 **포트에 연결된 계좌의 이 값**으로 판정한다. 계좌가 없으면 전부 꺼짐."""
+    if cred is None:
+        return {"buy": False, "sell": False, "preopen_cancel": False}
+    return _switches(getattr(cred, "auto_exec", None))
+
+
+def auto_exec_settings_view(session: Session, user_id: int) -> dict:
+    """설정 화면용 — 기본값 + 계좌별 스위치(연결 포트 이름 포함). 최상위 buy/sell/preopen_cancel 은 기본값(하위호환)."""
+    rows = session.scalars(select(BrokerCredential).where(BrokerCredential.user_id == user_id).order_by(BrokerCredential.id)).all()
+    by_cred: dict[int, list[str]] = {}
+    for p in session.scalars(select(TradePortfolio).where(TradePortfolio.user_id == user_id)).all():
+        if p.broker_credential_id:
+            by_cred.setdefault(p.broker_credential_id, []).append(p.name)
+    default = user_auto_exec(session, user_id)
+    return {**default, "default": default,
+            "accounts": [{**_acct_out(r, by_cred.get(r.id, [])), "auto_exec": account_auto_exec(r)} for r in rows]}
 
 
 class AutoExecSettingIn(BaseModel):
@@ -54,25 +79,57 @@ class AutoExecSettingIn(BaseModel):
     preopen_cancel: bool | None = None   # 생략 = 유지
 
 
+class AccountAutoExecIn(BaseModel):
+    buy: bool | None = None
+    sell: bool | None = None
+    preopen_cancel: bool | None = None
+
+
 @router.get("/settings/auto-exec")
 def get_auto_exec_setting(user_id: int = Depends(current_user_id),
                           session: Session = Depends(get_session)) -> dict:
-    return user_auto_exec(session, user_id)
+    return auto_exec_settings_view(session, user_id)
 
 
 @router.put("/settings/auto-exec")
 def put_auto_exec_setting(body: AutoExecSettingIn, user_id: int = Depends(current_user_id),
                           session: Session = Depends(get_session)) -> dict:
-    """무인 매수/매도 허용을 각각 저장한다. 끄면 그 방향의 승인된 줄은 실행 시점에 생략된다."""
+    """기본값 저장 + 등록된 모든 계좌에 일괄 적용. 끄면 그 방향의 승인된 줄은 실행 시점에 생략된다."""
     from app.settings import _row
 
     row = _row(session, user_id)
     cur = dict(row.auto_exec or {})
     pre = body.preopen_cancel if body.preopen_cancel is not None else bool(cur.get("preopen_cancel", True))
     row.auto_exec = {"buy": body.buy, "sell": body.sell, "preopen_cancel": pre}
+    for cred in session.scalars(select(BrokerCredential).where(BrokerCredential.user_id == user_id)).all():
+        cred.auto_exec = dict(row.auto_exec)
     session.commit()
-    logger.info("auto-exec setting user=%s buy=%s sell=%s preopen_cancel=%s", user_id, body.buy, body.sell, pre)
-    return user_auto_exec(session, user_id)
+    logger.info("auto-exec setting user=%s (all accounts) buy=%s sell=%s preopen_cancel=%s", user_id, body.buy, body.sell, pre)
+    return auto_exec_settings_view(session, user_id)
+
+
+@router.put("/settings/auto-exec/accounts/{aid}")
+def put_account_auto_exec(aid: int, body: AccountAutoExecIn, user_id: int = Depends(current_user_id),
+                          session: Session = Depends(get_session)) -> dict:
+    """계좌 하나의 무인 매수/매도/사전 갭 취소 스위치 (2026-09-07 지시). 생략한 키는 유지."""
+    cred = session.get(BrokerCredential, aid)
+    if cred is None or cred.user_id != user_id:
+        raise HTTPException(status_code=404, detail="account not found")
+    cur = account_auto_exec(cred)
+    for k in ("buy", "sell", "preopen_cancel"):
+        val = getattr(body, k)
+        if val is not None:
+            cur[k] = bool(val)
+    cred.auto_exec = cur
+    from app.activity import log_event
+
+    ko = {"buy": "무인 매수", "sell": "무인 매도", "preopen_cancel": "사전 갭 취소"}
+    log_event(session, user_id, "autoexec.account_setting",
+              f"계좌 {cred.label} — " + " · ".join(f"{ko[k]} {'허용' if cur[k] else '꺼짐'}" for k in ko),
+              level="warn" if (cur["buy"] or cur["sell"]) else "info", data={"account_id": cred.id, **cur})
+    session.commit()
+    logger.info("auto-exec account setting cred=%s %s", cred.id, cur)
+    return auto_exec_settings_view(session, user_id)
 
 
 # ── 포트 단위 상태 (params.auto_exec) ─────────────────────────────────────────────
@@ -90,14 +147,18 @@ DAILY_BUY_CAP_PCT_DEFAULT = 20.0   # 하루 매수 총액 상한 — 총자산 �
 
 
 def auto_approve_cfg(pf: TradePortfolio) -> dict:
-    """포트별 자동 승인 설정 — params.auto_exec.auto_approve. 기본 꺼짐, 시장가 줄 예약 접수 기본 켬, 상한 총자산의 20%."""
+    """포트별 자동 승인 설정 — params.auto_exec.auto_approve.
+
+    기본 **켬**(2026-09-07 밤 사용자 지시 "무인 실행 승인은 표에서 체크하지 않아도 자동으로 발주해야 해") — 설정에서 무인 매수·매도
+    허용을 켠 것이 상시 승인이고, 포트별로 끄는 것만 선택이다. 시장가 줄 예약 접수 기본 켬, 상한 총자산의 20%.
+    """
     st = dict((((pf.params or {}).get("auto_exec") or {}).get("auto_approve")) or {})
     pct = st.get("daily_buy_cap_pct", DAILY_BUY_CAP_PCT_DEFAULT)
     try:
         pct = float(pct) if pct is not None else DAILY_BUY_CAP_PCT_DEFAULT
     except (TypeError, ValueError):
         pct = DAILY_BUY_CAP_PCT_DEFAULT
-    return {"enabled": bool(st.get("enabled", False)), "market_reserve": bool(st.get("market_reserve", True)),
+    return {"enabled": bool(st.get("enabled", True)), "market_reserve": bool(st.get("market_reserve", True)),
             "daily_buy_cap_pct": pct, "updated_at": st.get("updated_at")}
 
 
@@ -124,8 +185,11 @@ def pause_portfolio(pf: TradePortfolio, reason: str, now: datetime | None = None
 
 
 def auto_exec_view(session: Session, pf: TradePortfolio) -> dict:
-    """주문표 화면용 — 허용 스위치 + 포트 상태 + 마지막 실행 요약."""
-    return {"allowed": user_auto_exec(session, pf.user_id), **pf_auto_state(pf)}
+    """주문표 화면용 — 연결 계좌의 허용 스위치 + 포트 상태 + 마지막 실행 요약."""
+    cred = session.get(BrokerCredential, pf.broker_credential_id) if pf.broker_credential_id else None
+    return {"allowed": account_auto_exec(cred),
+            "account": {"id": cred.id, "label": cred.label, "env": cred.env} if cred else None,
+            **pf_auto_state(pf)}
 
 
 @router.get("/portfolio/{pid}/auto-exec")
@@ -169,13 +233,14 @@ def approve_auto_orders(pid: int, body: ApproveIn, user_id: int = Depends(curren
     cred = _cred(session, pid, user_id)
     if pf.market != "KR":
         raise HTTPException(status_code=409, detail="무인 실행은 국내 포트만 지원합니다 (KIS 국내주식 주문 TR)")
-    allowed = user_auto_exec(session, user_id)
+    # 승인 전 계좌 옵션 검사 (2026-09-07 지시) — 이 포트에 연결된 계좌의 스위치가 판정 기준
+    allowed = account_auto_exec(cred)
     sides = {ln.side for ln in body.lines}
     blocked = [s for s in ("buy", "sell") if s in sides and not allowed[s]]
     if blocked:
         ko = {"buy": "매수", "sell": "매도"}
-        raise HTTPException(status_code=409, detail="설정에서 무인 " + "·".join(ko[s] for s in blocked)
-                            + " 허용이 꺼져 있습니다 — 일반 설정 › 무인 실행에서 켠 뒤 승인하세요")
+        raise HTTPException(status_code=409, detail=f"계좌 {cred.label} 의 무인 " + "·".join(ko[s] for s in blocked)
+                            + " 허용이 꺼져 있습니다 — 일반 설정 › 무인 실행에서 이 계좌의 스위치를 켠 뒤 승인하세요")
     if any(ln.otype != "limit" for ln in body.lines):
         raise HTTPException(status_code=409, detail="시장가 줄은 무인 실행 대상이 아닙니다 — 예약주문으로 접수하세요")
     now = datetime.now(KST)
@@ -356,12 +421,12 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, rows: list[BrokerOr
     if cred is None:
         _skip(rows, "skipped", "연결된 증권사 계좌가 없습니다", rec, "skipped")
         return
-    allowed = user_auto_exec(session, pf.user_id)
-    # ① 설정 스위치 — 승인 뒤 꺼졌을 수 있다
+    allowed = account_auto_exec(cred)
+    # ① 계좌 스위치 — 승인 뒤 꺼졌을 수 있다 (발주 직전 재검사, 2026-09-07 지시)
     keep: list[BrokerOrder] = []
     for r in rows:
         if not allowed.get(r.side, False):
-            r.status, r.message = "skipped", f"설정에서 무인 {'매수' if r.side == 'buy' else '매도'} 허용이 꺼져 있어 생략"
+            r.status, r.message = "skipped", f"계좌 설정에서 무인 {'매수' if r.side == 'buy' else '매도'} 허용이 꺼져 있어 생략"
             rec["skipped"] += 1
         elif r.otype != "limit" or not r.price:
             r.status, r.message = "skipped", "지정가가 아닌 줄은 무인 실행하지 않습니다"

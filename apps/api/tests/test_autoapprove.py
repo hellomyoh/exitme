@@ -78,25 +78,31 @@ class FakeBroker:
         return {"msg": "예약주문이 취소되었습니다", "raw": {}}
 
 
-def _run(exec_day: date, fake, acct_id: int, lines=LINES, now_hour=16):
+def _run(exec_day: date, fake, acct_id: int, lines=LINES, now_hour=16, now_minute=45, quiet_noop=False):
     import app.autoapprove as aa
 
     today = datetime.now(KST).date()
     idle = FakeBroker()
+    # 이 테스트의 계좌에 연결된 포트만 — 자동 승인이 기본 켬이라 필터가 없으면 공유 CI DB 의 옛 테스트 포트까지 승인해
+    # 뒤에 도는 무인 실행 테스트가 깨진다 (2026-09-07 전체 스위트 실측)
     with SessionLocal() as s:
-        return aa.run_auto_approve(s, now=datetime.combine(today, datetime.min.time(), tzinfo=KST).replace(hour=now_hour, minute=45),
+        return aa.run_auto_approve(s, now=datetime.combine(today, datetime.min.time(), tzinfo=KST).replace(hour=now_hour, minute=now_minute),
                                    client_factory=lambda cred: fake if cred.id == acct_id else idle,
-                                   plan_fn=lambda session, pf: {"exec_day": exec_day.isoformat(), "orders": lines, "status": "OK"})
+                                   plan_fn=lambda session, pf: {"exec_day": exec_day.isoformat(), "orders": lines, "status": "OK"},
+                                   quiet_noop=quiet_noop, only_credential_ids={acct_id})
 
 
 def _rec(out, pid):
     return next((r for r in out["portfolios"] if r["portfolio_id"] == pid), None)
 
 
-def test_auto_approve_setting_guards():
-    """국내 포트·연결 계좌·설정 스위치가 있어야 켤 수 있고, 상태 응답에 설정이 실린다."""
+def test_auto_approve_setting_guards(monkeypatch):
+    """기본은 켬(설정·계좌가 갖춰지면 동작). 명시적으로 켤 때는 국내 포트·연결 계좌·설정 스위치를 요구하고, 켜는 즉시 한 번 실행한다."""
+    import app.autoapprove as aa
+
     c, h = _client()
     pid = c.post("/portfolios", json={"name": "미연결", "market": "KR"}, headers=h).json()["id"]
+    assert c.get(f"/portfolio/{pid}/auto-exec", headers=h).json()["auto_approve"]["enabled"] is True   # 기본 켬 (2026-09-07 밤 지시)
     r = c.put(f"/portfolio/{pid}/auto-exec/auto-approve", json={"enabled": True}, headers=h)
     assert r.status_code == 409 and "계좌" in r.json()["detail"]
     exec_day = _next_weekday(datetime.now(KST).date())
@@ -104,8 +110,18 @@ def test_auto_approve_setting_guards():
     r = c.put(f"/portfolio/{pid2}/auto-exec/auto-approve", json={"enabled": True}, headers=h)
     assert r.status_code == 409 and "무인 실행" in r.json()["detail"]
     c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
-    j = c.put(f"/portfolio/{pid2}/auto-exec/auto-approve", json={"enabled": True, "market_reserve": False, "daily_buy_cap_pct": 15}, headers=h).json()
-    assert j["auto_approve"]["enabled"] is True and j["auto_approve"]["market_reserve"] is False and j["auto_approve"]["daily_buy_cap_pct"] == 15.0
+    # 켜는 즉시 실행 — 계획 함수를 대체해 즉시 승인 결과를 확인 (그리드 2줄 승인, 익절은 매도 꺼짐)
+    monkeypatch.setattr(aa, "_default_plan", lambda session, pf: {"exec_day": exec_day.isoformat(), "orders": LINES, "status": "OK"})
+    monkeypatch.setattr(aa, "reservation_window", lambda now=None, session=None: {"open": False, "reason": "닫힘"})
+    # 상한 25%: 계획 매수 합계(그리드 789,000 + 레버 시장가 근사) < 1,250,000 이라 승인된다
+    j = c.put(f"/portfolio/{pid2}/auto-exec/auto-approve", json={"enabled": True, "market_reserve": False, "daily_buy_cap_pct": 25}, headers=h).json()
+    assert j["auto_approve"]["enabled"] is True and j["auto_approve"]["market_reserve"] is False and j["auto_approve"]["daily_buy_cap_pct"] == 25.0
+    assert j["run_now"]["approved"] == 2 and j["run_now"]["exec_day"] == exec_day.isoformat() and j["auto_approve_last"]["approved"] == 2
+    st = {i["kind"]: i for i in c.get(f"/portfolio/{pid2}/orders?date={exec_day.isoformat()}", headers=h).json()["items"]}
+    assert st["grid1"]["status"] == "approved" and st["grid2"]["status"] == "approved"
+    # 지금 승인 실행 버튼 — 이미 승인된 줄은 건너뛴다
+    rn = c.post(f"/portfolio/{pid2}/auto-exec/auto-approve/run-now", headers=h).json()["run_now"]
+    assert rn["approved"] == 0 and rn["skipped"] >= 2
     # 기본값: 시장가 예약 접수 켬 · 상한 총자산의 20%
     dflt = c.put(f"/portfolio/{pid2}/auto-exec/auto-approve", json={"enabled": True}, headers=h).json()["auto_approve"]
     assert dflt["market_reserve"] is True and dflt["daily_buy_cap_pct"] == 20.0
@@ -113,11 +129,12 @@ def test_auto_approve_setting_guards():
     assert c.get(f"/portfolio/{pid2}/auto-exec", headers=h).json()["auto_approve"]["enabled"] is True
     us = c.post("/portfolios", json={"name": "미국", "market": "US"}, headers=h).json()["id"]
     assert c.put(f"/portfolio/{us}/auto-exec/auto-approve", json={"enabled": True}, headers=h).status_code == 409
-    # 끄기는 조건 없이
+    # 끄기는 조건 없이 — 꺼진 포트는 즉시 실행도 거절
     assert c.put(f"/portfolio/{pid2}/auto-exec/auto-approve", json={"enabled": False}, headers=h).json()["auto_approve"]["enabled"] is False
+    assert c.post(f"/portfolio/{pid2}/auto-exec/auto-approve/run-now", headers=h).status_code == 409
     ev = [i for i in c.get("/logs?type=event", headers=h).json()["items"] if i["kind"] == "autoexec.auto_approve_setting"]
     texts = [e["text"] for e in ev]
-    assert len(ev) == 3 and any("완전 무인 운영 켬" in t and "하루 매수 상한 총자산의 15%" in t for t in texts) and any("완전 무인 운영 끔" in t for t in texts)
+    assert len(ev) == 3 and any("완전 무인 운영 켬" in t and "하루 매수 상한 총자산의 25%" in t for t in texts) and any("완전 무인 운영 끔" in t for t in texts)
 
 
 def test_auto_approve_batch_approves_limits_reserves_market_and_is_idempotent(monkeypatch):
@@ -128,8 +145,8 @@ def test_auto_approve_batch_approves_limits_reserves_market_and_is_idempotent(mo
     exec_day = _next_weekday(datetime.now(KST).date())
     pid, aid = _setup(c, h, exec_day)
     c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
-    c.put(f"/portfolio/{pid}/auto-exec/auto-approve", json={"enabled": True, "market_reserve": True}, headers=h)
     monkeypatch.setattr(aa, "reservation_window", lambda now=None, session=None: {"open": True, "reason": "ok"})
+    # 기본 켬이므로 설정을 저장하지 않아도 배치가 이 포트를 처리한다
     fake = FakeBroker()
     rec = _rec(_run(exec_day, fake, aid), pid)
     assert rec["exec_day"] == exec_day.isoformat() and rec["approved"] == 2 and rec["reserved"] == 1 and rec["failed"] == 0
@@ -169,18 +186,25 @@ def test_auto_approve_skips_paused_stale_plan_market_off_vps_and_cap(monkeypatch
     fake = FakeBroker()
     rec = _rec(_run(exec_day, fake, aid), pid)
     assert rec["approved"] == 3 and rec["reserved"] == 0 and rec["manual"] == ["lev_strat (시장가 — 수동)"] and fake.reserved == []
-    # 실행일이 오늘 이전 → 건너뜀 (오늘 일봉 미적재)
+    # 실행일이 오늘: 09:00 이후(16:45 배치)면 건너뜀(오늘 일봉 미적재) / 09:00 전(08:40 보완)이면 승인
     c2, h2 = _client()
     pid2, aid2 = _setup(c2, h2, datetime.now(KST).date())
     c2.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h2)
-    c2.put(f"/portfolio/{pid2}/auto-exec/auto-approve", json={"enabled": True}, headers=h2)
     rec2 = _rec(_run(datetime.now(KST).date(), FakeBroker(), aid2), pid2)
     assert rec2["approved"] == 0 and "실행일이 지났음" in rec2["note"]
+    rec2b = _rec(_run(datetime.now(KST).date(), FakeBroker(), aid2, lines=LINES[:3], now_hour=8, now_minute=40, quiet_noop=True), pid2)
+    assert rec2b["approved"] == 3 and rec2b["note"] is None
+    # 보완 실행에서 새로 한 일이 없으면 기록·알림 없이 '변경 없음'
+    n_before = len([i for i in c2.get("/logs?type=event", headers=h2).json()["items"] if i["kind"] == "autoexec.auto_approve"])
+    rec2c = _rec(_run(datetime.now(KST).date(), FakeBroker(), aid2, lines=LINES[:3], now_hour=8, now_minute=40, quiet_noop=True), pid2)
+    assert rec2c["note"] == "변경 없음" and rec2c["approved"] == 0
+    assert len([i for i in c2.get("/logs?type=event", headers=h2).json()["items"] if i["kind"] == "autoexec.auto_approve"]) == n_before
+    # 오늘 실행분 승인 행을 남기면 뒤에 도는 무인 실행 테스트(공유 DB)가 함께 집어가므로 철회해 둔다
+    assert c2.post(f"/portfolio/{pid2}/orders/cancel-all", json={"stop": False}, headers=h2).json()["cancelled"] == 3
     # 모의 계좌 → 지정가는 승인, 시장가 예약은 불가(수동 필요)
     c3, h3 = _client()
     pid3, aid3 = _setup(c3, h3, exec_day, env="vps")
     c3.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h3)
-    c3.put(f"/portfolio/{pid3}/auto-exec/auto-approve", json={"enabled": True, "market_reserve": True}, headers=h3)
     fake3 = FakeBroker()
     rec3 = _rec(_run(exec_day, fake3, aid3), pid3)
     assert rec3["approved"] == 3 and rec3["reserved"] == 0 and "모의 계좌" in rec3["manual"][0] and fake3.reserved == []
@@ -188,6 +212,7 @@ def test_auto_approve_skips_paused_stale_plan_market_off_vps_and_cap(monkeypatch
     c4, h4 = _client()
     pid4, aid4 = _setup(c4, h4, exec_day)
     c4.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h4)
+    monkeypatch.setattr(aa, "_default_plan", lambda session, pf: {"exec_day": exec_day.isoformat(), "orders": [], "status": "OK"})  # 저장 시 즉시 실행은 빈 계획
     c4.put(f"/portfolio/{pid4}/auto-exec/auto-approve", json={"enabled": True, "market_reserve": False, "daily_buy_cap_pct": 10}, headers=h4)
     rec4 = _rec(_run(exec_day, FakeBroker(), aid4, lines=LINES[:3]), pid4)
     assert rec4["approved"] == 0 and "상한 10%" in rec4["note"] and "500,000원" in rec4["note"]
@@ -212,7 +237,6 @@ def test_cancel_all_and_emergency_stop(monkeypatch):
     exec_day = _next_weekday(datetime.now(KST).date())
     pid, aid = _setup(c, h, exec_day)
     c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
-    c.put(f"/portfolio/{pid}/auto-exec/auto-approve", json={"enabled": True, "market_reserve": True}, headers=h)
     monkeypatch.setattr(aa, "reservation_window", lambda now=None, session=None: {"open": True, "reason": "ok"})
     fake = FakeBroker()
     rec = _rec(_run(exec_day, fake, aid), pid)

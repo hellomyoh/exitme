@@ -26,7 +26,7 @@ def test_reconcile_kind_and_pause_only_on_dangerous_items():
     assert missing[0]["kind"] == "missing" and missing[0]["level"] == "info"
 
     c, h = _client()
-    pid, _ = _setup_portfolio(c, h, datetime.now(KST).date() + timedelta(days=1), LINES, gap_exact=None)
+    pid, aid = _setup_portfolio(c, h, datetime.now(KST).date() + timedelta(days=1), LINES, gap_exact=None)
     from app.db import SessionLocal
     from app.models import TradePortfolio
     with SessionLocal() as s:
@@ -44,7 +44,7 @@ def test_reserve_refuses_line_already_approved_for_auto(monkeypatch):
 
     c, h = _client()
     tomorrow = datetime.now(KST).date() + timedelta(days=1)
-    pid, _ = _setup_portfolio(c, h, tomorrow, LINES, gap_exact=97500.0)
+    pid, aid = _setup_portfolio(c, h, tomorrow, LINES, gap_exact=97500.0)
     c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
     assert c.post(f"/portfolio/{pid}/orders/approve", json={"date": tomorrow.isoformat(), "lines": [LINES[0]]}, headers=h).json()["approved"] == 1
     # 예약 접수 창을 열어 두고(시간 무관) 같은 줄을 예약 → duplicate, 다른 줄(grid2)은 접수 시도
@@ -70,7 +70,7 @@ def test_deposit_limit_fills_shallow_grid_first(monkeypatch):
 
     c, h = _client()
     today = datetime.now(KST).date()
-    pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
+    pid, aid = _setup_portfolio(c, h, today, LINES, gap_exact=None)
     c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
     monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
     c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": [LINES[0], LINES[1]]}, headers=h)
@@ -78,8 +78,8 @@ def test_deposit_limit_fills_shallow_grid_first(monkeypatch):
     fake = FakeKis(open_px=100000, deposit=600_000, holdings={})
     from app.db import SessionLocal
     with SessionLocal() as s:
-        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
-    rec = out["portfolios"][0]
+        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake if cred.id == aid else FakeKis(open_px=0, deposit=0, holdings={}), sleep_fn=lambda _s: None)
+    rec = next(r for r in out["portfolios"] if r["portfolio_id"] == pid)   # 공유 DB 에 다른 포트의 승인 행이 있을 수 있다
     assert rec["submitted"] == 1 and rec["skipped"] == 1 and fake.placed == [("069500", "buy", 5, 99000)]
     st = {i["kind"]: i for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]}
     assert st["grid1"]["status"] == "submitted" and st["grid2"]["status"] == "skipped" and "예수금 한도(폴백)" in st["grid2"]["message"]
@@ -92,7 +92,7 @@ def test_precheck_ledger_vs_account_mismatch_skips_and_pauses(monkeypatch):
 
     c, h = _client()
     today = datetime.now(KST).date()
-    pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
+    pid, aid = _setup_portfolio(c, h, today, LINES, gap_exact=None)
     c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
     c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 10, "price": 100000,
                                "executed_at": (today - timedelta(days=2)).isoformat() + "T15:30:00+09:00"}, headers=h)
@@ -100,8 +100,8 @@ def test_precheck_ledger_vs_account_mismatch_skips_and_pauses(monkeypatch):
     c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": LINES[:3]}, headers=h)
     fake = FakeKis(open_px=100000, deposit=9_000_000, holdings={"069500": 7})   # 계좌 7주 ≠ 원장 10주
     with SessionLocal() as s:
-        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
-    rec = out["portfolios"][0]
+        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake if cred.id == aid else FakeKis(open_px=0, deposit=0, holdings={}), sleep_fn=lambda _s: None)
+    rec = next(r for r in out["portfolios"] if r["portfolio_id"] == pid)   # 공유 DB 에 다른 포트의 승인 행이 있을 수 있다
     assert rec["submitted"] == 0 and rec["skipped"] == 3 and fake.placed == []
     view = c.get(f"/portfolio/{pid}/auto-exec", headers=h).json()
     assert view["paused"] is True and "원장 10주 ≠ 계좌 7주" in view["paused_reason"]
@@ -116,7 +116,7 @@ def test_precheck_plan_revalidation_at_execution(monkeypatch):
 
     c, h = _client()
     today = datetime.now(KST).date()
-    pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
+    pid, aid = _setup_portfolio(c, h, today, LINES, gap_exact=None)
     c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
     monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
     c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": [LINES[0], LINES[1]]}, headers=h)
@@ -127,8 +127,8 @@ def test_precheck_plan_revalidation_at_execution(monkeypatch):
         s.commit()
     fake = FakeKis(open_px=100000, deposit=9_000_000, holdings={})
     with SessionLocal() as s:
-        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
-    rec = out["portfolios"][0]
+        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake if cred.id == aid else FakeKis(open_px=0, deposit=0, holdings={}), sleep_fn=lambda _s: None)
+    rec = next(r for r in out["portfolios"] if r["portfolio_id"] == pid)   # 공유 DB 에 다른 포트의 승인 행이 있을 수 있다
     assert rec["submitted"] == 1 and rec["skipped"] == 1 and fake.placed == [("069500", "buy", 3, 98000)]
     st = {i["kind"]: i for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]}
     assert st["grid1"]["status"] == "skipped" and "재대조 실패" in st["grid1"]["message"] and st["grid2"]["status"] == "submitted"
@@ -142,15 +142,15 @@ def test_buyable_check_before_each_buy(monkeypatch):
 
     c, h = _client()
     today = datetime.now(KST).date()
-    pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=None)
+    pid, aid = _setup_portfolio(c, h, today, LINES, gap_exact=None)
     c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
     monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
     c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": [LINES[0], LINES[1]]}, headers=h)
     # 예수금 총액은 0 이지만 KIS 주문가능현금 600,000 → grid1(495,000) 발주 후 잔여 105,000 → grid2(294,000) 는 수량 부족으로 생략
     fake = FakeKis(open_px=100000, deposit=0, holdings={}, psbl_cash=600_000)
     with SessionLocal() as s:
-        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
-    rec = out["portfolios"][0]
+        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake if cred.id == aid else FakeKis(open_px=0, deposit=0, holdings={}), sleep_fn=lambda _s: None)
+    rec = next(r for r in out["portfolios"] if r["portfolio_id"] == pid)   # 공유 DB 에 다른 포트의 승인 행이 있을 수 있다
     assert rec["submitted"] == 1 and rec["skipped"] == 1 and fake.placed == [("069500", "buy", 5, 99000)]
     assert fake.buyable_calls == [("069500", 99000), ("069500", 98000)]          # 얕은 단부터, 발주 직전마다 조회
     st = {i["kind"]: i for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]}
