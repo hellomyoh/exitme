@@ -14,6 +14,12 @@
 - [2026-09-01] 오염 탐지 쿼리 3종 (db 컨테이너에서 실행): ① 소스별 집계 — `SELECT i.code, d.source, count(*) FROM ohlcv_daily d JOIN instruments i ON i.id=d.instrument_id GROUP BY 1,2;` (`pykrx` 행은 전부 합성 — KRX 차단으로 pykrx 실수집 불가). ② 휴장일 봉 — `... LEFT JOIN trading_calendar tc ON tc.cal_date=d.trade_date AND tc.is_open WHERE i.market='KOSPI' AND tc.cal_date IS NULL`. ③ 일간 ±12% 초과 점프 나열(lag 윈도) — 실제 급변일(2026-03-04, 2026-07-31)도 나오므로 후보 목록으로 취급. 복구 = `DELETE FROM ohlcv_daily WHERE source='pykrx'` 후 해당 종목 재시딩.
 - [2026-09-01] `tests/test_ws_quotes.py`는 **라이브 Redis를 앱(worker·scheduler)과 공유**해 간헐 실패한다(같은 캐시 키·채널 경합, 단독 재실행 통과 확인). DB와 달리 Redis는 격리 미적용 — 별도 개선 대상.
 
+## 일봉 확정봉 가드
+
+- [2026-09-07] **국내에서도 미완성 봉 오염이 발생**(2026-08-31 미국 사고의 재발). 운영 DB 의 `ohlcv_daily` 2026-09-07 행 8건이 **08:40·09:26 KST**(장 시작 20분 전·개장 26분 후)에 적재됐고 거래량이 102110=**0**, 122630=0, 069500=3, 005930=1 이었다 — 거래가 없던 시점의 스텁 봉. KIS 일봉 API 는 장 시작 전·장중에도 '오늘 날짜' 행을 돌려준다. (근거: `ingested_at` UTC→KST 환산 + 거래량, 평소 102110 거래량은 1,200만 주대)
+- [2026-09-07] 이 유령 봉이 **09/08 주문표 5개 값 전부를 만들어냈다** — 가짜 종가 105,880 으로 역산한 그리드 101,640/97,405/93,170·익절 110,120·갭 97,308 이 화면값과 완전히 일치. 주문표 기준일이 'DB 의 마지막 일봉'이라, 봉 하나가 오염되면 주문 가격 전체가 오염된다.
+- [2026-09-07] `upsert_daily_bars` 는 `on_conflict_do_nothing`(원본 불변, ADR-002)이라 **마감 후 진짜 종가가 들어와도 조용히 무시**되고 유령 봉이 영구 잔존한다 — MA·ATR·σ·백테스트까지 계속 오염. 복구는 해당 일자 DELETE 후 재적재뿐. → `upsert_daily_bars` 진입점에 **확정봉 가드**(`bar_is_final`: 미래 봉 거부, 오늘 봉은 시장 정규장 마감 후에만 허용 — KR 15:30 KST / US 16:00 ET)를 넣어 네 적재 경로를 한 곳에서 막았다.
+
 ## 매매일지 시세
 
 - [2026-09-07] `ohlcv_daily` 에는 **전략 대상 6종(069500·102110·122630·QQQ·QLD·TQQQ)만 시딩**돼 있다. 매매일지가 그 밖의 종목(예: 005930)을 담으면 종가 조회가 실패해 평가에서 빠지고, `unrealized_pct` 의 분모(`cost_priced`)에서도 함께 빠져 "일부 종목만의 수익률"이 전체 수익률처럼 표시됐다. (근거: 3종목 일지 재현 — 원가 220만 중 120만(55%)이 분모 누락) → `enrich_valuation` 에 KIS 일봉 보충 경로 연결 + 커버리지 노출로 해결.

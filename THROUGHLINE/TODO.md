@@ -29,7 +29,7 @@
 
 | 항목 | 내용 | 우선순위 | 상태 | 등록일 | 승격처 |
 |---|---|---|---|---|---|
-| 미완성 미국 일봉 오염 | DB 에 2026-08-31 QQQ/QLD 미완성 봉(프리마켓 수집) — ON CONFLICT DO NOTHING 이라 자동 교체 불가, 삭제 + 확정봉 가드 필요 (docs/us-transfer-study-20260831.md §4) | 상 | 대기 | 2026-08-31 | |
+| 미완성 일봉 오염 (미국·국내) | 확정봉 가드는 구현 완료(2026-09-07, `services/ingest.bar_is_final`) — **기존 오염 행 삭제는 미완**: 2026-08-31 QQQ/QLD, 2026-09-07 국내 8종. `ON CONFLICT DO NOTHING` 이라 자동 교체 불가하므로 해당 일자 DELETE 후 재적재 필요 (NOTES 2026-09-07) | 상 | 가드 완료·정리 대기 | 2026-08-31 | apps/api/app/services/ingest.py |
 | daily_ingest 의 미국 종목 순회 | instruments 전체 순회가 QQQ/QLD/TQQQ 에 국내 API 를 호출 — 예외 시 daily_signal 까지 스킵 위험, 실배치 1회 관찰로 확인 필요 | 중 | 대기 | 2026-08-31 | |
 
 ## 기술부채

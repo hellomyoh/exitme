@@ -33,6 +33,24 @@ def _next_exec_day(base_day: date) -> date:
     return exec_day
 
 
+def _plan_pending(exec_day: date) -> tuple[bool, str | None]:
+    """다음 거래일 주문표가 아직 안 만들어진 상태인가 (2026-09-07 지시).
+
+    주문표의 기준일은 DB 의 마지막 일봉이라, 장 마감 후 일봉 수집(16:05) 전에는
+    exec_day 가 '이미 지나간 오늘'로 계산된다. 그 구간을 화면이 말하지 않으면
+    사용자는 낡은 주문표를 오늘 것으로 오해한다.
+    실행일이 미래면 정상, 오늘인데 아직 장중이면 오늘 실행분이라 정상.
+    """
+    from app.services.ingest import market_session_state
+
+    today, closed = market_session_state("KOSPI")
+    if exec_day > today or (exec_day == today and not closed):
+        return False, None
+    return True, ("아직 다음 거래일 주문표가 작성되지 않았습니다 — 장 마감 후 "
+                  "16:05 시세 수집 → 16:45 주문표 갱신 후 표시됩니다. "
+                  f"아래는 {exec_day.isoformat()} 실행 기준의 이전 주문표입니다.")
+
+
 def _state_before(session: Session, pid: int, cutoff: date) -> tuple[list[dict], int]:
     """cutoff(KST 일자) 이전에 체결된 거래만으로 로트·현금을 재구성 — B안 (2026-09-02).
 
@@ -267,6 +285,8 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
     out = {
         "basis": "portfolio", "portfolio": {"id": pf_row.id, "name": pf_row.name},
         "exec_day": exec_day.isoformat(),  # 이 주문표의 실행일 — 오늘/예정 표시용 (2026-09-02)
+        # 다음 거래일 주문표 미작성 구간 안내 (2026-09-07 지시)
+        "pending": _plan_pending(exec_day)[0], "pending_note": _plan_pending(exec_day)[1],
         # 배치 스냅샷이 없어도 화면이 그릴 수 있게 레짐·노출·기준일·지표를 함께 준다 (2026-09-05: 챗봇과 화면 불일치)
         "signal_date": base_day.isoformat(), "regime": regime.value, "e_target": p.e_target,
         "indicators": {k: v for k, v in (p.indicators or {}).items() if v is not None},
@@ -424,6 +444,8 @@ def _tf_portfolio_orders(session: Session, pf_row, pid: int) -> dict:
     out = {
         "basis": "portfolio", "strategy": "TF",
         "portfolio": {"id": pf_row.id, "name": pf_row.name},
+        "exec_day": exec_day.isoformat(), "signal_date": base_day.isoformat(),
+        "pending": _plan_pending(exec_day)[0], "pending_note": _plan_pending(exec_day)[1],
         "account": {"cash": cash, "qty_200": qty_qqq, "qty_lev": qty_lev, "equity": equity},
         "orders": orders, "gap_cancel_below": None,
     }
@@ -560,6 +582,7 @@ def _ltm_portfolio_orders(session: Session, pf_row, pid: int, lev_code: str) -> 
     v = cash + q1 * c1 + qL * cL
     common = {"basis": "portfolio", "strategy": "LTM", "portfolio": {"id": pf_row.id, "name": pf_row.name},
               "exec_day": exec_day.isoformat(), "signal_date": base_day.isoformat(),
+              "pending": _plan_pending(exec_day)[0], "pending_note": _plan_pending(exec_day)[1],
               "code_200": "QQQ", "name_200": "QQQ", "code_lev": lev_code, "name_lev": lev_code,
               "account": {"cash": cash, "qty_200": q1, "qty_lev": qL, "equity": round(v)}, "gap_cancel_below": None}
     if st is None:

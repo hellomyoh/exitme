@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as _time, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -25,6 +26,38 @@ class IngestResult:
     rejected: int = 0
 
 
+# ── 확정봉 가드 (2026-09-07 사고 대응) ────────────────────────────────────────────
+# KIS 일봉 API 는 장 시작 전·장중에도 '오늘 날짜' 행을 돌려준다 — 거래량 0~수십의 미완성 봉이다.
+# 이것이 적재되면 ON CONFLICT DO NOTHING(원본 불변, ADR-002) 때문에 마감 후 진짜 종가가
+# 들어오지 못하고 영구 잔존해, 주문표 기준 종가·MA·ATR·σ·백테스트를 계속 오염시킨다.
+# (2026-08-31 미국 ETF 사고 → NOTES, 2026-09-07 국내 재발: 08:40·09:26 KST 적재분이
+#  102110 거래량 0 으로 09/08 주문표 5개 값 전부를 만들어냈다)
+# 네 적재 경로(daily_ingest·mjournal 보충·seed·ingest_us_daily)가 모두 이 함수를 지나므로
+# 여기 한 곳에서 막는다.
+MARKET_CLOSE = {          # 시장 → (타임존, 정규장 마감 시각)
+    "NASDAQ": ("America/New_York", _time(16, 0)),
+    "NYSE": ("America/New_York", _time(16, 0)),
+}
+KR_CLOSE = ("Asia/Seoul", _time(15, 30))
+
+
+def market_session_state(market: str) -> tuple[date, bool]:
+    """(그 시장 기준 오늘 날짜, 정규장 마감 여부). 미지정 시장은 국내로 본다."""
+    tz_name, close_at = MARKET_CLOSE.get((market or "").upper(), KR_CLOSE)
+    now = datetime.now(ZoneInfo(tz_name))
+    return now.date(), now.time() >= close_at
+
+
+def bar_is_final(trade_date: date, market: str) -> bool:
+    """그 봉이 '확정된 과거 봉'인가 — 미래 날짜이거나, 오늘인데 아직 장중이면 False."""
+    today, closed = market_session_state(market)
+    if trade_date > today:
+        return False
+    if trade_date == today and not closed:
+        return False
+    return True
+
+
 def upsert_daily_bars(
     session: Session,
     instrument_id: int,
@@ -33,8 +66,16 @@ def upsert_daily_bars(
 ) -> IngestResult:
     """bars: [{trade_date, open, high, low, close, volume}] — 검증 실패 행은 거부하고 로그."""
     result = IngestResult()
+    inst = session.get(Instrument, instrument_id)
+    market = inst.market if inst is not None else "KOSPI"
     rows = []
     for b in bars:
+        # 확정봉 가드 — 장중/장 시작 전에 받은 '오늘 봉'은 저장하지 않는다 (2026-09-07)
+        if not bar_is_final(b["trade_date"], market):
+            result.rejected += 1
+            logger.warning("reject unfinished bar instrument=%s(%s) date=%s volume=%s — 장 마감 전 수신",
+                           instrument_id, market, b["trade_date"], b.get("volume"))
+            continue
         errors = validate_bar(b["open"], b["high"], b["low"], b["close"], b["volume"])
         if errors:
             result.rejected += 1
