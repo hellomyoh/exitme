@@ -193,7 +193,10 @@ def test_journal_close_reopen_and_dashboard_assets():
     c.post(f"/mjournals/{b}/entries", json={"side": "sell", "qty": 5, "price": 60000, "trade_date": "2026-01-03"}, headers=h)
 
     d = c.get("/dashboard", headers=h).json()
-    assert d["journal"] == 1_000_000 and d["trading_total"] == d["stock"] + d["cash"]
+    # 2026-09-07 이름 매칭 도입 후 'kodex 200' 은 시세가 있으면 평가액으로 잡힌다 —
+    # 이 테스트의 관심사는 청산/복구와 자산 분리이므로 '합계 = 집계 대상 일지 값의 합' 불변식으로 검증한다.
+    j_sum = sum(x["value"] for x in d["journals"] if x["counted"])
+    assert d["journal"] == j_sum and d["trading_total"] == d["stock"] + d["cash"]
     assert d["total"] == d["stock"] + d["cash"] + d["other"] + d["journal"]
     assert {j["name"] for j in d["journals"]} == {"연금", "정리끝"}
     done = next(j for j in d["journals"] if j["name"] == "정리끝")
@@ -204,7 +207,7 @@ def test_journal_close_reopen_and_dashboard_assets():
     assert r["closed_at"] and r["warning"] is None            # 보유 없음 → 경고 없음
     assert c.post(f"/mjournals/{b}/entries", json={"side": "buy", "qty": 1, "price": 1}, headers=h).status_code == 409
     d2 = c.get("/dashboard", headers=h).json()
-    assert {j["name"] for j in d2["journals"]} == {"연금"} and d2["journal"] == 1_000_000
+    assert {j["name"] for j in d2["journals"]} == {"연금"} and d2["journal"] == j_sum
     assert next(i for i in c.get("/mjournals", headers=h).json()["items"] if i["id"] == b)["closed_at"]
     assert c.get(f"/mjournals/{b}", headers=h).json()["closed_at"]
     # 보유가 남은 일지를 청산하면 경고 문구
@@ -212,7 +215,7 @@ def test_journal_close_reopen_and_dashboard_assets():
     assert c.get("/dashboard", headers=h).json()["journal"] == 0
     # 다시 열기
     assert c.post(f"/mjournals/{a}/reopen", headers=h).json()["closed_at"] is None
-    assert c.get("/dashboard", headers=h).json()["journal"] == 1_000_000
+    assert c.get("/dashboard", headers=h).json()["journal"] == j_sum
     assert c.post(f"/mjournals/{a}/entries", json={"side": "buy", "qty": 1, "price": 1000}, headers=h).status_code == 201
 
 
@@ -544,3 +547,56 @@ def test_journal_account_total_only_when_journal_covers_account(monkeypatch):
                                               "trade_date": "2026-01-08"}, headers=h2)
     s2 = c2.get(f"/mjournals/{j2}", headers=h2).json()["summary"]
     assert s2["account_covered"] is False and s2["account_total"] is None
+
+
+def test_valuation_price_coverage_and_backfill(monkeypatch):
+    """다종목 평가 커버리지 (2026-09-07 지시 ①+③): DB 미적재 종목은 KIS 일봉으로 보충,
+    코드 없는 행은 종목명으로 instruments 매칭, 끝내 못 구한 종목은 summary.unpriced 로 드러난다.
+
+    회귀 대상: 시세를 못 구한 종목이 보유수익률 분모에서 조용히 빠지던 결함(2026-09-07 재현).
+    """
+    from datetime import date as _date
+
+    import app.mjournal as mj
+    from app.db import SessionLocal
+    from app.services.ingest import get_or_create_instrument, upsert_daily_bars
+
+    mj._PRICE_CACHE.clear()
+    mj._CLOSE_MISS.clear()
+
+    # ① DB 에 적재된 종목 ② 이름만 아는 종목(코드 미입력) — 둘 다 instruments 에 존재
+    with SessionLocal() as s:
+        for code, name, close in (("102110", "TIGER 200", 100_000), ("069500", "KODEX 200", 30_000)):
+            inst = get_or_create_instrument(s, code, name, "KOSPI")
+            upsert_daily_bars(s, inst.id, [{"trade_date": _date(2026, 9, 4), "open": close, "high": close,
+                                            "low": close, "close": close, "volume": 1}], source="kis")
+        s.commit()
+
+    # ③ DB 에 없는 종목 — KIS 일봉 보충 경로가 채운다
+    from app.services.kis_client import DailyBar
+
+    class _Fake:
+        def fetch_daily(self, code, a, b, org_price=True):
+            return [DailyBar(_date(2026, 9, 4), 80_000, 80_000, 80_000, 80_000, 1)] if code == "005930" else []
+
+    monkeypatch.setattr(mj, "_kis_for_bars", lambda session, j: _Fake())
+
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "커버리지", "symbol": "TIGER 200", "fee_rate": 0.0, "tax_rate": 0.0},
+                 headers=h).json()["id"]
+    for sym, code, qty, price in (("TIGER 200", "102110", 10, 90_000), ("삼성전자", "005930", 10, 70_000),
+                                  ("KODEX 200", None, 10, 25_000), ("듣보종목", None, 10, 50_000)):
+        body = {"side": "buy", "qty": qty, "price": price, "trade_date": "2026-09-01", "symbol": sym}
+        if code:
+            body["code"] = code
+        assert c.post(f"/mjournals/{jid}/entries", json=body, headers=h).status_code == 201
+
+    s = c.get(f"/mjournals/{jid}", headers=h).json()["summary"]
+    assert s["holdings_count"] == 4 and s["priced_count"] == 3 and s["priced"] is False
+    assert s["cost_total"] == 2_350_000            # 전체 원가
+    assert s["cost_priced"] == 1_850_000           # 시세 있는 3종목만이 수익률 분모
+    assert [u["symbol"] for u in s["unpriced"]] == ["듣보종목"]   # 조용한 제외 금지
+    assert s["unpriced"][0]["cost"] == 500_000
+    # 평가 = 10×100,000 + 10×80,000(KIS 보충) + 10×30,000(이름 매칭) = 2,100,000
+    assert s["eval_total"] == 2_100_000
+    assert abs(s["unrealized_pct"] - 250_000 / 1_850_000) < 1e-9

@@ -490,3 +490,10 @@
 - Git commit: feat: telegram notifications (bot token in settings, per-category opt-in), chatbot operations knowledge and status/log tools, docs sweep
 - 특이사항: 알림은 활동 로그 저장 직후(commit 전) 동기 발송 — 롤백 시 기록 없는 메시지가 갈 수 있음(드묾, ASSUMPTIONS). 실제 텔레그램 발송은 사용자가 봇을 만들어 연결한 뒤 확인 필요(테스트는 HTTP 경계를 대체).
 
+
+## [2026-09-07] fix | 매매일지 다종목 평가 누락 — 시세 조회 범위 확대 + 커버리지 표기 (사용자 보고 → 1+3안 승인)
+
+- 작업 내용: 사용자 보고("여러 종목 입력 시 보유수익률에서 일부 종목 제외")를 로컬 재현 — 3종목 일지에서 1종목만 평가되고 **전체 원가 220만 중 120만(55%)이 수익률 분모에서 누락**. 원인은 `enrich_valuation` 의 가격 경로가 ①증권사 잔고 ②DB 종가 둘뿐이고, `ohlcv_daily` 에는 전략 대상 6종만 시딩돼 그 밖의 종목은 `price=None` → 평가 루프에서 `continue` 로 조용히 제외되던 것(코드 미입력 행은 조회 시도조차 못 함). **①(근본)**: 수익률 차트가 쓰던 `_ensure_daily_bars`(신규 종목 자동 등록 + KIS 일봉 보충) 경로를 평가에 연결(`_backfill_closes`, 실패 코드 10분 재시도 억제), 코드 미입력 행은 `instruments` 이름 정규화 매칭(`_codes_by_name`, 동명 다수면 미연결). **③(표기)**: `summary` 에 `holdings_count·cost_total·cost_priced·unpriced·price_notes` 노출, 웹 평가손익 카드가 분모를 `cost_priced` 로 표시하고 제외 종목·원가를 명시 — 종전에는 전체 원가(220만)와 부분 평가액(103만)을 나란히 두어 +3.86% 수익률과 어긋나 보였다.
+- 테스트 결과: api **234 passed / 2 failed** — 2건은 변경 전 코드(stash)로 재현 확인한 **사전 존재 실패**(`test_from_backtest_conversion_seeds_state`, `test_same_day_fill_does_not_change_order_sheet`). 신규 회귀 테스트 `test_valuation_price_coverage_and_backfill`(4종목: DB적재·KIS보충·이름매칭·불명 → priced 3/4, 분모=cost_priced, unpriced 노출) 통과. 기존 `test_journal_close_reopen_and_dashboard_assets` 는 이름 매칭 도입으로 '원가→평가' 값이 바뀌어 **불변식(합계 = 집계 대상 일지 값의 합)** 검증으로 갱신. web tsc 무오류.
+- 문서: feature-dashboard §5(평가 경로·커버리지 표기 의무)·§12(회귀 케이스), NOTES(시딩 6종 한계·기존 경로 재사용 교훈).
+- Git commit: fix: mjournal valuation price coverage and honest reporting

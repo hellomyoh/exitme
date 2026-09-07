@@ -14,6 +14,11 @@
 - [2026-09-01] 오염 탐지 쿼리 3종 (db 컨테이너에서 실행): ① 소스별 집계 — `SELECT i.code, d.source, count(*) FROM ohlcv_daily d JOIN instruments i ON i.id=d.instrument_id GROUP BY 1,2;` (`pykrx` 행은 전부 합성 — KRX 차단으로 pykrx 실수집 불가). ② 휴장일 봉 — `... LEFT JOIN trading_calendar tc ON tc.cal_date=d.trade_date AND tc.is_open WHERE i.market='KOSPI' AND tc.cal_date IS NULL`. ③ 일간 ±12% 초과 점프 나열(lag 윈도) — 실제 급변일(2026-03-04, 2026-07-31)도 나오므로 후보 목록으로 취급. 복구 = `DELETE FROM ohlcv_daily WHERE source='pykrx'` 후 해당 종목 재시딩.
 - [2026-09-01] `tests/test_ws_quotes.py`는 **라이브 Redis를 앱(worker·scheduler)과 공유**해 간헐 실패한다(같은 캐시 키·채널 경합, 단독 재실행 통과 확인). DB와 달리 Redis는 격리 미적용 — 별도 개선 대상.
 
+## 매매일지 시세
+
+- [2026-09-07] `ohlcv_daily` 에는 **전략 대상 6종(069500·102110·122630·QQQ·QLD·TQQQ)만 시딩**돼 있다. 매매일지가 그 밖의 종목(예: 005930)을 담으면 종가 조회가 실패해 평가에서 빠지고, `unrealized_pct` 의 분모(`cost_priced`)에서도 함께 빠져 "일부 종목만의 수익률"이 전체 수익률처럼 표시됐다. (근거: 3종목 일지 재현 — 원가 220만 중 120만(55%)이 분모 누락) → `enrich_valuation` 에 KIS 일봉 보충 경로 연결 + 커버리지 노출로 해결.
+- [2026-09-07] 수익률 차트용 `_ensure_daily_bars` 는 신규 종목 자동 등록·일봉 보충을 이미 하고 있었는데 **평가 경로만 이를 쓰지 않았다** — 같은 데이터가 화면 A(차트)에는 있고 B(평가 카드)에는 없는 불일치의 원인. 새 경로를 만들지 말고 기존 경로를 연결하는 것이 맞다.
+
 ## TimescaleDB
 
 - [2026-08-28] 하이퍼테이블에 `INSERT ... ON CONFLICT`를 실행하면 SQLAlchemy `rowcount`가 -1로 반환된다 — 삽입 건수는 `RETURNING`으로 세어야 한다. (근거: 통합 테스트 실패 재현 후 RETURNING으로 해결)
