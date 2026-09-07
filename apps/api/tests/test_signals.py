@@ -352,3 +352,27 @@ def test_portfolio_order_sheet_without_batch_snapshot():
         with SessionLocal() as s:
             s.execute(update(SignalSnapshot).where(SignalSnapshot.id.in_(current_ids)).values(is_current=True))
             s.commit()
+
+
+# ── 주문표 갱신 대기 안내 (2026-09-07 지시) ──────────────────────────────────────
+
+def test_plan_pending_notice_states(monkeypatch):
+    """장 마감 후 다음 주문표가 아직 없으면 pending — 낡은 주문표를 오늘 것으로 오해하지 않도록.
+
+    실행일이 미래면 정상, 오늘인데 장중이면 '오늘 실행분'이라 정상, 오늘인데 마감 후면 대기.
+    """
+    from datetime import date as _date, timedelta as _td
+
+    import app.signals as sig
+
+    today = _date(2026, 9, 7)
+
+    monkeypatch.setattr("app.services.ingest.market_session_state", lambda m: (today, False))
+    assert sig._plan_pending(today)[0] is False              # 장중 · 오늘 실행분 → 정상
+    assert sig._plan_pending(today + _td(days=1))[0] is False  # 내일 실행분 → 정상
+
+    monkeypatch.setattr("app.services.ingest.market_session_state", lambda m: (today, True))
+    pending, note = sig._plan_pending(today)                 # 마감 후인데 아직 오늘 기준 → 대기
+    assert pending is True and "16:45" in note and "16:05" in note
+    assert sig._plan_pending(today - _td(days=1))[0] is True  # 지난 주문표 → 대기
+    assert sig._plan_pending(today + _td(days=1))[0] is False  # 갱신 완료 → 정상

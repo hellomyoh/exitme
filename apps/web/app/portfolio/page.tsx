@@ -45,7 +45,7 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; exec_day?: string; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; text: string }[] } | null };
+type Signal = { status: string; exec_day?: string; pending?: boolean; pending_note?: string | null; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; text: string }[] } | null };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -953,11 +953,18 @@ function PortfolioPage() {
 
       {/* 오늘의 주문표 (2026-08-28 지시 — 실전매매 중간 섹션) */}
       <Card className="mb-4">
+        {/* 다음 거래일 주문표 미작성 구간 안내 (2026-09-07 지시) — 낡은 주문표를 오늘 것으로 오해하지 않도록 */}
+        {signal?.pending && signal.pending_note && (
+          <div className="mb-3 rounded-xl border border-accent/40 bg-accent/5 px-4 py-3 text-[14px] font-medium text-accent">
+            ⏳ {signal.pending_note}
+          </div>
+        )}
         <CardTitle>
           {(() => {
             const today = new Date().toISOString().slice(0, 10);
             const ed = signal?.exec_day;
             if (!ed) return "오늘의 주문표";
+            if (signal?.pending) return `주문표 갱신 대기 — ${ed.slice(5)} 기준(이전)`;
             return ed === today
               ? `오늘(${ed.slice(5)}) 실행 주문표 — 확정`
               : `${ed.slice(5)} 실행 예정 주문표`;
