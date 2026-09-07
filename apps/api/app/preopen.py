@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.activity import log_event
-from app.autoexec import user_auto_exec
+from app.autoexec import account_auto_exec
 from app.broker import _client, _resolve_codes, humanize_kis_error
 from app.models import BrokerCredential, BrokerOrder, PortfolioPlan, TradePortfolio
 
@@ -77,7 +77,7 @@ def run_preopen_cancel(session: Session, now: datetime | None = None, client_fac
             continue
         rec: dict = {"portfolio_id": pf.id, "name": pf.name, "expected": None, "gap_exact": None, "gap_hit": False,
                      "cancelled": 0, "failed": 0, "untracked": 0, "unmatched": 0, "note": None}
-        if not user_auto_exec(session, pf.user_id).get("preopen_cancel", True):
+        if not account_auto_exec(cred).get("preopen_cancel", True):   # 계좌별 스위치 (2026-09-07)
             rec["note"] = "설정 꺼짐"
             out["portfolios"].append(rec)
             continue

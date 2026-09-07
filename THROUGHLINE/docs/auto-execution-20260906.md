@@ -8,8 +8,9 @@
 ```
 전날 16:40~     주문표 조회 → 줄 체크 → [🤖 무인 실행 승인] → BrokerOrder(mode=auto, status=approved)
                 (설정에서 그 방향이 허용돼 있어야 버튼이 동작. 시장가 줄은 제외 → 예약주문으로)
-전날 16:45      [완전 무인, 2026-09-07 지시] 워커 auto_approve_plan (app/autoapprove.py) → 자동 승인이 켜진 국내 포트별:
-                  정지 상태·설정 모두 꺼짐이면 건너뜀(로그) → 다음 실행일 주문표 계산·스냅샷 저장(_portfolio_orders)
+전날 16:45      [완전 무인, 2026-09-07 지시] 워커 auto_approve_plan (app/autoapprove.py) → 자동 승인이 켜진(기본 켬) 국내 포트별:
+                  정지 상태·연결 계좌의 매수·매도 스위치 모두 꺼짐이면 건너뜀(로그) → 다음 실행일 주문표 계산·스냅샷 저장(_portfolio_orders)
+                  (같은 일을 켜는 즉시 1회·[지금 승인 실행] 버튼·08:40 보완 실행 auto_approve_catchup 이 반복 — 보완은 새로 한 일이 없으면 조용히)
                   → 실행일 ≤ 오늘(오늘 일봉 미적재)이면 건너뜀 → 하루 매수 상한(총자산 대비 %, 기본 20%) 초과면 승인 없이 정지
                   → 허용 방향의 지정가 줄 approved(자동 승인) · 시장가 줄은 옵션이면 예약주문 접수(실전·접수 창 안), 아니면 '수동 필요' 로그
                   → params.auto_exec.auto_approve_last + 활동 로그. 이미 살아 있는 줄은 건너뜀(멱등)
@@ -37,13 +38,13 @@
 
 | 층 | 위치 | 내용 |
 |---|---|---|
-| 정책·실행 | `app/autoexec.py` | 설정 GET/PUT `/settings/auto-exec`, 승인 `POST /portfolio/{pid}/orders/approve`, 상태 `GET /portfolio/{pid}/auto-exec`, 해제 `POST …/auto-exec/resume`, `run_auto_execution`, `sync_auto_orders`, `pause_if_reconcile_warns` |
+| 정책·실행 | `app/autoexec.py` | 설정 GET/PUT `/settings/auto-exec`(기본값 + 모든 계좌 일괄), **계좌별** `PUT /settings/auto-exec/accounts/{aid}` (0024) — `account_auto_exec(cred)` 가 승인·실행·자동 승인·사전 갭 취소의 판정 함수. 승인 `POST /portfolio/{pid}/orders/approve`, 상태 `GET /portfolio/{pid}/auto-exec`(allowed = 연결 계좌 스위치, account), 해제 `POST …/auto-exec/resume`, `run_auto_execution`, `sync_auto_orders`, `pause_if_reconcile_warns` |
 | KIS | `services/kis_client.py` `KisTradingClient.place_order / cancel_order / buyable` | 실전 TTTC0012U(매수)·TTTC0011U(매도)·TTTC0013U(취소)·TTTC8908R(매수가능조회), 모의 VTTC0802U·VTTC0801U·VTTC0803U·VTTC8908R. 지정가만 |
 | 기록 | `models.py` `BrokerOrder.mode`('reserve'/'auto'), `UserSettings.auto_exec`, `TradePortfolio.params.auto_exec` | 마이그레이션 0021 |
 | 훅 | `broker.py` | `STATUS_KO` 확장, 주문 목록 응답에 `auto_exec`, 취소 엔드포인트가 무인 줄 처리(승인 철회 / 정규 주문 취소), `run_post_close_sync` 가 확정·정지 |
 | 계획 | `signals.py` | `PortfolioPlan.payload.gap_cancel_exact`(정확값) 추가 — 시가 판정용 |
 | 워커 | `worker.py` | `auto-exec-open` 09:01 mon–fri, `max_retries=0`, 휴장일 스킵 · `preopen-gap-cancel` 08:57 mon–fri (2026-09-06 밤) |
-| 완전 무인 | `app/autoapprove.py` `run_auto_approve`, `PUT /portfolio/{pid}/auto-exec/auto-approve`, `POST /portfolio/{pid}/orders/cancel-all`, `worker.py` `auto-approve-plan` 16:45 | 포트별 자동 승인(기본 꺼짐)·시장가 예약 접수 옵션(기본 켬)·하루 매수 상한 `daily_buy_cap_pct`(총자산 대비 %, 기본 20, 0 = 없음). 전량 취소(승인·예약·발주) + stop 이면 정지·자동 승인 끔. 상태는 `auto_exec_view` 의 `auto_approve`·`auto_approve_last` |
+| 완전 무인 | `app/autoapprove.py` `run_auto_approve`·`run_auto_approve_for`, `PUT /portfolio/{pid}/auto-exec/auto-approve`(켜면 즉시 1회 실행 → `run_now`), `POST …/auto-exec/auto-approve/run-now`, `POST /portfolio/{pid}/orders/cancel-all`, `worker.py` `auto-approve-plan` 16:45 · `auto-approve-catchup` 08:40 | 포트별 자동 승인(**기본 켬**, 2026-09-07 밤)·시장가 예약 접수 옵션(기본 켬)·하루 매수 상한 `daily_buy_cap_pct`(총자산 대비 %, 기본 20, 0 = 없음). 판정은 연결 계좌 스위치. 전량 취소(승인·예약·발주) + stop 이면 정지·자동 승인 끔. 상태는 `auto_exec_view` 의 `auto_approve`·`auto_approve_last` |
 | 사전 갭 취소 | `app/preopen.py` `run_preopen_cancel`, `services/kis_client.py` `fetch_expected`(FHKST01010200)·`list_open_orders`(TTTC0084R 실전 전용) | 예상체결가 ≤ 기준 → 그리드 가격과 같은 200 ETF 매수 미체결 취소. `BrokerOrder.status=gap_cancelled`, `params.preopen_cancel.last_run`. 설정 `auto_exec.preopen_cancel` 기본 켜짐 |
 | 알림 | `app/notify.py` `notify_event`(활동 로그 훅)·`notify_trade`·`send_daily_status`, `GET/PUT /settings/notify`, `POST /settings/notify/test`, `user_settings.telegram_bot_token`(🔒)·`telegram_chat_id`·`notify`(0023) | 텔레그램 Bot API sendMessage/getUpdates. 카테고리 9종(기본: 결과·경고 켬, 주문·체결 등록 꺼짐). 실패는 `notify.failed` 로그만 — 본 작업 계속 |
 | 로그 | `app/activity.py` `log_event`, `GET /logs`, `models.ActivityLog`(0022) | 거래(원장)·주문(BrokerOrder)·이벤트(ActivityLog) 병합. 기록 지점: 무인 실행 요약·정지·승인, 예약주문 접수·취소, 사전 갭 취소, 장 마감 동기화 결과·오류, 예수금 대조 경고·보정, 거래 삭제 |

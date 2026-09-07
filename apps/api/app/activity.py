@@ -44,7 +44,7 @@ ORDER_LEVEL = {"failed": "error", "mismatch": "error",
                "cancelled": "warn", "duplicate": "warn"}
 KIND_KO = {  # 이벤트 종류 표시명 (화면 배지)
     "autoexec.run": "무인 실행", "autoexec.paused": "무인 실행 정지", "autoexec.approve": "무인 승인", "autoexec.error": "무인 실행 오류",
-    "autoexec.auto_approve": "자동 승인", "autoexec.auto_approve_setting": "완전 무인 설정",
+    "autoexec.auto_approve": "자동 승인", "autoexec.auto_approve_setting": "완전 무인 설정", "autoexec.account_setting": "계좌 무인 설정",
     "order.reserve": "예약주문 접수", "order.cancel": "주문 취소", "order.cancel_all": "전량 취소",
     "preopen.run": "사전 갭 확인", "preopen.cancel": "사전 갭 취소", "preopen.cancel_failed": "사전 갭 취소 실패",
     "preopen.unmatched": "사전 갭 취소 불가", "preopen.error": "사전 갭 확인 오류",

@@ -1,8 +1,9 @@
 """완전 무인 운영 (2026-09-07 지시) — 장 마감 후 주문표를 **자동 승인**하고, 이미 접수·발주된 주문을 **한 번에 취소**한다.
 
 배경: 무인 실행(ADR-008)은 사용자가 전날 주문표에서 줄을 승인해야 09:01 에 발주했다. 사용자 지시 "이 단계 없이 완전 무인으로
-운영" → 포트별 옵션 **자동 승인**을 켜면 16:45 배치가 다음 실행일 주문표를 계산·저장하고 허용된 방향의 지정가 줄을 승인 상태로
-만든다. 시장가 줄(레버리지 진입·청산)은 정규 주문 경로에 없으므로 옵션에 따라 **예약주문으로 자동 접수**한다(접수 창 15:40~).
+운영" → 포트별 옵션 **자동 승인**(2026-09-07 밤 지시로 **기본 켬** — "표에서 체크하지 않아도 자동으로 발주해야 해")이 켜져 있으면
+16:45 배치가 다음 실행일 주문표를 계산·저장하고 허용된 방향의 지정가 줄을 승인 상태로 만든다. 켜는 순간에도 즉시 한 번 돌고(밤에 켜도
+다음 아침 발주), 08:40 에 보완 실행이 한 번 더 돈다(16:45 실행이 없었거나 실패한 포트 — 실행일이 오늘이어도 09:00 전이면 승인). 시장가 줄(레버리지 진입·청산)은 정규 주문 경로에 없으므로 옵션에 따라 **예약주문으로 자동 접수**한다(접수 창 15:40~).
 09:01 실행과 그 통제(시가 확인·갭 취소·원장 대조·계획 재대조·매수가능조회·자동 정지)는 그대로다.
 
 추가 안전장치: 하루 매수 총액 상한 — **총자산 대비 %**(기본 20%, 0 = 없음, 사용자 지시 2026-09-07). 계획 매수 합계(지정가×수량 +
@@ -25,8 +26,8 @@ from sqlalchemy.orm import Session
 
 from app.activity import log_event
 from app.auth import current_user_id
-from app.autoexec import (ACTIVE_AUTO, _set_pf_auto_state, auto_approve_cfg, auto_exec_view, pause_portfolio,
-                          pf_auto_state, user_auto_exec)
+from app.autoexec import (ACTIVE_AUTO, OPEN_TIME, _set_pf_auto_state, account_auto_exec, auto_approve_cfg, auto_exec_view,
+                          pause_portfolio, pf_auto_state)
 from app import broker as _broker  # _client 는 호출 시점에 찾는다 — 테스트가 app.broker._client 를 바꿔 끼우면 따라가게
 from app.broker import _order_out, _owned, _resolve_codes, humanize_kis_error, line_key, reservation_window
 from app.db import get_session
@@ -56,9 +57,9 @@ def put_auto_approve(pid: int, body: AutoApproveIn, user_id: int = Depends(curre
     if body.enabled:
         if not pf.broker_credential_id:
             raise HTTPException(status_code=409, detail="연결된 증권사 계좌가 없습니다 — 증권사 연동에서 계좌를 연결한 뒤 켜세요")
-        allowed = user_auto_exec(session, user_id)
+        allowed = account_auto_exec(session.get(BrokerCredential, pf.broker_credential_id))
         if not (allowed["buy"] or allowed["sell"]):
-            raise HTTPException(status_code=409, detail="설정 › 무인 실행에서 매수 또는 매도 허용을 먼저 켜세요 — 켠 방향의 지정가 줄만 자동 승인됩니다")
+            raise HTTPException(status_code=409, detail="이 포트 계좌의 무인 매수 또는 매도 허용을 먼저 켜세요 (일반 설정 › 무인 실행, 계좌별) — 켠 방향의 지정가 줄만 자동 승인됩니다")
     now = datetime.now(KST)
     cfg = {"enabled": body.enabled, "market_reserve": body.market_reserve,
            "daily_buy_cap_pct": float(body.daily_buy_cap_pct), "updated_at": now.isoformat(timespec="minutes")}
@@ -69,7 +70,46 @@ def put_auto_approve(pid: int, body: AutoApproveIn, user_id: int = Depends(curre
               level="warn" if body.enabled else "info", portfolio_id=pf.id, data=cfg, at=now)
     session.commit()
     logger.info("auto-approve setting pid=%s %s", pf.id, cfg)
-    return auto_exec_view(session, pf)
+    out = auto_exec_view(session, pf)
+    if body.enabled:
+        # 켜는 순간 즉시 한 번 — 밤에 켜도 다음 아침 발주가 되도록 (2026-09-07 밤 지시)
+        out["run_now"] = run_auto_approve_for(session, pf, now)
+        out.update({k: v for k, v in auto_exec_view(session, pf).items()})
+    return out
+
+
+def run_auto_approve_for(session: Session, pf: TradePortfolio, now: datetime | None = None, client_factory=None, plan_fn=None) -> dict:
+    """한 포트 즉시 자동 승인 — 설정 저장 직후·'지금 승인 실행' 버튼. 포트 단위 실패는 rec.error 로."""
+    now = now or datetime.now(KST)
+    rec: dict = {"portfolio_id": pf.id, "name": pf.name, "exec_day": None, "approved": 0, "reserved": 0,
+                 "skipped": 0, "failed": 0, "manual": [], "note": None}
+    try:
+        _auto_approve_portfolio(session, pf, now.date(), now, client_factory or _broker._client, plan_fn or _default_plan, rec)
+        session.commit()
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        detail = getattr(exc, "detail", None) or str(exc)
+        rec["error"] = str(detail)[:200]
+        logger.exception("auto-approve run-now failed pid=%s", pf.id)
+        try:
+            log_event(session, pf.user_id, "autoexec.auto_approve", f"자동 승인 실패 — {humanize_kis_error(str(detail)[:200])}",
+                      level="error", portfolio_id=pf.id, at=now)
+            session.commit()
+        except Exception:  # noqa: BLE001
+            session.rollback()
+    return rec
+
+
+@router.post("/portfolio/{pid}/auto-exec/auto-approve/run-now")
+def post_auto_approve_run_now(pid: int, user_id: int = Depends(current_user_id),
+                              session: Session = Depends(get_session)) -> dict:
+    """지금 다음 실행일 주문표를 자동 승인한다 — 배치를 기다리지 않을 때(승인 09:00 전까지 유효)."""
+    pf = _owned(session, pid, user_id)
+    if pf.market != "KR":
+        raise HTTPException(status_code=409, detail="완전 무인 운영은 국내 포트만 지원합니다")
+    if not auto_approve_cfg(pf)["enabled"]:
+        raise HTTPException(status_code=409, detail="이 포트의 자동 승인이 꺼져 있습니다 — 설정에서 켜세요")
+    return {"run_now": run_auto_approve_for(session, pf), **auto_exec_view(session, pf)}
 
 
 # ── 16:45 배치 ─────────────────────────────────────────────────────────────────
@@ -81,22 +121,28 @@ def _default_plan(session: Session, pf: TradePortfolio) -> dict:
     return _portfolio_orders(session, pf.id, pf.user_id)
 
 
-def run_auto_approve(session: Session, now: datetime | None = None, client_factory=None, plan_fn=None) -> dict:
-    """자동 승인이 켜진 국내 포트마다 다음 실행일 주문표를 계산해 승인/예약 접수한다. 포트별 실패는 기록하고 계속."""
+def run_auto_approve(session: Session, now: datetime | None = None, client_factory=None, plan_fn=None,
+                     quiet_noop: bool = False, only_credential_ids: set[int] | None = None) -> dict:
+    """자동 승인이 켜진 국내 포트마다 다음 실행일 주문표를 계산해 승인/예약 접수한다. 포트별 실패는 기록하고 계속.
+
+    quiet_noop=True(08:40 보완 실행): 새로 승인·접수·실패·수동 필요가 하나도 없으면 로그·알림을 남기지 않는다(매일 아침 잡음 방지).
+    only_credential_ids: 이 계좌들에 연결된 포트만(테스트·수동 재실행용). None = 전체.
+    """
     now = now or datetime.now(KST)
     today = now.date()
     client_factory = client_factory or _broker._client
     plan_fn = plan_fn or _default_plan
-    out: dict = {"date": today.isoformat(), "portfolios": []}
-    for pf in session.scalars(select(TradePortfolio).where(TradePortfolio.market == "KR",
-                                                            TradePortfolio.broker_credential_id.is_not(None))
-                              .order_by(TradePortfolio.id)).all():
+    out: dict = {"date": today.isoformat(), "portfolios": [], "quiet_noop": quiet_noop}
+    q = select(TradePortfolio).where(TradePortfolio.market == "KR", TradePortfolio.broker_credential_id.is_not(None))
+    if only_credential_ids:
+        q = q.where(TradePortfolio.broker_credential_id.in_(list(only_credential_ids)))
+    for pf in session.scalars(q.order_by(TradePortfolio.id)).all():
         if not auto_approve_cfg(pf)["enabled"]:
             continue
         rec: dict = {"portfolio_id": pf.id, "name": pf.name, "exec_day": None, "approved": 0, "reserved": 0,
                      "skipped": 0, "failed": 0, "manual": [], "note": None}
         try:
-            _auto_approve_portfolio(session, pf, today, now, client_factory, plan_fn, rec)
+            _auto_approve_portfolio(session, pf, today, now, client_factory, plan_fn, rec, quiet_noop=quiet_noop)
             session.commit()
         except Exception as exc:  # noqa: BLE001 — 포트 단위 실패는 기록하고 다음 포트
             session.rollback()
@@ -149,31 +195,35 @@ def _equity_for_cap(session: Session, pf: TradePortfolio, plan: dict) -> int:
 
 
 def _auto_approve_portfolio(session: Session, pf: TradePortfolio, today: date, now: datetime,
-                            client_factory, plan_fn, rec: dict) -> None:
+                            client_factory, plan_fn, rec: dict, quiet_noop: bool = False) -> None:
     cfg = auto_approve_cfg(pf)
     state = pf_auto_state(pf)
     if state["paused"]:
         rec["note"] = "정지 상태"
-        log_event(session, pf.user_id, "autoexec.auto_approve", f"자동 승인 건너뜀 {now:%H:%M} — 무인 실행 정지 상태 ({state['paused_reason'] or ''})",
-                  level="warn", portfolio_id=pf.id, at=now)
+        if not quiet_noop:
+            log_event(session, pf.user_id, "autoexec.auto_approve", f"자동 승인 건너뜀 {now:%H:%M} — 무인 실행 정지 상태 ({state['paused_reason'] or ''})",
+                      level="warn", portfolio_id=pf.id, at=now)
         return
     cred = session.get(BrokerCredential, pf.broker_credential_id) if pf.broker_credential_id else None
     if cred is None:
         rec["note"] = "연결 계좌 없음"
         return
-    allowed = user_auto_exec(session, pf.user_id)
+    allowed = account_auto_exec(cred)   # 계좌별 스위치 (2026-09-07 지시) — 승인 전 검사
     if not (allowed["buy"] or allowed["sell"]):
-        rec["note"] = "설정에서 무인 매수·매도 모두 꺼짐"
-        log_event(session, pf.user_id, "autoexec.auto_approve", f"자동 승인 건너뜀 {now:%H:%M} — 설정 › 무인 실행에서 매수·매도 허용이 모두 꺼져 있음",
-                  level="warn", portfolio_id=pf.id, at=now)
+        rec["note"] = "계좌 설정에서 무인 매수·매도 모두 꺼짐"
+        if not quiet_noop:
+            log_event(session, pf.user_id, "autoexec.auto_approve", f"자동 승인 건너뜀 {now:%H:%M} — 계좌 {cred.label} 의 무인 매수·매도 허용이 모두 꺼져 있음 (설정 › 무인 실행)",
+                      level="warn", portfolio_id=pf.id, at=now)
         return
     plan = plan_fn(session, pf)
     exec_day = date.fromisoformat(str(plan.get("exec_day")))
     rec["exec_day"] = exec_day.isoformat()
-    if exec_day <= today:
+    # 실행일이 오늘이어도 09:00 전이면 아직 유효(08:40 보완 실행·아침에 켠 경우). 지났거나 개장 후면 건너뜀
+    if exec_day < today or (exec_day == today and now.time() >= OPEN_TIME):
         rec["note"] = "실행일이 지났음 (오늘 일봉 미적재?)"
-        log_event(session, pf.user_id, "autoexec.auto_approve", f"자동 승인 건너뜀 {now:%H:%M} — 계산된 실행일 {exec_day} 이 오늘 이전 (오늘 일봉이 아직 없음)",
-                  level="warn", portfolio_id=pf.id, at=now)
+        if not quiet_noop:
+            log_event(session, pf.user_id, "autoexec.auto_approve", f"자동 승인 건너뜀 {now:%H:%M} — 계산된 실행일 {exec_day} 이 이미 지남 (장 마감 후라면 오늘 일봉이 아직 없음)",
+                      level="warn", portfolio_id=pf.id, at=now)
         return
     lines = list(plan.get("orders") or [])
     snapshot = session.scalar(select(PortfolioPlan).where(PortfolioPlan.portfolio_id == pf.id, PortfolioPlan.trade_date == exec_day))
@@ -257,6 +307,9 @@ def _auto_approve_portfolio(session: Session, pf: TradePortfolio, today: date, n
     summary = {"date": today.isoformat(), "at": now.isoformat(timespec="minutes"), "exec_day": exec_day.isoformat(),
                "approved": rec["approved"], "reserved": rec["reserved"], "skipped": rec["skipped"], "failed": rec["failed"],
                "manual": rec["manual"][:10], "note": None}
+    if quiet_noop and not (rec["approved"] or rec["reserved"] or rec["failed"] or rec["manual"]):
+        rec["note"] = "변경 없음"
+        return   # 보완 실행에서 새로 한 일이 없으면 기록·알림 없이 끝 (last_run 도 16:45 것을 유지)
     _set_pf_auto_state(pf, auto_approve_last=summary)
     text = f"자동 승인 {now:%H:%M} — 실행일 {exec_day} 지정가 {rec['approved']}건 승인"
     if rec["reserved"]:

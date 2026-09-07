@@ -100,9 +100,9 @@ LINES = [
 def test_approval_requires_setting_and_limit_lines():
     c, h = _client()
     tomorrow = datetime.now(KST).date() + timedelta(days=1)
-    pid, _ = _setup_portfolio(c, h, tomorrow, LINES, gap_exact=97500.0)
+    pid, aid = _setup_portfolio(c, h, tomorrow, LINES, gap_exact=97500.0)
     # 기본: 둘 다 꺼짐 → 승인 거절
-    assert c.get("/settings/auto-exec", headers=h).json() == {"buy": False, "sell": False, "preopen_cancel": True}
+    assert c.get("/settings/auto-exec", headers=h).json()["default"] == {"buy": False, "sell": False, "preopen_cancel": True}
     body = {"date": tomorrow.isoformat(), "lines": [LINES[0]]}
     r = c.post(f"/portfolio/{pid}/orders/approve", json=body, headers=h)
     assert r.status_code == 409 and "무인 매수" in r.json()["detail"]
@@ -129,7 +129,7 @@ def test_execution_gap_cancel_limits_and_sync(monkeypatch):
 
     c, h = _client()
     today = datetime.now(KST).date()
-    pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=97500.0)
+    pid, aid = _setup_portfolio(c, h, today, LINES, gap_exact=97500.0)
     c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
     # 원장에 069500 10주 등록 — 09:01 사전 대조(원장 vs 계좌)를 통과하려면 계좌 보유와 같아야 한다
     c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 10, "price": 100000,
@@ -142,8 +142,8 @@ def test_execution_gap_cancel_limits_and_sync(monkeypatch):
     # ① 갭 발생 (시가 97,000 ≤ 기준 97,500): 그리드 매수 2건 생략, 익절 매도는 발주. 예수금 충분, 보유 10주
     fake = FakeKis(open_px=97000, deposit=2_000_000, holdings={"069500": 10})
     with SessionLocal() as s:
-        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
-    rec = out["portfolios"][0]
+        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake if cred.id == aid else FakeKis(open_px=0, deposit=0, holdings={}), sleep_fn=lambda _s: None)
+    rec = next(r for r in out["portfolios"] if r["portfolio_id"] == pid)   # 공유 DB 에 다른 포트의 승인 행이 있을 수 있다
     assert rec["skipped_gap"] == 2 and rec["submitted"] == 1 and rec["failed"] == 0
     assert fake.placed == [("069500", "sell", 2, 103000)]
     lst = c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()
@@ -153,7 +153,7 @@ def test_execution_gap_cancel_limits_and_sync(monkeypatch):
     assert lst["auto_exec"]["last_run"]["gap_hit"] is True and lst["auto_exec"]["last_run"]["open"] == 97000
     # 같은 날 재실행은 막힌다 (DB 마커)
     with SessionLocal() as s:
-        out2 = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 3), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
+        out2 = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 3), tzinfo=KST), client_factory=lambda cred: fake if cred.id == aid else FakeKis(open_px=0, deposit=0, holdings={}), sleep_fn=lambda _s: None)
     assert out2["portfolios"] == []   # approved 행이 남아 있지 않다
     # 장 마감 확정: 체결조회 3주 → 매도 2주 주문은 filled
     with SessionLocal() as s:
@@ -171,7 +171,7 @@ def test_execution_no_gap_cash_limit_and_fail_streak_pauses(monkeypatch):
 
     c, h = _client()
     today = datetime.now(KST).date()
-    pid, _ = _setup_portfolio(c, h, today, LINES, gap_exact=97500.0)
+    pid, aid = _setup_portfolio(c, h, today, LINES, gap_exact=97500.0)
     c.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h)
     monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
     c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": LINES[:3]}, headers=h)
@@ -179,21 +179,22 @@ def test_execution_no_gap_cash_limit_and_fail_streak_pauses(monkeypatch):
     # 매도(tp)는 보유 0주라 생략 (2차 검증 Fix B: 전부 생략 → 순차 발주)
     fake = FakeKis(open_px=100000, deposit=500_000, holdings={})
     with SessionLocal() as s:
-        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake, sleep_fn=lambda _s: None)
-    rec = out["portfolios"][0]
+        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: fake if cred.id == aid else FakeKis(open_px=0, deposit=0, holdings={}), sleep_fn=lambda _s: None)
+    rec = next(r for r in out["portfolios"] if r["portfolio_id"] == pid)   # 공유 DB 에 다른 포트의 승인 행이 있을 수 있다
     assert rec["submitted"] == 1 and rec["skipped"] == 2 and rec["skipped_gap"] == 0 and fake.placed == [("069500", "buy", 5, 99000)]
     msgs = {i["kind"]: i["message"] for i in c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]}
     assert "예수금 한도(폴백)" in msgs["grid2"] and "잔고 부족" in msgs["tp"]
 
     # 다음 날: 발주 2건 연속 실패 → 자동 정지, 이후 승인 거절, 다시 켜기로 해제
     c2, h2 = _client()
-    pid2, _ = _setup_portfolio(c2, h2, today, LINES, gap_exact=None, deposit_krw=9_000_000)
+    pid2, aid2 = _setup_portfolio(c2, h2, today, LINES, gap_exact=None, deposit_krw=9_000_000)
     c2.put("/settings/auto-exec", json={"buy": True, "sell": True}, headers=h2)
     c2.post(f"/portfolio/{pid2}/orders/approve", json={"date": today.isoformat(), "lines": LINES[:2]}, headers=h2)
     bad = FakeKis(open_px=100000, deposit=9_000_000, holdings={}, fail_orders=2)
     with SessionLocal() as s:
-        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST), client_factory=lambda cred: bad, sleep_fn=lambda _s: None)
-    assert out["portfolios"][0]["failed"] == 2
+        out = ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST),
+                                    client_factory=lambda cred: bad if cred.id == aid2 else FakeKis(open_px=0, deposit=0, holdings={}), sleep_fn=lambda _s: None)
+    assert next(r for r in out["portfolios"] if r["portfolio_id"] == pid2)["failed"] == 2
     view = c2.get(f"/portfolio/{pid2}/auto-exec", headers=h2).json()
     assert view["paused"] is True and "연속 실패" in view["paused_reason"]
     r = c2.post(f"/portfolio/{pid2}/orders/approve", json={"date": (today + timedelta(days=1)).isoformat(), "lines": [LINES[0]]}, headers=h2)
