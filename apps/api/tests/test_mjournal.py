@@ -600,3 +600,38 @@ def test_valuation_price_coverage_and_backfill(monkeypatch):
     # 평가 = 10×100,000 + 10×80,000(KIS 보충) + 10×30,000(이름 매칭) = 2,100,000
     assert s["eval_total"] == 2_100_000
     assert abs(s["unrealized_pct"] - 250_000 / 1_850_000) < 1e-9
+
+
+def test_return_series_resolves_code_by_name(monkeypatch):
+    """수익률 차트 코드 해석 (2026-09-07): 코드 미입력 종목도 이름 매칭으로 라인이 그려진다.
+
+    회귀 대상: 평가(도넛·카드)에는 뜨는 종목이 차트에서만 '코드 없음'으로 빠지던 화면 간 불일치.
+    """
+    from datetime import date as _date
+
+    import app.mjournal as mj
+    from app.db import SessionLocal
+    from app.services.ingest import get_or_create_instrument, upsert_daily_bars
+
+    mj._PRICE_CACHE.clear()
+    mj._CLOSE_MISS.clear()
+    with SessionLocal() as s:
+        inst = get_or_create_instrument(s, "005930", "삼성전자", "KOSPI", type_="STOCK")
+        upsert_daily_bars(s, inst.id, [{"trade_date": _date(2026, 9, d), "open": 80_000, "high": 80_000,
+                                        "low": 80_000, "close": 80_000 + d * 100, "volume": 1}
+                                       for d in (1, 2, 3, 4)], source="kis")
+        s.commit()
+    monkeypatch.setattr(mj, "_kis_for_bars", lambda session, j: None)  # DB 만으로 충분
+
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "이름만", "symbol": "삼성전자", "fee_rate": 0.0, "tax_rate": 0.0},
+                 headers=h).json()["id"]
+    # 코드 없이 종목명만 입력
+    c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 10, "price": 70_000,
+                                              "trade_date": "2026-09-01"}, headers=h)
+    rs = c.get(f"/mjournals/{jid}/return-series", headers=h).json()
+    sym = rs["symbols"].get("삼성전자")
+    assert sym and sym["code"] == "005930", "이름 매칭으로 코드가 붙어야 한다"
+    assert sym["segments"] and sym["segments"][0], "수익률 라인 구간이 그려져야 한다"
+    assert rs["priced"] is True
+    assert not any("시세를 붙일 수 없는" in n for n in rs["notes"])

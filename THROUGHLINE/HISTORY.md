@@ -497,3 +497,10 @@
 - 테스트 결과: api **234 passed / 2 failed** — 2건은 변경 전 코드(stash)로 재현 확인한 **사전 존재 실패**(`test_from_backtest_conversion_seeds_state`, `test_same_day_fill_does_not_change_order_sheet`). 신규 회귀 테스트 `test_valuation_price_coverage_and_backfill`(4종목: DB적재·KIS보충·이름매칭·불명 → priced 3/4, 분모=cost_priced, unpriced 노출) 통과. 기존 `test_journal_close_reopen_and_dashboard_assets` 는 이름 매칭 도입으로 '원가→평가' 값이 바뀌어 **불변식(합계 = 집계 대상 일지 값의 합)** 검증으로 갱신. web tsc 무오류.
 - 문서: feature-dashboard §5(평가 경로·커버리지 표기 의무)·§12(회귀 케이스), NOTES(시딩 6종 한계·기존 경로 재사용 교훈).
 - Git commit: fix: mjournal valuation price coverage and honest reporting
+
+## [2026-09-07] fix | 매매일지 수익률 차트에서 코드 미입력 종목 누락 — 평가와 같은 이름 매칭 적용 (사용자 보고)
+
+- 작업 내용: 사용자 보고("그래프에 안 나온다") 확인 — 도넛·평가 카드에는 삼성전자가 +21.2%로 뜨는데 수익률 차트만 "종목 코드가 없어 시세를 붙일 수 없는 종목: 삼성전자"로 제외. 원인은 직전 수정(#144)이 `enrich_valuation` 에만 이름 매칭을 넣고, **형제 경로인 `journal_return_series` 는 여전히 `e.code` 만으로 코드를 해석**하던 것 — 같은 도메인 규칙이 두 곳에 따로 구현돼 한쪽만 고쳐진 상태였다. 차트 경로도 `_codes_by_name` 을 공유하도록 연결하고, 그래도 못 찾는 종목의 안내 문구에 조치법("기록에서 종목코드를 입력하면 라인이 그려집니다")을 추가.
+- 테스트 결과: api **234 passed / 3 failed** — 3건 모두 사전 존재(2건은 변경 전 코드로 재현 확인, ws 1건은 라이브 Redis 공유 플레이크로 재실행 시 통과/실패가 번갈아 나옴 — NOTES 기록 항목). 신규 회귀 테스트 `test_return_series_resolves_code_by_name`(코드 없이 이름만 입력 → code 해석·구간 생성·priced=True·안내 없음) 통과. 매매일지 스위트 15/15 green.
+- 문서: feature-dashboard §12(차트 코드 해석 회귀 케이스), NOTES(두 경로의 규칙 중복 구현이 화면 간 불일치를 만든 사례).
+- Git commit: fix: resolve symbol codes by name in journal return-series too

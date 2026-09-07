@@ -886,12 +886,18 @@ def journal_return_series(jid: int, user_id: int = Depends(current_user_id),
     for e in entries:
         if e.code:
             code_of.setdefault(sym_of(e), e.code)
+    # 코드 미입력 행도 종목명으로 연결 — 평가(enrich_valuation)와 같은 규칙 (2026-09-07).
+    # 이게 없으면 도넛·평가 카드에는 뜨는 종목이 수익률 차트에서만 빠져 두 화면이 어긋난다.
+    nameless = {sym_of(e) for e in entries} - set(code_of)
+    if nameless:
+        code_of.update(_codes_by_name(session, nameless))
     today = kst_today()
     start = entries[0].trade_date - timedelta(days=10)
     closes, notes = _ensure_daily_bars(session, j, {c: s for s, c in code_of.items()}, start, today)
     no_code = sorted({sym_of(e) for e in entries} - set(code_of))
     if no_code:
-        notes.append("종목 코드가 없어 시세를 붙일 수 없는 종목: " + ", ".join(no_code))
+        notes.append("종목 코드를 찾지 못해 시세를 붙일 수 없는 종목: " + ", ".join(no_code)
+                     + " — 기록에서 종목코드를 입력하면 수익률 라인이 그려집니다")
     live = _broker_price_map(session, j)
 
     symbols: dict[str, dict] = {}
