@@ -34,6 +34,8 @@ type Detail = JournalMeta & {
   fee_rate: number; tax_rate: number; rows: Row[]; symbols: string[];
   summary: { realized: number; sell_amount: number; buy_amount: number; cost: number; return_pct: number | null;
     eval_total?: number; unrealized_total?: number; unrealized_pct?: number | null; total_pnl?: number; priced?: boolean; priced_count?: number;
+    holdings_count?: number; cost_total?: number; cost_priced?: number;   // 평가 커버리지 (2026-09-07)
+    unpriced?: { symbol: string; code: string | null; cost: number }[]; price_notes?: string[];
     // 계좌 평가금액 (2026-09-06) — 일지가 계좌 주식을 전부 담고 있을 때만 account_total 이 채워진다
     account_deposit?: number | null; account_covered?: boolean; account_total?: number | null };
   holdings: Holding[];
@@ -607,12 +609,17 @@ function MJournalPage() {
                 : <span className="text-faint">—</span>}
               tone={(detail.summary.unrealized_total ?? 0) > 0 ? "up" : (detail.summary.unrealized_total ?? 0) < 0 ? "down" : "default"}
               tip={detail.summary.priced_count
-                ? "(현재가 − 평균단가) × 보유 수량. 현재가는 연결 계좌 잔고(장중 시세) 또는 일봉 종가. %는 보유 원가 대비"
-                : "보유 종목의 현재가를 알 수 없습니다 — 증권사 계좌를 연결하면 잔고의 현재가로 평가합니다"}
+                ? `(현재가 − 평균단가) × 보유 수량. 현재가는 연결 계좌 잔고(장중 시세) 또는 일봉 종가. %는 시세가 있는 종목의 원가 대비입니다${
+                    detail.summary.priced ? "" : ` — 시세를 못 구한 ${(detail.summary.unpriced ?? []).map((u) => u.symbol).join(", ")}는 이 손익·수익률에 포함되지 않습니다`}`
+                : "보유 종목의 현재가를 알 수 없습니다 — 증권사 계좌를 연결하거나 종목코드를 입력하면 평가됩니다"}
               sub={detail.summary.priced_count
-                ? <>보유 원가 <b className="text-ink">{fm(detail.holdings.reduce((a, h) => a + h.cost, 0))}</b> → 평가 <b className="text-ink">{fm(detail.summary.eval_total ?? 0)}</b>
-                    {!detail.summary.priced && <span className="text-faint"> · 시세 없는 종목 {detail.holdings.length - (detail.summary.priced_count ?? 0)}개는 원가</span>}</>
-                : <>보유 원가 <b className="text-ink">{fm(detail.holdings.reduce((a, h) => a + h.cost, 0))}</b> · 시세 미연동</>} />
+                ? <>{/* 분모는 '시세 있는 종목의 원가' — 전체 원가와 나란히 두면 수익률과 어긋나 보인다 (2026-09-07) */}
+                    보유 원가 <b className="text-ink">{fm(detail.summary.cost_priced ?? 0)}</b> → 평가 <b className="text-ink">{fm(detail.summary.eval_total ?? 0)}</b>
+                    {!detail.summary.priced && (
+                      <span className="text-down"> · {detail.summary.holdings_count}종목 중 {detail.summary.priced_count}종목 기준
+                        (제외: {(detail.summary.unpriced ?? []).map((u) => u.symbol).join(", ")} · 원가 {fm((detail.summary.cost_total ?? 0) - (detail.summary.cost_priced ?? 0))})</span>
+                    )}</>
+                : <>보유 원가 <b className="text-ink">{fm(detail.summary.cost_total ?? 0)}</b> · 시세 미연동</>} />
             <Stat label="실현손익" className="h-full"
               value={<>{fm(detail.summary.realized)}{detail.summary.return_pct != null &&
                 <span className="whitespace-nowrap text-[14px] font-semibold text-muted"> ({pct(detail.summary.return_pct)})</span>}</>}

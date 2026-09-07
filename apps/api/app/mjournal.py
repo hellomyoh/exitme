@@ -571,6 +571,8 @@ def import_journal_holdings(jid: int, body: ImportHoldingsIn, user_id: int = Dep
 # ③ 없으면 None(취득원가로만 표시). 잔고 조회는 자격별 120초 캐시 — 화면·대시보드·배치가 KIS 를 반복 호출하지 않게.
 _PRICE_CACHE: dict[int, tuple[float, dict]] = {}
 PRICE_TTL_SEC = 120.0
+_CLOSE_MISS: dict[str, float] = {}   # code → 마지막 종가 조회 실패 시각 (KIS 재시도 억제)
+CLOSE_MISS_TTL_SEC = 600
 
 
 def _broker_price_map(session: Session, j: ManualJournal) -> dict:
@@ -623,16 +625,88 @@ def _close_price_map(session: Session, codes: set[str]) -> dict[str, int]:
     return out
 
 
+def _codes_by_name(session: Session, symbols: set[str]) -> dict[str, str]:
+    """코드 없이 종목명만 입력한 행 구제 (2026-09-07) — instruments 이름 정규화 매칭.
+
+    수기 입력자는 코드를 잘 넣지 않는데, 코드가 없으면 종가 조회 자체를 시도하지 못해
+    평가에서 조용히 빠졌다(보유수익률 분모 누락). 이름이 유일하게 일치할 때만 연결한다.
+    """
+    from app.models import Instrument
+
+    if not symbols:
+        return {}
+    want = {_norm(x): x for x in symbols}
+    out: dict[str, str] = {}
+    seen: dict[str, int] = {}
+    for inst in session.scalars(select(Instrument)).all():
+        key = _norm(inst.name)
+        if key in want:
+            seen[key] = seen.get(key, 0) + 1
+            out[want[key]] = inst.code
+    for key, n in seen.items():
+        if n > 1:
+            out.pop(want[key], None)  # 동명이 둘 이상이면 오연결 위험 — 연결하지 않는다
+    return out
+
+
+def _backfill_closes(session: Session, j: ManualJournal, codes: dict[str, str],
+                     have: dict[str, int]) -> tuple[dict[str, int], list[str]]:
+    """DB 에 종가가 없는 코드를 KIS 일봉으로 보충하고 instruments 에 등록 (2026-09-07 지시 ①).
+
+    시딩된 전략 ETF(6종) 밖의 종목은 종가가 없어 평가에서 빠졌다. 수익률 차트가 쓰던
+    `_ensure_daily_bars` 와 같은 경로를 평가에도 연결한다 — 적재되므로 다음 조회는 DB 히트.
+    실패 코드는 TTL 동안 재시도하지 않는다(대시보드가 매 열람마다 KIS 를 두드리지 않도록).
+    """
+    import time
+
+    missing = {c: n for c, n in codes.items() if c not in have and len(c) == 6 and c.isalnum()}
+    now = time.monotonic()
+    missing = {c: n for c, n in missing.items() if now - _CLOSE_MISS.get(c, 0.0) > CLOSE_MISS_TTL_SEC}
+    if not missing:
+        return {}, []
+    from app.dashboard import kst_today
+
+    end = kst_today()
+    try:
+        series, notes = _ensure_daily_bars(session, j, missing, end - timedelta(days=20), end)
+    except Exception as exc:  # noqa: BLE001 — 시세는 보조 정보, 실패해도 일지는 떠야 한다
+        logger.warning("journal valuation backfill failed: %s", exc)
+        for c in missing:
+            _CLOSE_MISS[c] = now
+        return {}, []
+    got: dict[str, int] = {}
+    for code, by_date in series.items():
+        if by_date:
+            got[code] = by_date[max(by_date)]
+        else:
+            _CLOSE_MISS[code] = now
+    return got, notes
+
+
 def enrich_valuation(session: Session, j: ManualJournal, entries: list[ManualJournalEntry], computed: dict) -> dict:
     """holdings 에 code·price·price_source·eval·unrealized·unrealized_pct, summary 에
-    eval_total·unrealized_total·unrealized_pct(가격 있는 종목 원가 대비)·total_pnl(실현+평가)·priced·priced_count."""
+    eval_total·unrealized_total·unrealized_pct(가격 있는 종목 원가 대비)·total_pnl(실현+평가)·priced·priced_count.
+
+    가격 경로(2026-09-07 확대): 증권사 잔고 → DB 종가 → **KIS 일봉 보충(신규 종목 자동 등록)**.
+    끝내 못 구한 종목은 summary.unpriced 로 드러낸다 — 조용한 제외 금지 (지시 ③).
+    """
     code_of: dict[str, str] = {}
     for e in entries:
         if e.code:
             code_of.setdefault((e.symbol or j.symbol).strip(), e.code)
     broker = _broker_price_map(session, j) if computed["holdings"] else {}
+    # 코드 미입력 행 — 이름으로 instruments 매칭 시도 (2026-09-07)
+    nameless = {h["symbol"] for h in computed["holdings"] if h["symbol"] not in code_of}
+    if nameless:
+        code_of.update(_codes_by_name(session, nameless))
     need = {code_of[s] for s in code_of if code_of[s] not in broker}
     closes = _close_price_map(session, need) if need else {}
+    # DB 에 없는 종목은 KIS 일봉으로 보충 (2026-09-07)
+    backfill_notes: list[str] = []
+    if need and computed["holdings"]:
+        names = {code_of[s]: s for s in code_of}
+        extra, backfill_notes = _backfill_closes(session, j, {c: names.get(c, c) for c in need}, closes)
+        closes.update(extra)
     eval_total = unreal_total = cost_priced = 0
     for h in computed["holdings"]:
         code = code_of.get(h["symbol"])
@@ -661,6 +735,13 @@ def enrich_valuation(session: Session, j: ManualJournal, entries: list[ManualJou
     s["total_pnl"] = s["realized"] + unreal_total
     s["priced"] = bool(computed["holdings"]) and priced_count == len(computed["holdings"])
     s["priced_count"] = priced_count
+    # 커버리지 명시 (2026-09-07 지시 ③) — 수익률이 어느 범위의 값인지 화면이 말할 수 있게
+    s["holdings_count"] = len(computed["holdings"])
+    s["cost_total"] = sum(h["cost"] for h in computed["holdings"])
+    s["cost_priced"] = cost_priced
+    s["unpriced"] = [{"symbol": h["symbol"], "code": h.get("code"), "cost": h["cost"]}
+                     for h in computed["holdings"] if h["price"] is None]
+    s["price_notes"] = backfill_notes
     # 계좌 평가금액 (2026-09-06 지시) — 이 일지가 계좌의 주식을 '전부' 담고 있을 때만 의미가 있다.
     # 일지 ≠ 계좌인데 예수금을 더하면 계좌 총액도 일지 총액도 아닌 값이 되고, 한 계좌를 여러 일지에
     # 연결하면 중복된다. 그래서 커버리지(계좌 보유 = 일지 보유, 수량 일치)를 확인해 표시 여부를 정하고,
