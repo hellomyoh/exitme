@@ -530,3 +530,10 @@
 - Git commit: change: auto-approve on by default with run-now and 08:40 catch-up; auto-exec switches per broker account, checked before approval and placement
 - 특이사항: 배포 직후 기존 사용자 설정값이 계좌에 복사되므로 동작은 바뀌지 않지만, 자동 승인 기본 켬 때문에 **무인 매수 허용이 켜진 계좌에 연결된 국내 포트는 다음 16:45(또는 08:40)부터 승인 없이 발주**된다 — 원치 않는 포트는 '완전 무인 운영 › 설정'에서 끈다. 내일 아침 발주를 원하면 배포 후 포트 패널의 '지금 승인 실행'(또는 설정 저장)으로 오늘 밤 승인해 둔다.
 
+## [2026-09-07] ui | 설정 › 무인 실행 — 옵션 설명은 상단 한 번, 계좌는 한 줄씩 스위치 표
+
+- 지시: "이 설정에서 매번 같은 내용을 반복 출력할 필요 없습니다. 상단에만 어떤 옵션인지 설명하고 아래 줄에 계좌 한 줄씩 설정."
+- 작업 내용: `settings/page.tsx` `AutoExecSettings` — 옵션 3종(무인 매수·무인 매도·사전 갭 취소) 설명 카드를 상단에 한 번만, 그 아래 계좌 표(계좌·연결 포트·스위치 3열, 허용/꺼짐 배지). 계좌 2개 이상이면 일괄 적용 줄, 하단에 통제 규칙 한 단락. 동작·API 변경 없음.
+- 테스트 결과: `tsc --noEmit` 통과. Playwright: 계좌 2행·스위치 6개·설명 블록 3개 렌더, 콘솔 오류 없음. API 테스트 변경 없음(직전 245 passed).
+- Git commit: ui: compact per-account auto-exec settings — describe options once, one row per account
+
