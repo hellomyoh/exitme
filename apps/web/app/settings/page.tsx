@@ -458,14 +458,14 @@ export default function SettingsPage() {
 }
 
 /** 무인 실행 허용 — **증권사 계좌별** (2026-09-07 지시). 포트에 연결된 계좌의 스위치가 승인·자동 승인·09:01 실행의 판정 기준이다.
- *  '기본값'은 새로 등록하는 계좌에 적용되고, 일괄 적용 버튼으로 모든 계좌에 한 번에 넣을 수 있다. */
+ *  옵션 설명은 상단에 한 번만, 계좌는 한 줄씩 스위치만 (2026-09-07 지시 "매번 같은 내용을 반복 출력할 필요 없음"). */
 type AE = { buy: boolean; sell: boolean; preopen_cancel: boolean };
 type AEAccount = { id: number; label: string; account_no: string; acnt_prdt_cd: string; env: string; linked_portfolios: string[]; auto_exec: AE };
 type AEView = { default: AE; accounts: AEAccount[] };
-const AE_ROWS: { k: keyof AE; label: string; desc: string }[] = [
-  { k: "buy", label: "무인 매수 허용", desc: "그리드 매수 등 매수 지정가 줄. 켜면 이 계좌에 연결된 국내 포트의 주문표가 매일 자동 승인되어(포트별로 끌 수 있음) 09:01 시가 확인 후 발주됩니다. 갭 취소 기준 이하 출발이면 그리드 매수는 내지 않고, 줄마다 매수가능조회로 수량을 확인합니다." },
-  { k: "sell", label: "무인 매도 허용", desc: "익절·축소 등 매도 지정가 줄. 꺼져 있으면 매수만 자동 발주되고 매도 줄은 '수동 필요'로 남습니다. 계좌 보유 수량을 넘는 매도는 내지 않고, 매도는 매수보다 먼저 냅니다." },
-  { k: "preopen_cancel", label: "장 시작 전 갭 취소 (취소만)", desc: "08:57 에 200 ETF 예상체결가가 갭 취소 기준(전일 종가 − 1.5×ATR) 이하면 이 계좌의 그리드 매수 미체결(앱 예약주문·HTS 직접 주문)을 취소합니다. 발주는 하지 않습니다." },
+const AE_ROWS: { k: keyof AE; label: string; short: string; desc: string }[] = [
+  { k: "buy", label: "무인 매수 허용", short: "무인 매수", desc: "그리드 매수 등 매수 지정가 줄. 켜면 이 계좌에 연결된 국내 포트의 주문표가 매일 자동 승인되어(포트별로 끌 수 있음) 09:01 시가 확인 후 발주됩니다. 갭 취소 기준 이하 출발이면 그리드 매수는 내지 않고, 줄마다 매수가능조회로 수량을 확인합니다." },
+  { k: "sell", label: "무인 매도 허용", short: "무인 매도", desc: "익절·축소 등 매도 지정가 줄. 꺼져 있으면 매수만 자동 발주되고 매도 줄은 '수동 필요'로 남습니다. 계좌 보유 수량을 넘는 매도는 내지 않고, 매도는 매수보다 먼저 냅니다." },
+  { k: "preopen_cancel", label: "장 시작 전 갭 취소 (취소만)", short: "사전 갭 취소", desc: "08:57 에 200 ETF 예상체결가가 갭 취소 기준(전일 종가 − 1.5×ATR) 이하면 이 계좌의 그리드 매수 미체결(앱 예약주문·HTS 직접 주문)을 취소합니다. 발주는 하지 않습니다." },
 ];
 const AE_CONFIRM = "무인 실행을 켭니다.\n\n· 이 계좌에 연결된 국내 포트의 주문표를 매일 16:45(보완 08:40)에 자동 승인해 실행일 09:01 에 발주합니다 — 표에서 따로 체크하지 않아도 됩니다(포트별 '완전 무인 운영'에서 끌 수 있음).\n· 09:01 에 시가를 확인해 갭 취소 기준 이하면 그리드 매수를 생략하고, 그 외 지정가 줄을 정규 주문으로 냅니다. 시장가 줄은 예약주문으로 자동 접수됩니다.\n· 승인 전과 발주 직전에 이 계좌의 허용 스위치를 다시 검사합니다. 매수가능조회·잔고 한도를 넘는 줄은 내지 않고, 발주 2회 연속 실패·대조 불일치·하루 매수 상한 초과 시 해당 포트는 자동 정지됩니다.\n\n계속할까요?";
 
@@ -496,58 +496,80 @@ function AutoExecSettings() {
     if (r.ok) { setV((await r.json()) as AEView); setMsg("모든 계좌에 적용했습니다"); }
     else setMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `저장 실패 (${r.status})`);
   }
-  const Toggle = ({ on, onChange, label, desc }: { on: boolean; onChange: (val: boolean) => void; label: string; desc: string }) => (
-    <label className="flex items-start gap-3 rounded-xl border border-line bg-inset p-4">
-      <input type="checkbox" className="mt-1 h-4 w-4 accent-[#c2410c]" checked={on} disabled={busy || !v} onChange={(e) => onChange(e.target.checked)} />
-      <span className="grid gap-0.5">
-        <span className="text-[15px] font-semibold text-ink">{label} <span className={`ml-1 rounded-md px-2 py-0.5 text-[12px] ${on ? "bg-accent-dim text-accent" : "bg-raised text-faint"}`}>{on ? "허용" : "꺼짐"}</span></span>
-        <span className="text-[13px] leading-relaxed text-muted">{desc}</span>
-      </span>
-    </label>
-  );
   return (
-    <>
-      <Card className="mb-4">
-        <CardTitle>무인 매수 · 매도 허용 — 계좌별 <span className="normal-case text-faint">· 포트에 연결된 계좌의 스위치로 승인·자동 승인·09:01 발주를 판정합니다 · 매수·매도는 기본 꺼짐, 사전 갭 취소는 기본 켜짐</span></CardTitle>
-        {v && v.accounts.length === 0 && (
-          <p className="text-[13.5px] text-muted">등록된 증권사 계좌가 없습니다 — <b className="text-ink">증권사 계좌</b> 탭에서 먼저 등록하면 여기에 계좌별 스위치가 나타납니다.</p>
-        )}
-        <div className="grid gap-4">
-          {(v?.accounts ?? []).map((a) => (
-            <div key={a.id} className="rounded-xl border border-line p-3.5">
-              <div className="mb-2 flex flex-wrap items-center gap-2 text-[13.5px]">
-                <span className="font-bold text-ink">{a.label}</span>
-                <span className="text-faint">{a.account_no}-{a.acnt_prdt_cd}</span>
-                {a.env === "vps" && <span className="rounded-md bg-raised px-2 py-0.5 text-[12px] text-muted">모의</span>}
-                <span className="text-faint">· 연결 포트: {a.linked_portfolios.length ? a.linked_portfolios.join(", ") : <span className="text-warn">없음 — 실전매매 '증권사 연동'에서 연결하세요</span>}</span>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-3">
-                {AE_ROWS.map((row) => (
-                  <Toggle key={row.k} on={!!a.auto_exec[row.k]} onChange={(val) => void saveAccount(a, row.k, val)} label={row.label} desc={row.desc} />
-                ))}
-              </div>
-            </div>
+    <Card className="mb-4">
+      <CardTitle>무인 매수 · 매도 허용 — 계좌별 <span className="normal-case text-faint">· 포트에 연결된 계좌의 스위치로 승인·자동 승인·09:01 발주를 판정합니다</span></CardTitle>
+      {/* 옵션 설명 — 한 번만 */}
+      <div className="mb-4 grid gap-2 text-[13px] sm:grid-cols-3">
+        {AE_ROWS.map((row) => (
+          <div key={row.k} className="rounded-lg border border-line bg-inset px-3 py-2">
+            <div className="font-semibold text-ink">{row.label} <span className="text-[11.5px] font-normal text-faint">{row.k === "preopen_cancel" ? "기본 켜짐" : "기본 꺼짐"}</span></div>
+            <div className="mt-0.5 leading-relaxed text-muted">{row.desc}</div>
+          </div>
+        ))}
+      </div>
+      {/* 계좌 표 — 한 줄에 스위치 3개 */}
+      {v && v.accounts.length === 0 && (
+        <p className="text-[13.5px] text-muted">등록된 증권사 계좌가 없습니다 — <b className="text-ink">증권사 계좌</b> 탭에서 먼저 등록하면 여기에 계좌별 스위치가 나타납니다.</p>
+      )}
+      {v && v.accounts.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full whitespace-nowrap text-[13.5px]">
+            <thead>
+              <tr className="border-b border-line text-left text-[12px] text-faint">
+                <th className="pb-2 pr-3 font-medium">계좌</th>
+                <th className="pb-2 pr-3 font-medium">연결 포트</th>
+                {AE_ROWS.map((row) => <th key={row.k} className="pb-2 px-3 text-center font-medium">{row.short}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {v.accounts.map((a) => (
+                <tr key={a.id} className="border-b border-line/50 last:border-0">
+                  <td className="py-2.5 pr-3">
+                    <span className="font-semibold text-ink">{a.label}</span>
+                    <span className="ml-2 text-[12.5px] text-faint">{a.account_no}-{a.acnt_prdt_cd}</span>
+                    {a.env === "vps" && <span className="ml-1.5 rounded-md bg-raised px-1.5 py-0.5 text-[11.5px] text-muted">모의</span>}
+                  </td>
+                  <td className="py-2.5 pr-3 text-[13px]">
+                    {a.linked_portfolios.length ? <span className="text-muted">{a.linked_portfolios.join(", ")}</span> : <span className="text-faint">없음</span>}
+                  </td>
+                  {AE_ROWS.map((row) => {
+                    const on = !!a.auto_exec[row.k];
+                    return (
+                      <td key={row.k} className="px-3 py-2.5 text-center">
+                        <label className="inline-flex cursor-pointer items-center gap-1.5">
+                          <input type="checkbox" className="h-4 w-4 accent-[#c2410c]" checked={on} disabled={busy}
+                            onChange={(e) => void saveAccount(a, row.k, e.target.checked)} />
+                          <span className={`rounded-md px-1.5 py-0.5 text-[11.5px] font-semibold ${on ? "bg-accent-dim text-accent" : "bg-raised text-faint"}`}>{on ? "허용" : "꺼짐"}</span>
+                        </label>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {v && v.accounts.length > 1 && (
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-muted">
+          <span className="font-semibold text-ink">일괄 적용</span>
+          {AE_ROWS.map((row) => (
+            <span key={row.k} className="inline-flex items-center gap-1">
+              <span>{row.short}</span>
+              <button className="btn !px-2 !py-0.5 text-[12px]" disabled={busy} onClick={() => void saveAll(row.k, true)}>모두 켬</button>
+              <button className="btn !px-2 !py-0.5 text-[12px]" disabled={busy} onClick={() => void saveAll(row.k, false)}>모두 끔</button>
+            </span>
           ))}
         </div>
-        {v && v.accounts.length > 1 && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px] text-muted">
-            <span className="font-semibold text-ink">일괄 적용</span>
-            {AE_ROWS.map((row) => (
-              <span key={row.k} className="inline-flex items-center gap-1">
-                <span>{row.label}</span>
-                <button className="btn !px-2 !py-0.5 text-[12px]" disabled={busy} onClick={() => void saveAll(row.k, true)}>모두 켬</button>
-                <button className="btn !px-2 !py-0.5 text-[12px]" disabled={busy} onClick={() => void saveAll(row.k, false)}>모두 끔</button>
-              </span>
-            ))}
-          </div>
-        )}
-        <div className="mt-3 rounded-lg border border-line bg-surface px-3.5 py-2.5 text-[13px] leading-relaxed text-muted">
-          <b className="text-ink">통제 규칙</b> — 승인은 완전 무인(기본 켜짐)이 16:45·08:40 에 자동으로 하거나 사용자가 표에서 직접 하며, 두 경우 모두 그 포트 계좌의 허용 스위치를 먼저 검사합니다. 지정가만(시장가 줄은 예약주문으로), 서버에 저장된 그날의 계획과 줄이 정확히 일치해야 발주,
-          09:01 발주 직전에 스위치를 다시 검사, 하루 1회 실행·재시도 없음, 발주 2회 연속 실패·대조 불일치·하루 매수 상한 초과 시 그 포트의 무인 실행 자동 정지(주문표 배너에서 다시 켜기). 모든 발주·생략·실패는 주문표 표와 매매 로그에 기록됩니다.
-          {msg && <span className="ml-2 text-ink">{msg}</span>}
-        </div>
-      </Card>
-    </>
+      )}
+      <p className="mt-3 text-[12.5px] leading-relaxed text-faint">
+        연결 포트가 없는 계좌의 스위치는 켜 두어도 동작하지 않습니다 — 실전매매 &apos;증권사 연동&apos;에서 계좌를 포트에 연결하세요.
+        승인은 완전 무인(기본 켜짐)이 16:45·08:40 에 자동으로 하거나 표에서 직접 하며, 두 경우 모두 그 포트 계좌의 스위치를 먼저 검사하고 09:01 발주 직전에 다시 검사합니다.
+        발주 2회 연속 실패·대조 불일치·하루 매수 상한 초과 시 그 포트의 무인 실행은 자동 정지됩니다(주문표 배너에서 다시 켜기). 모든 발주·생략·실패는 주문표와 매매 로그에 기록됩니다.
+        {msg && <span className="ml-2 text-ink">{msg}</span>}
+      </p>
+    </Card>
   );
 }
 
