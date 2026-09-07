@@ -36,8 +36,11 @@ type Detail = JournalMeta & {
     eval_total?: number; unrealized_total?: number; unrealized_pct?: number | null; total_pnl?: number; priced?: boolean; priced_count?: number;
     holdings_count?: number; cost_total?: number; cost_priced?: number;   // 평가 커버리지 (2026-09-07)
     unpriced?: { symbol: string; code: string | null; cost: number }[]; price_notes?: string[];
-    // 계좌 평가금액 (2026-09-06) — 일지가 계좌 주식을 전부 담고 있을 때만 account_total 이 채워진다
-    account_deposit?: number | null; account_covered?: boolean; account_total?: number | null };
+    // 총 자본금 (2026-09-07) — 연동 O: 계좌 잔고 기준(주식+예수금) / 연동 X: 일지 등록 보유 기준
+    account_deposit?: number | null; account_covered?: boolean; account_total?: number | null;
+    capital_basis?: "account" | "journal"; capital_total?: number | null; capital_stock?: number | null;
+    capital_deposit?: number | null; capital_return_pct?: number | null;
+    account_mismatch?: { symbol: string; code: string | null; account_qty: number; journal_qty: number }[] };
   holdings: Holding[];
   series: Record<string, { date: string; value: number }[]>;   // 종목별 누적 실현손익 (이 일지만)
   linked_account: { id: number; label: string; account_no: string; env: string } | null;   // 연결 계좌 (0018)
@@ -589,16 +592,31 @@ function MJournalPage() {
           {/* 카드 순서·크기 (2026-09-06 지시): 계좌 평가금액이 맨 앞, 다음 총 손익, 그 아래 평가손익·실현손익.
               auto-rows-fr + h-full 로 네 카드를 같은 크기로 — 보조 줄 수가 달라도 높이가 어긋나지 않게 */}
           <div className="grid auto-rows-fr gap-3 sm:grid-cols-2 lg:col-span-2">
-            {/* 계좌 평가금액 (2026-09-06 지시) — 주식 평가액 + 예수금. 일지가 계좌 주식을 전부 담고 있을 때만 표시 */}
-            {detail.summary.account_total != null && (
-              <Stat hero label="계좌 평가금액" className="h-full"
-                value={fm(detail.summary.account_total)}
-                tip="연결 계좌의 주식 평가액과 예수금을 더한 금액입니다. 이 일지가 계좌의 주식을 전부 담고 있을 때만 표시됩니다. 예수금은 D+2 정산 기준이라 매도 직후 인출 가능액과 다를 수 있고, 대시보드 총자산에는 주식 평가액만 반영됩니다."
-                sub={<>주식 <b className="text-ink">{fm(detail.summary.eval_total ?? 0)}</b> + 예수금 <b className="text-ink">{fm(detail.summary.account_deposit ?? 0)}</b></>}
-                hint="연결 계좌 잔고 기준 · 총자산에는 주식 평가액만 반영" />
-            )}
-            {/* 계좌 평가금액 카드가 없으면 총 손익이 첫 줄을 통째로 채운다 */}
-            <Stat label="총 손익 (실현 + 평가)" className={detail.summary.account_total == null ? "h-full sm:col-span-2" : "h-full"}
+            {/* 총 자본금 (2026-09-07 지시) — 계좌 연동 여부와 무관하게 항상 표시.
+                연동 O: 계좌 잔고 기준(주식+예수금) / 연동 X: 일지 등록 보유 기준(수량×현재가). */}
+            {(() => {
+              const su = detail.summary;
+              const isAcct = su.capital_basis === "account";
+              const mism = su.account_mismatch ?? [];
+              return (
+                <Stat hero label={isAcct ? "총 자본금 (계좌 기준)" : "총 자본금 (일지 기준)"} className="h-full"
+                  value={su.capital_total != null ? <>{fm(su.capital_total)}{su.capital_return_pct != null &&
+                      <span className="whitespace-nowrap text-[14px] font-semibold text-muted"> ({pct(su.capital_return_pct)})</span>}</>
+                    : <span className="text-faint">—</span>}
+                  tip={isAcct
+                    ? "연결 계좌 잔고의 주식 평가액과 예수금을 더한 금액입니다. 계좌 전체가 기준이라 이 일지에 없는 종목도 포함될 수 있고, 그 경우 수익률은 범위가 달라 표시하지 않습니다. 예수금은 D+2 정산 기준이라 매도 직후 인출 가능액과 다를 수 있습니다."
+                    : "이 일지에 등록된 보유 수량 × 현재가의 합입니다. 증권사 계좌를 연결하면 예수금을 포함한 계좌 기준으로 바뀝니다. 대시보드 총자산에는 주식 평가액만 반영됩니다."}
+                  sub={isAcct
+                    ? <>주식 <b className="text-ink">{fm(su.capital_stock ?? 0)}</b> + 예수금 <b className="text-ink">{fm(su.capital_deposit ?? 0)}</b></>
+                    : <>보유 <b className="text-ink">{detail.holdings.length}종목</b> · 원가 <b className="text-ink">{fm(su.cost_priced ?? 0)}</b></>}
+                  hint={isAcct
+                    ? (su.account_covered
+                        ? "연결 계좌 잔고 기준 · 일지가 계좌 주식을 전부 담고 있어 수익률 범위가 일치합니다"
+                        : `연결 계좌 잔고 기준 · 일지와 잔고가 달라 수익률 미표시 (${mism.slice(0, 3).map((m) => `${m.symbol} 일지 ${m.journal_qty}주/잔고 ${m.account_qty}주`).join(", ")}${mism.length > 3 ? " 외" : ""})`)
+                    : "일지 등록 보유 기준 · 예수금 미포함 — 증권사 계좌를 연결하면 계좌 기준으로 전환됩니다"} />
+              );
+            })()}
+            <Stat label="총 손익 (실현 + 평가)" className="h-full"
               value={fm(detail.summary.total_pnl ?? detail.summary.realized)}
               tone={(detail.summary.total_pnl ?? detail.summary.realized) > 0 ? "up" : (detail.summary.total_pnl ?? detail.summary.realized) < 0 ? "down" : "default"}
               sub={<>매수 금액 <b className="text-ink">{fm(detail.summary.buy_amount)}</b> · 매도 금액 <b className="text-ink">{fm(detail.summary.sell_amount)}</b></>} />

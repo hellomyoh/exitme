@@ -742,13 +742,21 @@ def enrich_valuation(session: Session, j: ManualJournal, entries: list[ManualJou
     s["unpriced"] = [{"symbol": h["symbol"], "code": h.get("code"), "cost": h["cost"]}
                      for h in computed["holdings"] if h["price"] is None]
     s["price_notes"] = backfill_notes
-    # 계좌 평가금액 (2026-09-06 지시) — 이 일지가 계좌의 주식을 '전부' 담고 있을 때만 의미가 있다.
-    # 일지 ≠ 계좌인데 예수금을 더하면 계좌 총액도 일지 총액도 아닌 값이 되고, 한 계좌를 여러 일지에
-    # 연결하면 중복된다. 그래서 커버리지(계좌 보유 = 일지 보유, 수량 일치)를 확인해 표시 여부를 정하고,
-    # 대시보드 총자산에는 넣지 않는다(일지 화면 참고 값).
+    # ── 총 자본금 (2026-09-07 지시) — "이 일지가 대표하는 총 자본금". 기준이 둘로 갈린다.
+    #
+    #   연동 O → **계좌 기준**: 계좌 잔고만으로 총액을 만든다 (계좌 주식 평가액 + 예수금).
+    #            일지 평가액을 끌어다 쓰지 않으므로 단위가 섞이지 않고, 커버리지와 무관하게 늘 정합.
+    #   연동 X → **일지 기준**: 등록된 보유 수량 × 현재가 (예수금 개념 없음).
+    #
+    #   종전(2026-09-06)에는 "계좌 보유 = 일지 보유" 커버리지를 통과할 때만 카드를 띄웠는데,
+    #   그 검사는 원래 '일지 평가액에 계좌 예수금을 더해도 되는가'를 판정하려던 장치였다.
+    #   기준을 하나로 통일하면 섞일 일이 없어져 카드 표시 여부를 좌우할 이유가 사라진다 —
+    #   커버리지는 이제 '수익률을 계좌 총액에 붙여도 되는 범위인가'만 알리는 배지로 남는다.
+    #   대시보드 총자산에는 종전과 같이 주식 평가액만 반영한다(일지 화면 참고 값).
     acct = broker.get("__account__") if broker else None
     s["account_deposit"] = acct["deposit"] if acct else None
     covered = False
+    mismatch: list[dict] = []
     if acct is not None:
         jr = {h["symbol"]: h for h in computed["holdings"]}
         seen: set[str] = set()
@@ -759,14 +767,39 @@ def enrich_valuation(session: Session, j: ManualJournal, entries: list[ManualJou
                 if (h.get("code") and h["code"] == r["code"]) or _norm(h["symbol"]) == _norm(r["name"]):
                     sym = h["symbol"]
                     break
-            if sym is None or jr[sym]["qty"] != r["qty"]:
+            if sym is None:
                 covered = False
-                break
+                mismatch.append({"symbol": r["name"], "code": r.get("code"),
+                                 "account_qty": r["qty"], "journal_qty": 0})
+                continue
+            if jr[sym]["qty"] != r["qty"]:
+                covered = False
+                mismatch.append({"symbol": sym, "code": r.get("code"),
+                                 "account_qty": r["qty"], "journal_qty": jr[sym]["qty"]})
             seen.add(sym)
-        if covered and seen != set(jr):
-            covered = False  # 계좌에 없는 종목이 일지에 있다 (수동 기록·다른 계좌 종목)
+        for sym in set(jr) - seen:   # 계좌에 없는데 일지에만 있는 종목 (수동 기록·타 계좌)
+            covered = False
+            mismatch.append({"symbol": sym, "code": jr[sym].get("code"),
+                             "account_qty": 0, "journal_qty": jr[sym]["qty"]})
     s["account_covered"] = covered
-    s["account_total"] = (eval_total + (acct["deposit"] or 0)) if (covered and acct) else None
+    s["account_mismatch"] = mismatch
+    if acct is not None:
+        # 계좌 기준 — 잔고 전체로 총액을 구성한다 (일지에 없는 종목도 계좌 자본금에는 포함)
+        acct_stock = sum(int(r.get("eval_amount") or (r["qty"] * (r.get("price") or 0))) for r in acct["rows"])
+        s["capital_basis"] = "account"
+        s["capital_stock"] = acct_stock
+        s["capital_deposit"] = acct["deposit"] or 0
+        s["capital_total"] = acct_stock + (acct["deposit"] or 0)
+        # 계좌 총액에는 일지 밖 종목이 섞일 수 있으므로, 범위가 정확히 일치할 때만 수익률을 붙인다
+        s["capital_return_pct"] = (unreal_total / cost_priced) if (covered and cost_priced > 0) else None
+    else:
+        # 일지 기준 — 등록 보유 수량 × 현재가. 원가와 같은 범위라 수익률이 정확히 성립한다
+        s["capital_basis"] = "journal"
+        s["capital_stock"] = eval_total
+        s["capital_deposit"] = None
+        s["capital_total"] = eval_total if priced_count else None
+        s["capital_return_pct"] = (unreal_total / cost_priced) if cost_priced > 0 else None
+    s["account_total"] = s["capital_total"] if (covered and acct) else None  # 하위호환 (기존 소비처)
     return computed
 
 
