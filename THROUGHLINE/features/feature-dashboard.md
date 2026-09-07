@@ -86,6 +86,7 @@
 - **중복 적재 유일성**: 같은 날 /dashboard 2회 열람 → (portfolio_id, snap_date) 행 수 1 (ON CONFLICT 갱신).
 - **거래 삭제 후 정합**: 입금 → /dashboard(적재) → 입금 삭제 → trend 오늘 포인트 == summary total_equity.
 - **포트 삭제**: 스냅샷 보유 포트 DELETE /portfolios/{id} → 200 (FK CASCADE).
+- **매매일지 수익률 차트 코드 해석 (2026-09-07)**: 코드 미입력 종목도 이름 매칭으로 라인이 그려지고(`symbols[*].code` 채워짐) "시세를 붙일 수 없는" 안내가 뜨지 않는다 — 평가(도넛·카드)와 차트가 같은 규칙을 쓴다.
 - **매매일지 평가 커버리지 (2026-09-07)**: 4종목(DB 적재·KIS 보충 대상·코드 없는 이름 매칭·불명) 일지에서 `priced_count == 3`, `cost_priced` 가 분모, `unpriced == [불명]`. 시세를 못 구한 종목이 분모에서 조용히 빠지지 않는다.
 
 ### 수동 QA
