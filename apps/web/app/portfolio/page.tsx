@@ -4,7 +4,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { createChart, IChartApi, LineSeries } from "lightweight-charts";
+import { createChart, IChartApi, LineSeries, LineStyle } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { fmtMoneyM, fmtPriceM, MARKET_CODES, MARKET_LABEL, marketOf, priceToApi } from "../../lib/market";
 import { Badge, Card, CardTitle, EmptyState, fmtPct, GaugeBar, PageTitle, pnlTone, Stat, Tip } from "../../components/ui";
@@ -175,7 +175,6 @@ function PortfolioPage() {
   const [signal, setSignal] = useState<Signal | null>(null);
   const [curve, setCurve] = useState<{ date: string; equity: number; index: number; pnl?: number }[]>([]);
   const eqRef = useRef<HTMLDivElement>(null);
-  const eqTipRef = useRef<HTMLDivElement>(null);   // 롤오버 툴팁 — 날짜·수익률·평가액 (2026-09-08 지시)
   const eqApi = useRef<IChartApi | null>(null);
 
   // ── 무인 매매 헬퍼 (ADR-009) — 주문표 줄 ↔ 09:01 실행 결과(BrokerOrder) 매칭. 버튼은 '이번 실행일 무인 취소'·'되돌리기'·'다시 켜기'만 ──
@@ -459,40 +458,17 @@ function PortfolioPage() {
     try { eqApi.current?.remove(); } catch { /* already disposed */ }
     eqApi.current = null;
     if (curve.length < 2) return;  // 1일 이하 → 차트 대신 안내 문구 (오늘 시작 케이스)
+    // 매매일지 수익률 차트와 같은 스타일 (2026-09-08 지시): 축은 시작 대비 %(+9.2%), 0% 점선, 크로스헤어로 날짜·값 확인. 지수 100 = 0%
     const chart = createChart(eqRef.current, {
-      layout: { background: { color: "transparent" }, textColor: "#858c9b", attributionLogo: false, fontSize: 12 },
-      grid: { vertLines: { visible: false }, horzLines: { color: "rgba(18,24,40,0.07)" } },
-      rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
-      autoSize: true,
+      localization: { priceFormatter: (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+      layout: { background: { color: "transparent" }, textColor: "#9aa1ad", attributionLogo: false, fontSize: 11 },
+      grid: { vertLines: { visible: false }, horzLines: { color: "#eef0f3" } },
+      height: 190, autoSize: true, rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
     });
     eqApi.current = chart;
-    // 축·라벨은 시작 대비 % (2026-09-08 지시 "109 는 다른 뜻처럼 보인다 — 몇 % 올랐는지가 관건") — 지수 100 = 0%
-    const pct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
-    const series = chart.addSeries(LineSeries, {
-      color: "#f97316", lineWidth: 2, title: "수익률",
-      priceFormat: { type: "custom", formatter: pct, minMove: 0.01 },
-      // 데이터가 짧아도(시작 직후) 점이 잘 보이도록 마커 표시
-      pointMarkersVisible: curve.length <= 30,
-    });
+    const series = chart.addSeries(LineSeries, { color: "#f97316", lineWidth: 2, title: "수익률", priceLineVisible: false });
     series.setData(curve.map((c) => ({ time: c.date, value: c.index - 100 })));
-    series.createPriceLine({ price: 0, color: "#9aa1ad", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "시작" });
-    // 마우스 롤오버: 날짜 · 시작 대비 수익률 · 그날 총 평가액 (2026-09-08 지시)
-    const byDate = new Map(curve.map((c) => [c.date, c]));
-    chart.subscribeCrosshairMove((param) => {
-      const tip = eqTipRef.current;
-      const box = eqRef.current;
-      if (!tip || !box) return;
-      const t = param.time ? String(param.time) : "";
-      const c = t ? byDate.get(t) : undefined;
-      if (!c || !param.point || param.point.x < 0 || param.point.y < 0) { tip.hidden = true; return; }
-      const p = c.index - 100;
-      tip.innerHTML = `<b>${c.date}</b> · 수익률 <b class="${p >= 0 ? "text-up" : "text-down"}">${pct(p)}</b> · 평가액 <b>${fm(c.equity)}</b>`;
-      tip.hidden = false;
-      const w = tip.offsetWidth;
-      const x = param.point.x + 14 + w > box.clientWidth ? Math.max(0, param.point.x - w - 14) : param.point.x + 14;
-      tip.style.left = `${x}px`;
-      tip.style.top = "6px";
-    });
+    series.createPriceLine({ price: 0, color: "#c9ced6", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
     chart.timeScale().fitContent();
     return () => { try { eqApi.current?.remove(); } catch { /* noop */ } eqApi.current = null; };
   }, [curve]);
@@ -858,10 +834,7 @@ function PortfolioPage() {
           </span>
         ) : undefined}>수익률 추이 <span className="normal-case text-faint">· 시작 대비 % · 입출금 왜곡 제거(TWR)</span></CardTitle>
         {curve.length >= 2 ? (
-          <div className="relative">
-            <div ref={eqRef} className="h-52" />
-            <div ref={eqTipRef} hidden className="pointer-events-none absolute z-10 whitespace-nowrap rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-muted shadow-md" />
-          </div>
+          <div ref={eqRef} className="h-[190px]" />
         ) : curve.length === 1 ? (
           <div className="flex items-center gap-4 rounded-xl bg-inset px-5 py-6">
             <span className="text-3xl">🌱</span>
