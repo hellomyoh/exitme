@@ -582,3 +582,9 @@
 - 원인: 0.11.2 에서 `missing`(미체결)만 info 로 내리고 `short`(계획 > 등록, 부분 체결)는 warn 배너에 남겨 두어, 익절 425주 중 25주 체결 같은 정상 부분 체결이 "⚠️ 계획과 등록 체결이 다릅니다"로 떴다. 무인 정지 판정은 이미 short 를 정상으로 보고 있었으므로 표시만 어긋난 상태.
 - 작업 내용: `reconcile_plan` short → level info(kind 불변). 배너는 unplanned·excess 만. ⓘ 툴팁에 "200 ETF 매도 425주 중 25주 체결" 형식 추가. 테스트 기대값 2곳 갱신. VERSION 0.12.1.
 - Git commit: ui: treat partial fills (short) as info in the reconcile tooltip; banner only for unplanned/excess
+
+## [2026-09-08] fix | 초기 진입은 보유 0 으로 시작한 포트만 (사용자 지적 "보유 수량이 있는 계좌인데 초기 진입이 왜 나오나")
+
+- 원인: 0.12.0 의 조건이 "시작 후 10거래일 + 목표 미달"이어서 보유분을 입력해 시작한 포트(400주 보유)에도 boot 줄이 나왔다. 연구(fast-entry-study)는 현금만으로 시작하는 콜드 스타트를 가정했다.
+- 작업 내용: `signals._portfolio_orders` — 시작일까지 등록된 매수(보유분 입력·전환 시드)가 있으면 `days_since_start=None`. 엔진 — `initial_lots` 시작이면 None. ADR-010 결정문·feature §5.5·user-guide 갱신. 테스트: 엔진 initial_lots → boot 없음, 실전 보유 시작 포트 → boot 없음.
+- Git commit: fix: bootstrap entry only for portfolios that started with zero holdings

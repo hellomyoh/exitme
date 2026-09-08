@@ -290,7 +290,11 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
         def _kd(dt):
             return (dt.astimezone(KST) if dt.tzinfo else dt.replace(tzinfo=KST)).date()
         start_day = max(_kd(first_tx), _kd(pf_row.created_at)) if pf_row.created_at else _kd(first_tx)
-        days_since_start = sum(1 for b in bars_200 if start_day < date.fromisoformat(b["date"]) <= base_day)
+        # 콜드 스타트만 — 시작일까지 등록된 매수(보유분 입력·전환 시드)가 있으면 이미 보유로 시작한 포트라 대상 외 (2026-09-08 사용자 지적)
+        started_with_holdings = any(_kd(t.executed_at) <= start_day for t in session.scalars(
+            select(TradeTransaction).where(TradeTransaction.portfolio_id == pid, TradeTransaction.kind == "buy")).all())
+        if not started_with_holdings:
+            days_since_start = sum(1 for b in bars_200 if start_day < date.fromisoformat(b["date"]) <= base_day)
     p = plan(last, m200, mlev, regime, user_pf, params, days_since_start=days_since_start)
     # 계획 vs 등록 체결 대조 (2026-09-05 지시) — 실패해도 주문표는 떠야 하므로 방어적으로
     from app.broker import reconcile_for_portfolio

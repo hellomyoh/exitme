@@ -497,6 +497,16 @@ def test_bootstrap_applies_to_new_portfolio_only(monkeypatch):
         s.commit()
         out2 = _portfolio_orders(s, pid, uid, now=freeze_at(exec_day) - _td(hours=1))
     assert "boot" not in [o["kind"] for o in out2["orders"]] and out2["boot"] is None
+    # 보유분을 입력해 시작한 포트(시작일까지 매수 등록) — 콜드 스타트가 아니라 부트스트랩 없음 (2026-09-08 사용자 지적)
+    pid_h = client.post("/portfolios", json={"name": "보유 시작", "market": "KR", "code_200": "069500"}, headers=h).json()["id"]
+    client.post("/positions", json={"portfolio_id": pid_h, "kind": "deposit", "amount": 50_000_000, "executed_at": f"{base_day}T15:30:00+09:00"}, headers=h)
+    client.post("/positions", json={"portfolio_id": pid_h, "kind": "buy", "code": "069500", "qty": 100, "price": 60000, "executed_at": f"{base_day}T15:30:00+09:00"}, headers=h)
+    with SessionLocal() as s:
+        pf = s.get(TradePortfolio, pid_h)
+        pf.created_at = _dt.combine(base_day, _dt.min.time(), tzinfo=kst)
+        s.commit()
+        out_h = _portfolio_orders(s, pid_h, uid, now=freeze_at(exec_day) - _td(hours=1))
+    assert out_h["account"]["qty_200"] == 100 and "boot" not in [o["kind"] for o in out_h["orders"]] and out_h["boot"] is None
     # 모델 신호(공용 KR) — 9년째 운용이라 부트스트랩 없음
     with SessionLocal() as s:
         from app.models import OrderSheetRow
