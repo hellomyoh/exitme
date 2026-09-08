@@ -40,7 +40,7 @@ OPEN_TIME = time(9, 0)                # 동결·발주 기준 시각 (signals.FR
 RUN_GRACE = time(9, 5)                # 이 시각까지 실행 기록이 없으면 '실행 중', 이후엔 '기록 없음' 경고
 FAIL_STREAK_PAUSE = 2                 # 발주 연속 실패 n회 → 자동 정지
 GRID_KINDS_PREFIX = "grid"            # 갭 취소 대상(그리드 매수) 종류 접두
-DAILY_BUY_CAP_PCT_DEFAULT = 20.0      # 하루 매수 총액 상한 — 총자산 대비 % (2026-09-07 지시 "기본 20%"). 0 = 상한 없음
+DAILY_BUY_CAP_PCT_DEFAULT = 0.0       # 하루 매수 총액 상한 — 총자산 대비 %. 기본 0 = 없음 (2026-09-08 사용자 결정 "참고용, 사용하지 않음" — 진입 속도 제한이며 안전장치가 아님, docs/cold-start-entry-study §6)
 LIVE_AUTO = ("submitted", "partial")  # 증권사에 살아 있는 무인 주문
 HEARTBEAT_KEY = "autoexec:pipeline:heartbeat"   # beat → ingest 큐 → 워커 경로가 살아 있음을 60초마다 기록 (TTL 180초)
 HEARTBEAT_TTL = 180
@@ -646,8 +646,9 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, today: date, now: d
         _skip(keep, "skipped", "시가를 확인하지 못해 발주하지 않았습니다 (현재가 조회 실패)", rec, "skipped")
         keep = []
     if gap_hit:
-        grid = [r for r in keep if r.side == "buy" and r.kind.startswith(GRID_KINDS_PREFIX)]
-        _skip(grid, "skipped_gap", f"갭 취소 — 시가 {open_px:,}원 ≤ 기준 {int(float(gap_exact)):,}원, 그리드 매수 생략", rec, "skipped_gap")
+        # 갭 취소 대상 = 그리드 매수 + 소량 진입(boot, ADR-010). 레버리지 시장가·익절 매도는 대상 외
+        grid = [r for r in keep if r.side == "buy" and (r.kind.startswith(GRID_KINDS_PREFIX) or r.kind == "boot")]
+        _skip(grid, "skipped_gap", f"갭 취소 — 시가 {open_px:,}원 ≤ 기준 {int(float(gap_exact)):,}원, 그리드·초기 진입 매수 생략", rec, "skipped_gap")
         keep = [r for r in keep if r not in grid]
     # ④ 잔고 — 원장 대조·매도 한도
     deposit = 0

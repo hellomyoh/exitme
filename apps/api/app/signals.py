@@ -187,6 +187,8 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
     근사 규칙(ASSUMPTIONS): 실전 로트의 익절가는 '오늘 Grid' 기준 매수가×(1+Grid)로 부여,
     상승장이면 코어로 간주. 200 ETF 는 KODEX/TIGER 모두 K200 레그로 매핑.
     """
+    from sqlalchemy import func
+
     from app.backtests import load_aligned_bars
     from app.models import Instrument, PositionLot, TradePortfolio, TradeTransaction
     from app.strategy.planner import K200, LEV, Lot, Portfolio, grid_ratio, plan, prepare
@@ -280,7 +282,16 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
             qty_200 += l["qty"]
 
     user_pf = Portfolio(cash=float(cash), lots=lots)
-    p = plan(last, m200, mlev, regime, user_pf, params)
+    # 소량 진입 부트스트랩 (ADR-010): 시작일 = max(포트 생성일, 첫 거래일) — 시작 패널이 입금을 직전 영업일로 소급 기록해도 생성일이 잡아 준다.
+    # days_since_start = 시작일 **뒤** 거래일(봉) 수, 기준일까지. 오늘 시작 → 오늘 저녁 0일째. 거래가 없으면 None(자본 없음 → 부트스트랩 없음)
+    days_since_start = None
+    first_tx = session.scalar(select(func.min(TradeTransaction.executed_at)).where(TradeTransaction.portfolio_id == pid))
+    if first_tx is not None:
+        def _kd(dt):
+            return (dt.astimezone(KST) if dt.tzinfo else dt.replace(tzinfo=KST)).date()
+        start_day = max(_kd(first_tx), _kd(pf_row.created_at)) if pf_row.created_at else _kd(first_tx)
+        days_since_start = sum(1 for b in bars_200 if start_day < date.fromisoformat(b["date"]) <= base_day)
+    p = plan(last, m200, mlev, regime, user_pf, params, days_since_start=days_since_start)
     # 계획 vs 등록 체결 대조 (2026-09-05 지시) — 실패해도 주문표는 떠야 하므로 방어적으로
     from app.broker import reconcile_for_portfolio
     try:
@@ -320,6 +331,8 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
         "orders": list(merged.values()),
         "gap_cancel_below": p.gap_cancel_below,
         "gap_cancel_exact": p.gap_cancel_exact,  # 09:01 실행기의 시가 판정용 정확값 (ADR-009)
+        # 소량 진입 구간 표시 (ADR-010): {"day": n, "days": 10} — 부트스트랩 주문이 있는 날만
+        "boot": ({"day": p.indicators.get("boot_day"), "days": p.indicators.get("boot_days")} if p.indicators.get("boot_day") else None),
     }
     # '그날의 주문표' 보존 — 일자별 매매 일지의 계획 vs 체결 대조 (2026-08-29 지시).
     # 주문표는 기준일(bars[last]) 종가 계획 = 다음 거래일 실행분이라 다음 거래일 키로 저장.

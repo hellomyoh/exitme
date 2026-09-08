@@ -50,7 +50,7 @@ class Order:
     otype: str       # limit | market
     qty: int
     price: int | None   # limit 지정가 (market 은 None)
-    kind: str        # grid1|grid2|grid3 | tp | reduce | lev_strat | lev_tact1 | lev_tact2 | lev_liq
+    kind: str        # boot | grid1|grid2|grid3 | tp | reduce | lev_strat | lev_tact1 | lev_tact2 | lev_liq
     lot_id: int | None = None  # tp 매도의 대상 로트 인덱스
 
 
@@ -135,8 +135,12 @@ def apply_regime_conversion(pf: Portfolio, old: Regime, new: Regime, grid_today:
 
 
 def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
-         params: Params) -> Plan:
-    """인덱스 i(종가 확정)에서 다음 거래일 주문표를 생성한다. pf 는 변경하지 않는다."""
+         params: Params, days_since_start: int | None = None) -> Plan:
+    """인덱스 i(종가 확정)에서 다음 거래일 주문표를 생성한다. pf 는 변경하지 않는다.
+
+    days_since_start: 포트 시작(첫 자본 투입) 이후 거래일 수 — 0 = 시작일 저녁의 첫 계획. None 이면 소량 진입 부트스트랩을 적용하지 않는다
+    (ADR-010). 백테스트는 첫 OK 계획일부터, 실전은 max(포트 생성일, 첫 거래일) 이후 봉 수로 넘긴다.
+    """
     f = params.flags
     # ── 워밍업 가드 (§5.2)
     if i + 1 < params.min_history or m200.ma200[i] is None or m200.sigma_ref[i] is None:
@@ -218,16 +222,39 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
             elif l.kind == "core":
                 orders.append(Order(K200, "sell", "limit", available, core_tp, "tp", lot_id=idx))
 
+    # ── 소량 진입 부트스트랩 (ADR-010, 2026-09-08): 시작 후 boot_days 거래일 동안 목표 미달분의 boot_frac 을 종가 근처 지정가로 —
+    #    콜드 스타트의 첫 체결(그리드 1단은 하루 25%)을 1~2일로 앞당긴다. 하락장은 boot_bear_mult 배(그리드가 정지된 하락장에도 소량 진입).
+    #    그 날 그리드 예산은 (1−f) 로 줄여 예산 중복을 막는다. 현금이 모자라면 부트스트랩을 내지 않고 그리드는 그대로.
+    cash_left = pf.cash + planned_sell_value - cash_reserve   # 현금버퍼 = 예약 (feature §5.5)
+    boot_f = 0.0
+    boot_order: Order | None = None
+    if (days_since_start is not None and 0 <= days_since_start < params.boot_days and params.boot_frac > 0
+            and target_200 > value_200):
+        boot_f = min(1.0, params.boot_frac * (params.boot_bear_mult if regime is Regime.BEAR else 1.0))
+        if boot_f > 0:
+            boot_price = round_tick(close * (1 - params.boot_delta * grid), params.tick, up=False)
+            boot_qty = int(boot_f * (target_200 - value_200) // boot_price) if boot_price > 0 else 0
+            if boot_qty > 0 and boot_qty * boot_price <= cash_left:
+                cash_left -= boot_qty * boot_price
+                boot_order = Order(K200, "buy", "limit", boot_qty, boot_price, "boot")
+            else:
+                boot_f = 0.0
+    if boot_order is not None:
+        orders.append(boot_order)   # 가장 얕은 지정가 — 실행기 정렬(시장가 → 높은 지정가)과 같은 순서로 그리드 앞에 둔다
+
     # ── K200 그리드 매수 (하락장 정지)
     gap_cancel_below: int | None = None
     gap_cancel_exact: float | None = None
+    if f.f5_gap_filter and (regime is not Regime.BEAR or boot_order is not None):
+        # 부트스트랩이 있는 하락장도 갭 필터 대상 — 급락 출발일에 사지 않는다는 규칙은 같다
+        gap_cancel_exact = close - params.gap_atr_mult * atr  # 체결 판정은 정확값 (검증 D1·B3)
+        gap_cancel_below = int(gap_cancel_exact)               # 표시용 원 단위 내림
     if regime is not Regime.BEAR:
         if f.f5_gap_filter:
             remaining = max(0.0, target_200 - value_200)   # 잔여예산 규칙
-            gap_cancel_exact = close - params.gap_atr_mult * atr  # 체결 판정은 정확값 (검증 D1·B3)
-            gap_cancel_below = int(gap_cancel_exact)               # 표시용 원 단위 내림
         else:
             remaining = target_200                          # v1: 예산 규칙 없음
+        remaining *= (1.0 - boot_f)                          # 부트스트랩이 가져간 몫만큼 그리드 예산 축소 (ADR-010)
         # 예산 가중 분배 (feature §5.5, 2026-09-03): 길이 불일치·합 0 이면 균등으로 폴백
         ws = list(params.grid_weights[:params.grid_steps])
         ws += [0.0] * (params.grid_steps - len(ws))
@@ -235,7 +262,6 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
         if total_w <= 0:
             ws = [1.0 / params.grid_steps] * params.grid_steps
             total_w = 1.0
-        cash_left = pf.cash + planned_sell_value - cash_reserve   # 현금버퍼 = 예약 (feature §5.5)
         for k in range(1, params.grid_steps + 1):
             price = round_tick(close * (1 - grid * k), params.tick, up=False)
             qty = int(remaining * (ws[k - 1] / total_w) // price)
@@ -291,6 +317,9 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
             "ema20": m200.ema20[i], "atr20": atr, "grid": grid,
             "sigma20": sigma20, "sigma_down": m200.sigma_down[i], "sigma_ref": m200.sigma_ref[i],
             "equity": equity, "lev_close": lev_close,
+            # 소량 진입 구간 표시용 (ADR-010): n일째 / 전체 — 부트스트랩 주문이 있는 날만
+            "boot_day": (days_since_start + 1) if boot_order is not None and days_since_start is not None else None,
+            "boot_days": params.boot_days if boot_order is not None else None,
         },
         gap_cancel_exact=gap_cancel_exact,
     )

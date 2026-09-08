@@ -45,6 +45,13 @@ class Params:
     cash_buffer: float = 0.005
     band: float = 0.05         # 리밸런싱 밴드 ±5%p — 그리드 신규매수에는 미적용
     gap_atr_mult: float = 1.5
+    # 소량 진입 부트스트랩 (ADR-010, 2026-09-08 사용자 지시 "작은 수량으로 일단 시작한 뒤 정상 상태로") — 시작 후 boot_days 거래일 동안
+    # K200 목표 미달분의 boot_frac 을 종가×(1−boot_delta·Grid) 지정가로 추가 매수(하락장은 ×boot_bear_mult), 그 날 그리드 예산은 (1−f).
+    # docs/fast-entry-study-20260908.md: 234개 조합·3 표본 — 첫 체결 10일→1~2일, 250일 수익 차이 ≈ 0. boot_frac 0 또는 boot_days 0 = 끔
+    boot_days: int = 10
+    boot_frac: float = 0.15
+    boot_delta: float = 0.0
+    boot_bear_mult: float = 0.5
     # 레버리지 (정본 §7)
     lev_multiple: float = 2.0       # 레버리지 ETF 배율 — 국내 2배 기본, 해외 3배(TQQQ) 검토용 (2026-08-31)
     lev_strategic_ratio: float = 0.7

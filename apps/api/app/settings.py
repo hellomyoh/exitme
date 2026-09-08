@@ -36,6 +36,11 @@ PARAM_REGISTRY: list[tuple[str, str, str, float, float, bool, str]] = [
     ("cash_buffer", "현금 버퍼", "매수 가용 현금에서 예약해 두는 비율 — 목표 비중은 깎지 않음", 0.0, 0.05, True, "그리드"),
     ("band", "리밸런싱 밴드", "목표와의 괴리가 이 폭(±)을 넘을 때만 축소·재조정 — 잔거래 방지. 레짐 전환일·하락장은 무시", 0.01, 0.15, True, "그리드"),
     ("gap_atr_mult", "갭 취소 배수", "시가가 전일종가 − 배수×ATR 이하로 출발하면 그리드 전량 취소", 0.5, 3.0, True, "그리드"),
+    # ── 소량 진입 부트스트랩 (ADR-010, 2026-09-08) — 콜드 스타트 첫 N 거래일
+    ("boot_days", "초기 진입 기간", "시작(첫 자본 투입) 후 이 거래일 수 동안 소량 진입 주문을 낸다. 0 = 끔. 연구값 10(길수록 첫해 수익 −)", 0, 30, True, "초기 진입"),
+    ("boot_frac", "초기 진입 비율", "매일 목표 미달분의 이 비율을 전일 종가 지정가로 추가 매수. 연구값 0.15(0.25 부터 수익 손실)", 0.0, 1.0, True, "초기 진입"),
+    ("boot_delta", "초기 진입 지정가 깊이", "종가 × (1 − 깊이 × Grid). 0 = 종가(하루 체결 74%), 0.5 = 46%, 1.0 = 그리드 1단(26%)", 0.0, 1.0, True, "초기 진입"),
+    ("boot_bear_mult", "하락장 초기 진입 배수", "하락장에서는 비율 × 배수(연구값 0.5). 0 = 하락장 진입 없음", 0.0, 1.0, True, "초기 진입"),
     ("lev_strategic_ratio", "레버리지 전략 비중", "레버리지 예산 중 상시 보유(전략 트랙) 비율 — 나머지는 눌림목 전술 트랙", 0.0, 1.0, True, "레버리지"),
     ("lev_tact1_mult", "전술 1차 진입 배수", "레버리지 종가 < EMA20 − 배수×ATR 이면 1차 진입", 0.25, 2.0, True, "레버리지"),
     ("lev_tact2_mult", "전술 2차 진입 배수", "더 깊은 눌림에서 2차 진입", 0.5, 3.0, True, "레버리지"),
@@ -50,7 +55,7 @@ PARAM_REGISTRY: list[tuple[str, str, str, float, float, bool, str]] = [
 ]
 _DEFAULTS = {f.name: getattr(Params(), f.name) for f in dc_fields(Params) if f.name != "flags"}
 _EDITABLE = {k for k, *_rest in PARAM_REGISTRY if _rest[4]}
-_INT_KEYS = {"grid_steps", "min_history", "tick"}
+_INT_KEYS = {"grid_steps", "min_history", "tick", "boot_days"}
 
 
 def _row(session: Session, user_id: int) -> UserSettings:
