@@ -122,7 +122,7 @@ def test_settings_flags_default_bulk_and_state_off_waiting():
     c, h = _client()
     tomorrow = datetime.now(KST).date() + timedelta(days=1)
     pid, aid = _setup_portfolio(c, h, tomorrow)
-    assert c.get("/settings/auto-exec", headers=h).json()["default"] == {"buy": False, "sell": False, "daily_buy_cap_pct": 20.0}
+    assert c.get("/settings/auto-exec", headers=h).json()["default"] == {"buy": False, "sell": False, "daily_buy_cap_pct": 0.0}   # 기본 0 = 없음 (2026-09-08)
     v = c.get(f"/portfolio/{pid}/auto-exec?date={tomorrow.isoformat()}", headers=h).json()
     assert v["state"]["code"] == "off" and "수동 모드" in v["state"]["label"] and "위탁" in v["state"]["label"] and v["exec_day"] == tomorrow.isoformat()
     g = c.put("/settings/auto-exec", json={"buy": True, "sell": False, "daily_buy_cap_pct": 15}, headers=h).json()
@@ -184,7 +184,7 @@ def test_execution_clips_to_cap_and_buyable_and_pauses_on_fail_streak():
     c, h = _client()
     today = datetime.now(KST).date()
     pid, aid = _setup_portfolio(c, h, today)
-    c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True}, headers=h)
+    c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True, "daily_buy_cap_pct": 20}, headers=h)   # 상한은 기본 0 — 이 테스트만 20%
     fake = FakeKis(open_px=100000, deposit=9_000_000, holdings={}, psbl_cash=9_000_000)
     rec, _ = _run(fake, aid, today, LINES[:3], equity=2_000_000)
     assert rec["submitted"] == 1 and rec["skipped"] == 2 and rec["clipped"] == 1 and fake.placed == [("069500", "buy", 4, 99000)]
@@ -330,3 +330,23 @@ def test_us_portfolio_and_pause_on_reconcile_warning():
         assert ae.pause_if_reconcile_warns(s, pf, {"date": "2026-09-06", "items": [{"level": "warn", "kind": "unplanned", "text": "레버리지 매수 3주 등록 — 이날 계획에 없던 거래"}]}) is True
         assert ae.pf_auto_state(pf)["paused"] is True and "계획에 없던" in ae.pf_auto_state(pf)["paused_reason"]
         assert ae.pause_if_reconcile_warns(s, pf, {"items": [{"level": "info", "kind": "missing", "text": "ok"}]}) is False
+
+
+def test_boot_line_is_gap_filtered_and_placed_first():
+    """ADR-010: 초기 진입(boot) 지정가 — 갭 출발이면 그리드와 함께 생략, 아니면 종가 지정가(가장 얕음)라 그리드보다 먼저 발주."""
+    today = datetime.now(KST).date()
+    boot = {"instrument": "K200", "kind": "boot", "side": "buy", "otype": "limit", "qty": 2, "price": 100500}
+    c, h = _client()
+    pid, aid = _setup_portfolio(c, h, today, deposit_krw=9_000_000)
+    c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True}, headers=h)
+    fake = FakeKis(open_px=97000, deposit=9_000_000, holdings={}, psbl_cash=9_000_000)
+    rec, _ = _run(fake, aid, today, [boot, LINES[0]], gap_exact=97500.0)
+    assert rec["skipped_gap"] == 2 and rec["submitted"] == 0 and fake.placed == []
+    st, _ = _orders(c, h, pid, today)
+    assert st["boot"]["status"] == "skipped_gap" and "초기 진입" in st["boot"]["message"]
+    c2, h2 = _client()
+    pid2, aid2 = _setup_portfolio(c2, h2, today, deposit_krw=9_000_000)
+    c2.put(f"/settings/auto-exec/accounts/{aid2}", json={"buy": True}, headers=h2)
+    fake2 = FakeKis(open_px=100000, deposit=9_000_000, holdings={}, psbl_cash=9_000_000)
+    rec2, _ = _run(fake2, aid2, today, [LINES[0], boot], gap_exact=97500.0)
+    assert rec2["submitted"] == 2 and fake2.placed == [("069500", "buy", 2, 100500), ("069500", "buy", 5, 99000)]

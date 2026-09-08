@@ -445,3 +445,61 @@ def test_next_exec_day_skips_calendar_holidays():
         finally:
             s.delete(s.get(TradingCalendar, wed))
             s.commit()
+
+
+def test_bootstrap_applies_to_new_portfolio_only(monkeypatch):
+    """ADR-010: 시작(생성·첫 입금) 당일 저녁 주문표에 '초기 진입(boot)' 줄과 boot {day:1, days:10}; 시작 20거래일 뒤에는 없음. 모델 신호에는 없음."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    from sqlalchemy import select
+
+    from app.models import TradePortfolio, TradeTransaction, User
+    from app.signals import _portfolio_orders, freeze_at, run_signal_batch
+    from tests.test_backtest_api import seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+    client = TestClient(app, base_url="https://testserver")
+    email = f"bt{uuid.uuid4().hex[:8]}@stocklab.dev"
+    token = client.post("/auth/register", json={"email": email, "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "초기 진입", "market": "KR", "code_200": "069500"}, headers=h).json()["id"]
+    base_day, exec_day = _last_bar_and_exec_day()
+    with SessionLocal() as s:
+        uid = s.scalar(select(User.id).where(User.email == email))
+    # 시작 패널 규약처럼 입금을 기준일(직전 영업일) 15:30 으로 — 생성일이 오늘이라 시작일 = 오늘 → 0일째
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 50_000_000,
+                                    "executed_at": f"{base_day}T15:30:00+09:00"}, headers=h)
+    kst = _tz(_td(hours=9))
+    with SessionLocal() as s:
+        pf = s.get(TradePortfolio, pid)
+        pf.created_at = _dt.combine(base_day, _dt.min.time(), tzinfo=kst)   # 기준일에 만든 포트 → 기준일 저녁 계획이 0일째
+        s.commit()
+        out = _portfolio_orders(s, pid, uid, now=freeze_at(exec_day) - _td(hours=1))
+    kinds = [o["kind"] for o in out["orders"]]
+    if out["regime"] != "BEAR" or True:   # 하락장이어도 부트스트랩(×0.5)은 나온다
+        assert "boot" in kinds, kinds
+    boot = next(o for o in out["orders"] if o["kind"] == "boot")
+    assert boot["side"] == "buy" and boot["otype"] == "limit" and boot["qty"] > 0
+    assert out["boot"] == {"day": 1, "days": 10}
+    # 스냅샷에도 저장된다 (09:01 실행기가 읽는 형태)
+    with SessionLocal() as s:
+        from app.models import PortfolioPlan
+        row = s.scalar(select(PortfolioPlan).where(PortfolioPlan.portfolio_id == pid, PortfolioPlan.trade_date == exec_day))
+        assert any(o["kind"] == "boot" for o in row.payload["orders"])
+    # 시작이 20거래일 전이면 부트스트랩 없음 (생성일·첫 입금 모두 과거로)
+    with SessionLocal() as s:
+        pf = s.get(TradePortfolio, pid)
+        pf.created_at = _dt.combine(base_day - _td(days=40), _dt.min.time(), tzinfo=kst)
+        for t in s.scalars(select(TradeTransaction).where(TradeTransaction.portfolio_id == pid)).all():
+            t.executed_at = _dt.combine(base_day - _td(days=40), _dt.min.time(), tzinfo=kst)
+        s.commit()
+        out2 = _portfolio_orders(s, pid, uid, now=freeze_at(exec_day) - _td(hours=1))
+    assert "boot" not in [o["kind"] for o in out2["orders"]] and out2["boot"] is None
+    # 모델 신호(공용 KR) — 9년째 운용이라 부트스트랩 없음
+    with SessionLocal() as s:
+        from app.models import OrderSheetRow
+        snap = run_signal_batch(s)
+        rows = s.scalars(select(OrderSheetRow).where(OrderSheetRow.signal_id == snap.id)).all()
+        assert not any(r.kind == "boot" for r in rows)

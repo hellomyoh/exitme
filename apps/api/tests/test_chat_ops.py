@@ -66,7 +66,7 @@ def test_auto_exec_status_and_recent_logs_tools_are_user_scoped():
                           status="submitted", mode="auto", order_no="N1"))
         s.commit()
     st = _run_tool("auto_exec_status", {}, uid)
-    assert st["settings"]["default"] == {"buy": True, "sell": False, "daily_buy_cap_pct": 20.0} and st["settings"]["accounts"] == []
+    assert st["settings"]["default"] == {"buy": True, "sell": False, "daily_buy_cap_pct": 0.0} and st["settings"]["accounts"] == []
     assert st["notify"]["enabled"] is True and st["notify"]["ready"] is True and "chat_id" not in st["notify"] and "token" not in str(st["notify"])
     p = next(x for x in st["portfolios"] if x["portfolio_id"] == pid)
     assert p["name"] == "챗상태" and p["broker_linked"] is False and p["paused"] is False

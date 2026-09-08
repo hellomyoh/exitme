@@ -503,7 +503,7 @@ function AutoExecSettings() {
   }
   function commitCap(a: AEAccount) {
     const raw = (capDraft[a.id] ?? String(a.auto_exec.daily_buy_cap_pct)).trim().replace(",", ".");
-    const n = raw === "" ? 20 : Number(raw);
+    const n = raw === "" ? 0 : Number(raw);
     if (!Number.isFinite(n) || n < 0 || n > 100) { setMsg("하루 매수 상한은 0~100 사이의 %로 입력하세요 (0 = 없음)"); return; }
     if (n === a.auto_exec.daily_buy_cap_pct) return;
     void saveAccount(a, { daily_buy_cap_pct: n });
@@ -520,8 +520,8 @@ function AutoExecSettings() {
           </div>
         ))}
         <div className="rounded-lg border border-line bg-inset px-3 py-2">
-          <div className="font-semibold text-ink">하루 매수 상한 <span className="text-[11.5px] font-normal text-faint">총자산 대비 %, 기본 20 · 0 = 없음</span></div>
-          <div className="mt-0.5 leading-relaxed text-muted">그날 매수 합계가 총자산의 이 비율을 넘지 않게 수량을 줄여 냅니다(정지하지 않음). 레짐 전환일의 레버리지 진입처럼 큰 매수는 며칠에 나눠 채워집니다.</div>
+          <div className="font-semibold text-ink">하루 매수 상한 <span className="text-[11.5px] font-normal text-faint">총자산 대비 %, 기본 0 = 없음 (참고용)</span></div>
+          <div className="mt-0.5 leading-relaxed text-muted">진입 속도 제한 — 그날 매수 합계가 총자산의 이 비율을 넘지 않게 수량을 줄여 냅니다(정지하지 않음). 안전장치가 아니라 취향값: 20%면 목표 도달 약 한 달, 0이면 약 3주.</div>
         </div>
       </div>
       {v && v.accounts.length === 0 && (

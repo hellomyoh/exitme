@@ -630,7 +630,7 @@ function SimulatorPage() {
 }
 
 const KIND_KO_J: Record<string, string> = {
-  grid1: "그리드 1차", grid2: "그리드 2차", grid3: "그리드 3차", tp: "익절", reduce: "축소",
+  boot: "초기 진입", grid1: "그리드 1차", grid2: "그리드 2차", grid3: "그리드 3차", tp: "익절", reduce: "축소",
   lev_strat: "레버 전략", lev_tact1: "레버 전술1", lev_tact2: "레버 전술2",
   lev_tact_exit: "전술 이탈", lev_liq: "레버 청산",
 };

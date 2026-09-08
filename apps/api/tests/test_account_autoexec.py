@@ -19,7 +19,7 @@ except Exception:
 
 pytestmark = [pytest.mark.integration, pytest.mark.skipif(not DB_UP, reason="database not reachable")]
 KST = timezone(timedelta(hours=9))
-DEFAULT = {"buy": False, "sell": False, "daily_buy_cap_pct": 20.0}
+DEFAULT = {"buy": False, "sell": False, "daily_buy_cap_pct": 0.0}   # 상한 기본 0 = 없음 (2026-09-08)
 
 
 def _client():
@@ -46,15 +46,15 @@ def test_settings_default_bulk_per_account_cap_and_inheritance():
     # 계좌별 — 생략 키 유지, 상한도 계좌별
     g = c.put(f"/settings/auto-exec/accounts/{a2['id']}", json={"buy": False, "sell": True}, headers=h).json()
     by = {a["label"]: a["auto_exec"] for a in g["accounts"]}
-    assert by["위탁1"] == {"buy": True, "sell": False, "daily_buy_cap_pct": 20.0}
-    assert by["위탁2"] == {"buy": False, "sell": True, "daily_buy_cap_pct": 20.0}
+    assert by["위탁1"] == {"buy": True, "sell": False, "daily_buy_cap_pct": 0.0}
+    assert by["위탁2"] == {"buy": False, "sell": True, "daily_buy_cap_pct": 0.0}
     assert g["default"]["buy"] is True   # 기본값은 일괄 때만 바뀐다
     g = c.put(f"/settings/auto-exec/accounts/{a2['id']}", json={"daily_buy_cap_pct": 10}, headers=h).json()
     assert {a["label"]: a["auto_exec"] for a in g["accounts"]}["위탁2"] == {"buy": False, "sell": True, "daily_buy_cap_pct": 10.0}
     assert c.put(f"/settings/auto-exec/accounts/{a2['id']}", json={"daily_buy_cap_pct": 120}, headers=h).status_code == 422
     # 새 계좌는 사용자 기본값 상속
     a3 = _acct(c, h, "위탁3", no="68800039-01")
-    assert a3["auto_exec"] == {"buy": True, "sell": False, "daily_buy_cap_pct": 20.0}
+    assert a3["auto_exec"] == {"buy": True, "sell": False, "daily_buy_cap_pct": 0.0}
     # 다른 사용자의 계좌는 404, 목록에도 없음
     c2, h2 = _client()
     assert c.put(f"/settings/auto-exec/accounts/{a1['id']}", json={"buy": True}, headers=h2).status_code == 404
@@ -73,7 +73,7 @@ def test_execution_uses_linked_account_flags_only():
     other = _acct(c, h, "다른계좌", no="68800040-01")
     c.put(f"/settings/auto-exec/accounts/{other['id']}", json={"buy": True, "sell": True}, headers=h)
     view = c.get(f"/portfolio/{pid}/auto-exec?date={today.isoformat()}", headers=h).json()
-    assert view["allowed"] == {"buy": False, "sell": False, "daily_buy_cap_pct": 20.0} and view["account"]["label"] == "위탁"
+    assert view["allowed"] == {"buy": False, "sell": False, "daily_buy_cap_pct": 0.0} and view["account"]["label"] == "위탁"
     assert view["state"]["code"] == "off" and "위탁" in view["state"]["label"]
     # 연결 계좌의 매수만 켬 → 상태 '무인 매수 대기', 09:01 에 매수 줄만 발주
     c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True}, headers=h)

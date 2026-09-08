@@ -45,12 +45,12 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; exec_day?: string; pending?: boolean; pending_note?: string | null; frozen?: boolean; frozen_at?: string | null; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; kind?: string; text: string; label?: string; plan?: number; filled?: number }[] } | null };
+type Signal = { status: string; exec_day?: string; pending?: boolean; pending_note?: string | null; frozen?: boolean; frozen_at?: string | null; boot?: { day: number; days: number } | null; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; kind?: string; text: string; label?: string; plan?: number; filled?: number }[] } | null };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
 const ORDER_KIND_KO: Record<string, string> = {
-  grid1: "그리드 1차", grid2: "그리드 2차", grid3: "그리드 3차", tp: "익절", reduce: "축소",
+  boot: "초기 진입", grid1: "그리드 1차", grid2: "그리드 2차", grid3: "그리드 3차", tp: "익절", reduce: "축소",
   lev_strat: "레버 전략", lev_tact1: "레버 전술1", lev_tact2: "레버 전술2", lev_tact_exit: "전술 이탈", lev_liq: "레버 청산",
   tf_entry: "추세 진입", tf_exit: "추세 이탈",
   ltm_entry: "LTM 진입", ltm_exit: "LTM 이탈(현금)", ltm_lever_on: "레버리지 ON", ltm_lever_off: "레버리지 OFF", ltm_rebal: "LTM 리밸런스",
@@ -74,6 +74,7 @@ function orderCondDesc(o: OrderRow, ind: Record<string, number> | undefined): st
     return `전일 종가 ${close.toLocaleString()}에서 −${(grid * k * 100).toFixed(1)}% 하락 시 매수`;
   }
   const map: Record<string, string> = {
+    boot: "시작 후 10거래일 소량 진입 — 목표 미달분의 15%(하락장 7.5%)를 전일 종가 지정가로 (ADR-010)",
     tp: "보유 로트가 매수가 +Grid% 도달 시 익절",
     reduce: "목표 비중 초과분을 시가에 축소 매도",
     lev_strat: "레버리지 전략 트랙 — 목표 비중까지 시가 매수/매도",
@@ -921,7 +922,7 @@ function PortfolioPage() {
           {signal?.status === "OK" && (
             <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}
               {signal.basis === "portfolio" && signal.account
-                ? ` · 계산 기준: 보유 ${signal.account.qty_200.toLocaleString()}주/레버 ${signal.account.qty_lev.toLocaleString()}주 · 현금 ${fm(signal.account.cash)}${signal.frozen ? " — 09:00 동결" : " — 09:00 전 등록분 반영"}`
+                ? ` · 계산 기준: 보유 ${signal.account.qty_200.toLocaleString()}주/레버 ${signal.account.qty_lev.toLocaleString()}주 · 현금 ${fm(signal.account.cash)}${signal.boot ? ` · 초기 진입 ${signal.boot.day}/${signal.boot.days}일` : ""}${signal.frozen ? " — 09:00 동결" : " — 09:00 전 등록분 반영"}`
                 : " · 모델 기준"}
               {/* 공식 출처 — 포트 동결(전환 시 변수)이면 도움말 풍선으로 변수 상세 표기 (2026-09-05 지시) */}
               {signal.algo_source === "portfolio" && (
@@ -1004,6 +1005,9 @@ function PortfolioPage() {
             </div>
           );
         })()}
+        {signal?.status === "OK" && signal.regime === "BEAR" && market === "KR" && !(signal.orders ?? []).some((o) => o.side === "buy") && (
+          <p className="mb-2 text-[12.5px] text-muted">하락장 — 그리드 매수 정지. 중립장 전환까지 매수 없음{signal.account && signal.account.qty_200 === 0 ? " (보유 0 · 현금 대기)" : ""}</p>
+        )}
         {signal?.status === "OK" && signal.orders && signal.orders.length > 0 ? (
           <div className="overflow-x-auto">
             {/* 모바일: 줄바꿈 금지 + 축약(종목 짧게·작은 글씨)으로 한 화면에 — 넘치면 가로 스크롤 (2026-09-02 지시) */}
