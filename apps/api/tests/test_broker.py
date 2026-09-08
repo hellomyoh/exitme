@@ -24,11 +24,11 @@ def test_reconcile_plan_cases():
                                  {"leg": "K200", "side": "sell", "qty": 461, "price": 112500}]) == []
     # 미이행(매수 등록 없음)
     out = reconcile_plan(plan, [{"leg": "K200", "side": "sell", "qty": 461, "price": 112500}])
-    assert len(out) == 1 and out[0]["level"] == "info" and "체결 없음" in out[0]["text"]
+    assert len(out) == 1 and out[0]["level"] == "info" and "체결 등록 없음" in out[0]["text"]
     # 수량 불일치
     out = reconcile_plan(plan, [{"leg": "K200", "side": "buy", "qty": 20, "price": 103840},
                                 {"leg": "K200", "side": "sell", "qty": 461, "price": 112500}])
-    assert len(out) == 1 and out[0]["level"] == "warn" and "-6주" in out[0]["text"]
+    assert len(out) == 1 and out[0]["level"] == "warn" and "(-6)" in out[0]["text"]
     # 계획에 없던 거래
     out = reconcile_plan([], [{"leg": "LEV", "side": "buy", "qty": 3, "price": 9000}])
     assert len(out) == 1 and out[0]["level"] == "warn" and "계획에 없던" in out[0]["text"]

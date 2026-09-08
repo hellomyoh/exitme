@@ -45,7 +45,7 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; exec_day?: string; pending?: boolean; pending_note?: string | null; frozen?: boolean; frozen_at?: string | null; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; text: string }[] } | null };
+type Signal = { status: string; exec_day?: string; pending?: boolean; pending_note?: string | null; frozen?: boolean; frozen_at?: string | null; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; kind?: string; text: string; label?: string; plan?: number; filled?: number }[] } | null };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -183,6 +183,10 @@ function PortfolioPage() {
     const same = bo.items.filter((i) => i.line_key === lineKey(o));
     return same[same.length - 1] ?? null;
   };
+  // 계획 vs 체결 대조 — warn 만 배너, info(지정가 미체결)는 제목 옆 ⓘ 툴팁 (2026-09-08 지시 "참고용은 이모티콘 + 롤오버")
+  const recItems = signal?.reconcile?.items ?? [];
+  const recWarn = recItems.filter((it) => it.level === "warn");
+  const recInfo = recItems.filter((it) => it.level !== "warn");
   const ae = bo?.auto_exec ?? null;
   const aeOn = !!ae && (ae.allowed.buy || ae.allowed.sell) && !!broker?.linked;
   const showAutoCol = market === "KR" && (aeOn || (bo?.items ?? []).some((i) => i.plan_date === signal?.exec_day));
@@ -488,12 +492,14 @@ function PortfolioPage() {
         {portfolios.map((p) => {
           const sel = (pid ?? sum?.portfolio.id) === p.id;
           return (
-            <button key={p.id} onClick={() => setPid(p.id)}
-              // 사용자 지정 배경색은 20% 틴트 — 선택 여부는 테두리·굵기로 (2026-09-05 지시)
-              style={p.color ? { backgroundColor: `${p.color}33`, borderColor: sel ? undefined : `${p.color}88` } : undefined}
-              className={`rounded-lg border px-3.5 py-2 text-[14px] transition-colors ${
-                sel ? `border-accent font-semibold ${p.color ? "text-ink" : "bg-accent-dim text-accent"}`
-                    : `border-line text-muted hover:border-line-strong hover:text-ink ${p.color ? "" : "bg-inset"}`}`}>
+            <button key={p.id} onClick={() => setPid(p.id)} aria-pressed={sel}
+              // 선택 = 진한 바탕·흰 굵은 글씨·✓·강조 링, 비선택 = 연한 틴트·회색 글씨 — 한눈에 구분 (2026-09-08 지시). 사용자 색은 선택 시 점, 비선택 시 20% 틴트
+              style={!sel && p.color ? { backgroundColor: `${p.color}33`, borderColor: `${p.color}88` } : undefined}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-[14px] transition-all ${
+                sel ? "border-ink bg-ink font-bold text-white shadow-md ring-2 ring-accent ring-offset-2 ring-offset-bg"
+                    : `border-line text-muted opacity-80 hover:opacity-100 hover:border-line-strong hover:text-ink ${p.color ? "" : "bg-inset"}`}`}>
+              {sel && <span aria-hidden>✓</span>}
+              {p.color && <span aria-hidden className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: p.color }} />}
               {p.name}
             </button>
           );
@@ -537,10 +543,12 @@ function PortfolioPage() {
               계좌 등록·관리 →</Link>
           }>
             증권사 연동 <span className="normal-case text-faint">
-              · 설정에 등록한 계좌를 선택하면 체결을 자동으로 가져오고, 주문표에서 예약주문을 접수할 수 있습니다</span>
+              · 계좌를 연결하면 체결을 자동으로 가져오고 무인 매매에 씁니다{broker?.linked ? " — 연결 후에는 바꿀 수 없음(해제 후 다시 선택)" : ""}</span>
           </CardTitle>
           <div className="flex flex-wrap items-center gap-3 text-[13.5px]">
-            <select className="input !py-2" value={broker?.linked ? String(broker.id ?? "") : ""}
+            {/* 연결된 계좌는 잠금 (2026-09-08 지시) — 체결 가져오기·무인 발주가 이 계좌에 묶여 있어 실수로 바꾸면 원장이 섞인다. 바꾸려면 '연결 해제' 뒤 다시 선택 */}
+            <select className="input !py-2 disabled:cursor-not-allowed disabled:opacity-70" value={broker?.linked ? String(broker.id ?? "") : ""}
+              disabled={!!broker?.linked} title={broker?.linked ? "연결된 계좌는 바꿀 수 없습니다 — 연결 해제 후 다시 선택" : undefined}
               onChange={(e) => void (async () => {
                 const v = e.target.value;
                 const r = await apiFetch(`/portfolio/${sum.portfolio.id}/broker`, {
@@ -557,7 +565,12 @@ function PortfolioPage() {
             )}
             {broker?.linked && (
               <>
-                <span className="rounded-lg bg-ok/10 px-2.5 py-1 font-semibold text-ok">연결됨</span>
+                <span className="rounded-lg bg-ok/10 px-2.5 py-1 font-semibold text-ok">🔒 연결됨</span>
+                <button className="text-[12.5px] text-faint hover:text-down" onClick={() => void (async () => {
+                  if (!window.confirm(`'${broker.label}' 연결을 해제할까요?\n\n체결 자동 가져오기·무인 매매가 멈추고, 다시 연결할 때까지 이 포트는 수동입니다.`)) return;
+                  const r = await apiFetch(`/portfolio/${sum.portfolio.id}/broker`, { method: "PUT", body: JSON.stringify({ credential_id: null }) });
+                  if (r.ok) { setImp(null); setImpMsg(""); void load(pid); }
+                })()}>연결 해제</button>
                 {broker.last_import_at && <span className="text-faint">마지막 가져오기 {broker.last_import_at.slice(0, 16).replace("T", " ")}</span>}
                 {market === "KR" && (
                   <span className="text-[12.5px] text-faint">
@@ -899,10 +912,16 @@ function PortfolioPage() {
             return ed === today
               ? `오늘(${ed.slice(5)}) 실행 주문표 — 확정`
               : `${ed.slice(5)} 실행 예정 주문표`;
-          })()} {signal?.status === "OK" && (
+          })()}
+          {recInfo.length > 0 && recWarn.length === 0 && signal?.reconcile && (
+            <Tip tip={<span><b className="text-ink">{signal.reconcile.date.slice(5)} 미체결</b> — {recInfo.map((it) => `${it.label ?? it.text} ${it.plan ?? ""}주`.replace(/\s+주$/, "")).join(" · ")}<br />지정가 미도달이면 정상. 체결됐는데 미등록이면 아래 &apos;체결 등록&apos;.</span>}>
+              <span className="ml-1 cursor-help text-[13px] font-normal text-faint">ⓘ</span>
+            </Tip>
+          )}
+          {signal?.status === "OK" && (
             <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}
               {signal.basis === "portfolio" && signal.account
-                ? ` · 계산 기준: 보유 ${signal.account.qty_200.toLocaleString()}주/레버 ${signal.account.qty_lev.toLocaleString()}주 · 현금 ${fm(signal.account.cash)}${signal.frozen ? ` — ${signal.exec_day?.slice(5) ?? ""} 09:00 상태로 동결 (09:01 발주 기준)` : " — 09:00 전 등록한 입출금·체결은 즉시 반영, 이후는 다음 주문표"}`
+                ? ` · 계산 기준: 보유 ${signal.account.qty_200.toLocaleString()}주/레버 ${signal.account.qty_lev.toLocaleString()}주 · 현금 ${fm(signal.account.cash)}${signal.frozen ? " — 09:00 동결" : " — 09:00 전 등록분 반영"}`
                 : " · 모델 기준"}
               {/* 공식 출처 — 포트 동결(전환 시 변수)이면 도움말 풍선으로 변수 상세 표기 (2026-09-05 지시) */}
               {signal.algo_source === "portfolio" && (
@@ -929,18 +948,14 @@ function PortfolioPage() {
               {signal.algo_source === "settings" && " · 공식: 알고리즘 설정 기준"}</span>
           )}
         </CardTitle>
-        {/* 계획 vs 등록 체결 대조 경고 — 표시만, 자동 수정 없음 (2026-09-05 지시) */}
-        {(signal?.reconcile?.items?.length ?? 0) > 0 && (
+        {/* 계획 vs 등록 체결 대조 — warn(계획 외 거래·수량 불일치)만 배너. 지정가 미체결(info)은 제목 옆 ⓘ (2026-09-08 지시) */}
+        {recWarn.length > 0 && signal?.reconcile && (
           <div className="mb-3 rounded-lg border border-warn/40 bg-warn/5 px-3.5 py-2.5">
-            <div className="mb-1 text-[13px] font-bold text-warn">
-              ⚠️ {signal!.reconcile!.date} 계획과 등록된 거래가 다릅니다 — 확인해 주세요
-            </div>
+            <div className="mb-1 text-[13px] font-bold text-warn">⚠️ {signal.reconcile.date.slice(5)} 계획과 등록 체결이 다릅니다</div>
             <ul className="grid gap-0.5 text-[13px] text-muted">
-              {signal!.reconcile!.items.map((it, i) => (
-                <li key={i}>{it.level === "warn" ? "•" : "·"} {it.text}</li>
-              ))}
+              {recWarn.map((it, i) => <li key={i}>• {it.text}</li>)}
             </ul>
-            <div className="mt-1 text-[11.5px] text-faint">자동으로 고치지 않습니다 — 일지에서 직접 수정하거나 증권사 내역을 가져오세요.</div>
+            <div className="mt-1 text-[11.5px] text-faint">직접 확인 — 일지 수정 또는 증권사 체결 가져오기</div>
           </div>
         )}
         {/* 예수금 대조 경고 (2026-09-06 지시) — 원장 현금 vs 계좌 D+2 예수금, 허용 오차 초과 시. 자동 수정 없음, 차액 등록은 버튼으로 */}
@@ -982,7 +997,7 @@ function PortfolioPage() {
               {st.detail && <div className="mt-1 text-[12.5px] text-muted">{st.detail}</div>}
               {st.code === "off" && (
                 <div className="mt-1 text-[12px] text-faint">
-                  무인 매수·매도는 <Link href="/settings?tab=auto" className="text-accent hover:underline">설정 › 무인 실행</Link>의 계좌 플래그로만 켜고 끕니다 — 끄면 그 방향의 오늘 무인 주문도 즉시 취소됩니다.
+                  켜고 끄기: <Link href="/settings?tab=auto" className="text-accent hover:underline">설정 › 무인 실행</Link> (끄면 오늘 무인 주문도 취소)
                 </div>
               )}
               {boMsg && <div className="mt-1 text-[12.5px] text-ink">{boMsg}</div>}
