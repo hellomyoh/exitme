@@ -57,10 +57,12 @@ services:
       - SERVICE_ROLE=worker
     command: celery -A app.worker.celery_app worker -Q backtest,ingest --concurrency=4 --loglevel=INFO
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.worker.celery_app", "inspect", "ping", "--timeout", "5"]
+      # 워커 자체 응답 + beat→큐→워커 하트비트(Redis 키, 60초 주기·TTL 180초, ADR-009 §5) — 큐가 소비되지 않으면 unhealthy
+      test: ["CMD-SHELL", "celery -A app.worker.celery_app inspect ping --timeout 5 >/dev/null && python -c \"import redis,os,sys;r=redis.from_url(os.environ.get('REDIS_URL','redis://redis:6379/0'));sys.exit(0 if r.get('autoexec:pipeline:heartbeat') else 1)\""]
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 150s   # 첫 하트비트(60초 주기)가 찍힐 때까지 유예
     depends_on:
       db:
         condition: service_healthy
@@ -75,10 +77,12 @@ services:
       - SERVICE_ROLE=scheduler
     command: celery -A app.worker.celery_app beat --loglevel=INFO
     healthcheck:
-      test: ["CMD", "python", "-c", "import app.worker"]
+      # beat 가 실제로 태스크를 보내고 워커가 받았는지 — 하트비트 키(ADR-009 §5). 종전(모듈 import 만)은 2026-09-08 미실행을 잡지 못했다
+      test: ["CMD", "python", "-c", "import redis,os,sys;r=redis.from_url(os.environ.get('REDIS_URL','redis://redis:6379/0'));sys.exit(0 if r.get('autoexec:pipeline:heartbeat') else 1)"]
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 150s
     depends_on:
       redis:
         condition: service_healthy

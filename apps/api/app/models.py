@@ -286,7 +286,7 @@ class BrokerCredential(TimestampMixin, Base):
     account_no: Mapped[str] = mapped_column(EncryptedText, nullable=False)     # 🔒 종합계좌 8자리
     acnt_prdt_cd: Mapped[str] = mapped_column(Text, nullable=False, default="01")
     last_import_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # 무인 실행 허용 — 계좌별 (0024, 2026-09-07 지시) {"buy", "sell", "preopen_cancel"}. 계좌가 진실의 원천, user_settings.auto_exec 는 새 계좌 기본값
+    # 무인 매매 플래그 — 계좌별 (0024, 2026-09-07 지시; ADR-009) {"buy", "sell", "daily_buy_cap_pct"}. 계좌가 진실의 원천, user_settings.auto_exec 는 새 계좌 기본값
     auto_exec: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
 
@@ -352,7 +352,7 @@ class BrokerOrder(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, default="reserved")
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     response: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    # 0021: reserve(예약주문) | auto(무인 실행 — approved → submitted → filled|partial|unfilled|cancelled, 생략 skipped_gap|skipped, 실패 failed)
+    # 0021: reserve(예약주문) | auto(무인 실행 — 09:01 에 생성되며 최종 상태 submitted → filled|partial|unfilled|cancelled, 생략 skipped_gap|skipped, 실패 failed; ADR-009. approved 는 2026-09-08 이전 행)
     mode: Mapped[str] = mapped_column(Text, nullable=False, default="reserve")
 
 

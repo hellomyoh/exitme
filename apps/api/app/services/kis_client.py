@@ -163,7 +163,7 @@ class KisClient:
     def fetch_expected(self, code: str) -> dict:
         """호가/예상체결 조회 (FHKST01010200) — 동시호가 중 예상체결가. 반환 {"expected": antc_cnpr, "expected_qty", "time": 호가 접수 시각, "raw"}.
 
-        장중에는 예상체결가가 0 이고 현재가만 의미가 있다. 장 시작 전 갭 취소(app.preopen)가 08:57 에 쓴다.
+        장중에는 예상체결가가 0 이고 현재가만 의미가 있다. (08:57 사전 갭 취소는 2026-09-08 ADR-009 로 폐지 — 조회 메서드만 남긴다)
         """
         body = self._get(EXPECTED_PATH, EXPECTED_TR, {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
         out2 = body.get("output2") or {}
@@ -481,16 +481,19 @@ class KisTradingClient(KisClient):
         return out
 
     # ── 정규 주문 (2026-09-06 지시: 무인 실행) — 지정가 현금 주문·취소. 호출자는 app.autoexec 만 ──
-    def place_order(self, code: str, side: str, qty: int, price: int) -> dict:
-        """국내주식 지정가 현금 주문 (실전 TTTC0012U 매수 / TTTC0011U 매도, 모의 VTTC0802U / VTTC0801U).
+    def place_order(self, code: str, side: str, qty: int, price: int | None) -> dict:
+        """국내주식 현금 주문 (실전 TTTC0012U 매수 / TTTC0011U 매도, 모의 VTTC0802U / VTTC0801U).
 
-        시장가는 받지 않는다(무인 실행은 지정가만). 반환 {"order_no": 주문번호, "orgno": 거래소코드, "msg", "raw"}.
+        price 가 양수면 지정가(ORD_DVSN 00), None/0 이면 시장가(ORD_DVSN 01, 단가 0) — 레버리지 진입·청산 줄의 09:01 무인 발주
+        (사용자 결정 2026-09-08, ADR-009). 반환 {"order_no": 주문번호, "orgno": 거래소코드, "msg", "raw"}.
         """
-        if qty <= 0 or not price or price <= 0:
-            raise KisError("지정가 주문은 수량·가격이 0 보다 커야 합니다")
+        if qty <= 0:
+            raise KisError("주문 수량이 0 보다 커야 합니다")
+        if price is not None and price < 0:
+            raise KisError("지정가는 0 보다 커야 합니다")
         tr = ORDER_TR[(self.auth.env if self.auth.env in ("prod", "vps") else "prod", side)]
         body = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "PDNO": code,
-                "ORD_DVSN": "00", "ORD_QTY": str(int(qty)), "ORD_UNPR": str(int(price))}
+                "ORD_DVSN": "00" if price else "01", "ORD_QTY": str(int(qty)), "ORD_UNPR": str(int(price or 0))}
         data = self._post(ORDER_PATH, tr, body)
         out = data.get("output") or {}
         if isinstance(out, list):

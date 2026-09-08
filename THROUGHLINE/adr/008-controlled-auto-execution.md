@@ -1,6 +1,6 @@
 # ADR-008 — 통제된 무인 실행: 승인된 지정가를 시가 확인 후 자동 발주
 
-- 상태: 채택 (2026-09-06, 사용자 지시)
+- 상태: **부분 대체됨** — [ADR-009](009-unattended-single-execution.md) (2026-09-08). 통제 조건 2(승인)·3(지정가만)·5 의 계획 재대조·12·13(사전 갭 취소)·14(완전 무인·전량 취소)는 폐지, 1(계좌 플래그)·4(시가 확인)·6(하루 1회)·7(자동 정지)·8(감사)·9(매도 우선)·11(09:01 원장 대조)은 ADR-009 §2 로 승계. 원 채택 2026-09-06 (사용자 지시)
 - 관련: [ADR-007](007-ravg-v25-adoption.md), [docs/broker-reserved-orders-20260905.md](../docs/broker-reserved-orders-20260905.md), [docs/auto-execution-20260906.md](../docs/auto-execution-20260906.md), [docs/krx-aftermarket-20260914-review.md](../docs/krx-aftermarket-20260914-review.md) §갭 취소
 
 ## 배경

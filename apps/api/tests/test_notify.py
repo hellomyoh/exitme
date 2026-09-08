@@ -44,10 +44,10 @@ def _capture(monkeypatch):
 
 
 def test_notify_settings_roundtrip_and_validation():
-    """기본값(꺼짐·토큰 없음·항목 9개), 토큰 형식 검증, 마스킹, 항목 병합, 끄기·토큰 삭제."""
+    """기본값(꺼짐·토큰 없음·항목 7개 — 자동 승인·사전 갭 취소는 ADR-009 로 폐지), 토큰 형식 검증, 마스킹, 항목 병합, 끄기·토큰 삭제."""
     c, h = _client()
     g = c.get("/settings/notify", headers=h).json()
-    assert g["enabled"] is False and g["has_token"] is False and g["ready"] is False and len(g["categories"]) == 9
+    assert g["enabled"] is False and g["has_token"] is False and g["ready"] is False and len(g["categories"]) == 7
     assert g["events"]["autoexec"] is True and g["events"]["orders"] is False and g["events"]["trades"] is False and g["events"]["daily_status"] is True
     r = c.put("/settings/notify", json={"bot_token": "not-a-token"}, headers=h)
     assert r.status_code == 422 and "토큰 형식" in r.json()["detail"]

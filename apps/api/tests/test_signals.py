@@ -141,18 +141,19 @@ def test_portfolio_basis_orders_respect_holdings():
 
 # ── 2026-09-02 B안: 주문표 = 신호 기준일 종가 시점 상태 (feature-portfolio §5·§12)
 
-def _last_bar_and_exec_day(code="069500"):
-    from datetime import timedelta as _td
-    from sqlalchemy import select
+def _last_bar_and_exec_day(code="069500", lev="122630"):
+    """주문표 기준일 = 두 종목의 마지막 **공통** 일봉(load_aligned_bars 와 같은 정의) — 한쪽만 있는 최신 봉은 기준일이 아니다."""
+    from sqlalchemy import func, select
+    from sqlalchemy.orm import aliased
     from app.models import Instrument, OhlcvDaily
+    from app.signals import _next_exec_day
     with SessionLocal() as s:
-        inst = s.scalar(select(Instrument).where(Instrument.code == code))
-        from sqlalchemy import func
-        last = s.scalar(select(func.max(OhlcvDaily.trade_date)).where(OhlcvDaily.instrument_id == inst.id))
-    exec_day = last + _td(days=1)
-    while exec_day.weekday() >= 5:
-        exec_day += _td(days=1)
-    return last, exec_day
+        i1 = s.scalar(select(Instrument.id).where(Instrument.code == code))
+        i2 = s.scalar(select(Instrument.id).where(Instrument.code == lev))
+        a, b = aliased(OhlcvDaily), aliased(OhlcvDaily)
+        last = s.scalar(select(func.max(a.trade_date)).join(b, a.trade_date == b.trade_date)
+                        .where(a.instrument_id == i1, b.instrument_id == i2))
+        return last, _next_exec_day(last, s)
 
 
 def test_same_day_fill_does_not_change_order_sheet():
@@ -373,6 +374,74 @@ def test_plan_pending_notice_states(monkeypatch):
 
     monkeypatch.setattr("app.services.ingest.market_session_state", lambda m: (today, True))
     pending, note = sig._plan_pending(today)                 # 마감 후인데 아직 오늘 기준 → 대기
-    assert pending is True and "16:45" in note and "16:05" in note
+    assert pending is True and "16:05" in note and "16:45" not in note   # 16:45 승인 배치는 ADR-009 로 폐지
     assert sig._plan_pending(today - _td(days=1))[0] is True  # 지난 주문표 → 대기
     assert sig._plan_pending(today + _td(days=1))[0] is False  # 갱신 완료 → 정상
+
+
+def test_order_sheet_reflects_registrations_until_0900_then_freezes():
+    """ADR-009 동결 규칙: 실행일 09:00 전 등록(입출금)은 즉시 반영, 09:00 이후 등록은 다음 주문표. 09:00 뒤 조회는 동결 스냅샷을 그대로 돌려주고,
+    force_freeze(09:01 실행기)가 그날의 주문표를 확정한다."""
+    from datetime import timedelta as _td
+
+    from sqlalchemy import select
+
+    from app.models import User
+    from app.signals import _portfolio_orders, freeze_at
+    from tests.test_backtest_api import seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+    client = TestClient(app, base_url="https://testserver")
+    email = f"fz{uuid.uuid4().hex[:8]}@stocklab.dev"
+    token = client.post("/auth/register", json={"email": email, "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    pid = client.post("/portfolios", json={"name": "동결 검증", "market": "KR", "code_200": "069500"}, headers=h).json()["id"]
+    base_day, exec_day = _last_bar_and_exec_day()
+    with SessionLocal() as s:
+        uid = s.scalar(select(User.id).where(User.email == email))
+    past = f"{base_day}T10:00:00+09:00"
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 50_000_000, "executed_at": past}, headers=h)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 100, "price": 60000, "executed_at": past}, headers=h)
+    early = freeze_at(exec_day) - _td(hours=1)
+    with SessionLocal() as s:
+        before = _portfolio_orders(s, pid, uid, now=early)
+    assert before["exec_day"] == exec_day.isoformat() and before["frozen"] is False
+    assert before["account"]["cash"] == 44_000_000 and before["account"]["qty_200"] == 100
+    # 실행일 08:30 입금 → 즉시 반영 (종전 B안은 실행일 당일이면 제외했다) · 09:30 입금 → 다음 주문표부터
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 10_000_000, "executed_at": f"{exec_day}T08:30:00+09:00"}, headers=h)
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 5_000_000, "executed_at": f"{exec_day}T09:30:00+09:00"}, headers=h)
+    with SessionLocal() as s:
+        mid = _portfolio_orders(s, pid, uid, now=early)
+    assert mid["frozen"] is False and mid["account"]["cash"] == 54_000_000
+    # 09:01 실행기(force_freeze) 가 09:00 기준으로 확정 — 이후 화면은 스냅샷. 소급 입금(08:00)을 등록해도 동결 화면은 그대로
+    with SessionLocal() as s:
+        fixed = _portfolio_orders(s, pid, uid, force_freeze=True, now=freeze_at(exec_day) + _td(minutes=1))
+    assert fixed["frozen"] is True and fixed["frozen_at"] and fixed["account"]["cash"] == 54_000_000
+    client.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 7_000_000, "executed_at": f"{exec_day}T08:00:00+09:00"}, headers=h)
+    with SessionLocal() as s:
+        after = _portfolio_orders(s, pid, uid, now=freeze_at(exec_day) + _td(minutes=3))
+        again = _portfolio_orders(s, pid, uid, now=early)
+    assert after["frozen"] is True and after["frozen_at"] == fixed["frozen_at"] and after["account"] == mid["account"] and after["orders"] == mid["orders"]
+    assert again["frozen"] is True and again["account"]["cash"] == 54_000_000   # 동결 뒤에는 조회 시각과 무관하게 스냅샷
+
+
+def test_next_exec_day_skips_calendar_holidays():
+    """캘린더에 휴장으로 등록된 평일은 실행일에서 건너뛴다 (행이 없으면 개장으로 간주)."""
+    from datetime import date as _date
+
+    from app.models import TradingCalendar
+    from app.signals import _next_exec_day
+
+    tue, wed, thu = _date(2030, 1, 1), _date(2030, 1, 2), _date(2030, 1, 3)
+    assert _next_exec_day(tue) == wed
+    with SessionLocal() as s:
+        s.merge(TradingCalendar(cal_date=wed, is_open=False))
+        s.commit()
+        try:
+            assert _next_exec_day(tue, s) == thu
+            assert _next_exec_day(tue) == wed   # 세션 없이 호출하면 종전 규칙(주말만)
+        finally:
+            s.delete(s.get(TradingCalendar, wed))
+            s.commit()

@@ -40,7 +40,7 @@ def test_prompt_knowledge_and_tool_registry():
 
     names = {t["function"]["name"] for t in TOOLS}
     assert {"auto_exec_status", "recent_logs"} <= names and all(n in TOOL_KO for n in names)
-    for kw in ("무인 실행", "사전 갭 취소", "완전 무인", "예수금 대조", "매매 로그", "텔레그램", "auto_exec_status", "recent_logs", "다시 켜기"):
+    for kw in ("무인 매매", "09:01", "무인 취소", "예수금 대조", "매매 로그", "텔레그램", "auto_exec_status", "recent_logs", "다시 켜기"):
         assert kw in OPERATIONS_KNOWLEDGE, kw
     assert "매매 로그" in CORE_CONTRACT and "텔레그램 알림 = 일반 설정" in CORE_CONTRACT
     # 'HTS 에서만 발주' 라는 낡은 문장은 사라지고 세 경로가 적혀 있다
@@ -63,15 +63,16 @@ def test_auto_exec_status_and_recent_logs_tools_are_user_scoped():
     with SessionLocal() as s:
         s.add(BrokerOrder(portfolio_id=pid, broker_credential_id=None, plan_date=today, line_key="grid1:K200:buy:limit:99000",
                           code="069500", instrument="K200", kind="grid1", side="buy", otype="limit", qty=5, price=99_000,
-                          status="approved", mode="auto"))
+                          status="submitted", mode="auto", order_no="N1"))
         s.commit()
     st = _run_tool("auto_exec_status", {}, uid)
-    assert st["settings"]["default"] == {"buy": True, "sell": False, "preopen_cancel": True} and st["settings"]["accounts"] == []
+    assert st["settings"]["default"] == {"buy": True, "sell": False, "daily_buy_cap_pct": 20.0} and st["settings"]["accounts"] == []
     assert st["notify"]["enabled"] is True and st["notify"]["ready"] is True and "chat_id" not in st["notify"] and "token" not in str(st["notify"])
     p = next(x for x in st["portfolios"] if x["portfolio_id"] == pid)
-    assert p["name"] == "챗상태" and p["broker_linked"] is False and p["paused"] is False and p["auto_approve"]["enabled"] is True   # 기본 켬
-    assert p["auto_approve"]["daily_buy_cap_pct"] == 20.0 and p["live_orders"] == {"count": 1, "by_status": {"approved": 1, "reserved": 0, "submitted": 0, "partial": 0}}
-    assert p["cash_check"] is None and p["preopen_last_run"] is None
+    assert p["name"] == "챗상태" and p["broker_linked"] is False and p["paused"] is False
+    assert p["state"]["code"] == "off" and "계좌 없음" in p["state"]["label"] and p["exec_day"] == today.isoformat()   # 계좌 미연결 = 수동 모드
+    assert p["live_orders"] == {"count": 1, "by_status": {"submitted": 1, "partial": 0}}
+    assert p["cash_check"] is None and p["skip"] is None
     one = _run_tool("auto_exec_status", {"portfolio_id": pid}, uid)
     assert [x["portfolio_id"] for x in one["portfolios"]] == [pid]
     logs = _run_tool("recent_logs", {"days": 7}, uid)

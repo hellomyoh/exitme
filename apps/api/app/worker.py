@@ -53,25 +53,20 @@ celery_app.conf.update(
             "task": "app.worker.broker_post_close_sync",
             "schedule": crontab(hour=17, minute=10, day_of_week="mon-fri"),
         },
-        # 무인 실행 (2026-09-06 지시, ADR-008) — 09:01 에 당일 시가 확인 → 갭 취소 판정 → 승인된 지정가 발주. 하루 1회
+        # 무인 매매 단일 실행 (ADR-009, 2026-09-08) — 09:01 에 주문표 계산·동결 → 시가 확인 → 갭 판정 → 잔고 → 상한 → 발주. 하루 1회
         "auto-exec-open": {
             "task": "app.worker.auto_execute_open",
             "schedule": crontab(hour=9, minute=1, day_of_week="mon-fri"),
         },
-        # 완전 무인 운영 (2026-09-07 지시) — 16:45 (체결 가져오기 15:45·일봉 16:05·스냅샷 16:40 뒤) 다음 실행일 주문표 계산 → 자동 승인·시장가 줄 예약 접수
-        "auto-approve-plan": {
-            "task": "app.worker.auto_approve_plan",
-            "schedule": crontab(hour=16, minute=45, day_of_week="mon-fri"),
+        # 09:15 감시 — 09:01 이 돌지 않은 포트를 지연 실행(락으로 중복 없음) + 경고 (2026-09-08 사고: 승인만 남고 발주 배치 미실행)
+        "auto-exec-watchdog": {
+            "task": "app.worker.auto_exec_watchdog",
+            "schedule": crontab(hour=9, minute=15, day_of_week="mon-fri"),
         },
-        # 보완 실행 (2026-09-07 밤 지시) — 16:45 뒤에 켰거나 그 실행이 실패한 포트를 09:00 전에 승인. 새로 한 일이 없으면 조용히
-        "auto-approve-catchup": {
-            "task": "app.worker.auto_approve_catchup",
-            "schedule": crontab(hour=8, minute=40, day_of_week="mon-fri"),
-        },
-        # 장 시작 전 예상 시가 갭 취소 (2026-09-06 지시) — 08:57 동시호가 예상체결가 ≤ 갭 기준이면 접수된 그리드 매수를 취소(취소만 무인)
-        "preopen-gap-cancel": {
-            "task": "app.worker.preopen_gap_cancel",
-            "schedule": crontab(hour=8, minute=57, day_of_week="mon-fri"),
+        # beat → ingest 큐 → 워커 하트비트 — 컨테이너 헬스체크가 Redis 키(TTL 180초)를 본다 (종전 헬스체크는 모듈 import 만 확인)
+        "pipeline-heartbeat": {
+            "task": "app.worker.pipeline_heartbeat",
+            "schedule": 60.0,
         },
     },
 )
@@ -308,7 +303,7 @@ def daily_signal(target: str | None = None) -> dict:
 
 @celery_app.task(name="app.worker.auto_execute_open", max_retries=0)
 def auto_execute_open() -> dict:
-    """무인 실행 — 승인된 지정가 줄을 09:01 시가 확인 후 발주 (재시도 없음: 중복 발주 방지, ADR-008)."""
+    """무인 매매 단일 실행 — 09:01 주문표 계산·동결 → 발주 (재시도 없음: 중복 발주 방지, ADR-009)."""
     from app.autoexec import run_auto_execution
     from app.db import SessionLocal
     from app.models import TradingCalendar
@@ -322,26 +317,10 @@ def auto_execute_open() -> dict:
         return run_auto_execution(session)
 
 
-@celery_app.task(name="app.worker.auto_approve_plan", max_retries=0)
-def auto_approve_plan() -> dict:
-    """완전 무인 — 자동 승인이 켜진 국내 포트의 다음 실행일 주문표를 계산해 승인·예약 접수 (재시도 없음: 중복 접수 방지)."""
-    from app.autoapprove import run_auto_approve
-    from app.db import SessionLocal
-    from app.models import TradingCalendar
-
-    today = datetime.now(KST).date()
-    with SessionLocal() as session:
-        cal = session.get(TradingCalendar, today)
-        if cal is not None and not cal.is_open:
-            logger.info("skip auto_approve_plan: %s is a holiday", today)
-            return {"skipped": "holiday", "date": today.isoformat()}
-        return run_auto_approve(session)
-
-
-@celery_app.task(name="app.worker.auto_approve_catchup", max_retries=0)
-def auto_approve_catchup() -> dict:
-    """완전 무인 08:40 보완 — 아직 승인되지 않은 오늘 실행분(09:00 전)을 승인. 변경 없으면 기록하지 않는다."""
-    from app.autoapprove import run_auto_approve
+@celery_app.task(name="app.worker.auto_exec_watchdog", max_retries=0)
+def auto_exec_watchdog() -> dict:
+    """09:15 감시 — 09:01 실행 기록이 없는 포트를 지연 실행하고 경고 (ADR-009 §5)."""
+    from app.autoexec import run_watchdog
     from app.db import SessionLocal
     from app.models import TradingCalendar
 
@@ -350,23 +329,18 @@ def auto_approve_catchup() -> dict:
         cal = session.get(TradingCalendar, today)
         if cal is not None and not cal.is_open:
             return {"skipped": "holiday", "date": today.isoformat()}
-        return run_auto_approve(session, quiet_noop=True)
+        out = run_watchdog(session)
+        if out["late"]:
+            logger.error("auto-exec watchdog: 09:01 run missing, executed late for portfolios %s (heartbeat age %s)", out["late"], out["heartbeat_age"])
+        return out
 
 
-@celery_app.task(name="app.worker.preopen_gap_cancel", max_retries=0)
-def preopen_gap_cancel() -> dict:
-    """장 시작 전 예상 시가 갭 취소 — 08:57 예상체결가로 판정, 그리드 매수 미체결 취소 (재시도 없음: 09:00 넘기면 의미 없음)."""
-    from app.db import SessionLocal
-    from app.models import TradingCalendar
-    from app.preopen import run_preopen_cancel
+@celery_app.task(name="app.worker.pipeline_heartbeat", max_retries=0, ignore_result=True)
+def pipeline_heartbeat() -> bool:
+    """beat → 큐 → 워커 경로 하트비트 (60초) — 컨테이너 헬스체크용 Redis 키 갱신."""
+    from app.autoexec import touch_heartbeat
 
-    today = datetime.now(KST).date()
-    with SessionLocal() as session:
-        cal = session.get(TradingCalendar, today)
-        if cal is not None and not cal.is_open:
-            logger.info("skip preopen_gap_cancel: %s is a holiday", today)
-            return {"skipped": "holiday", "date": today.isoformat()}
-        return run_preopen_cancel(session)
+    return touch_heartbeat()
 
 
 @celery_app.task(name="app.worker.broker_post_close_sync", max_retries=1, autoretry_for=(Exception,), retry_backoff=120)

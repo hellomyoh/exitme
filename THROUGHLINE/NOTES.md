@@ -65,3 +65,8 @@
 - [2026-08-31] **KIS 해외주식 기간별시세(HHDFS76240000)는 미 장마감 전 호출 시 당일의 미완성 봉을 반환한다** — 21:12 KST(프리마켓 08:12 ET) 수집에서 2026-08-31 QQQ/QLD 봉이 거래량 20만(평소 3,400만)으로 적재됨. 적재가 ON CONFLICT DO NOTHING(ADR-002 원본 불변)이고 `ingest_us_daily` 증분이 마지막 저장일에서 멈추므로 **미완성 봉은 자동 교체되지 않고 영구 잔존한다**. 미국 수집은 미 장마감 확정 후에만 당일 봉을 저장해야 한다. (근거: DB `ohlcv_daily` 실데이터, [docs/us-transfer-study-20260831.md](docs/us-transfer-study-20260831.md) §4)
 
 - 2026-08-31 | 레짐 '추세 강도 마진'(BULL 진입에 MA20>MA60×(1+δ)) 실험 — δ 0.5~2% 전 구간에서 US 악화(19년 +720→661~708%), KR 노이즈, MDD 무개선 → **기각**. 약한 상승장 강등은 진짜 추세 초입 상실 + 중립 익절의 추세 절단 비용이 더 큼. 관련: 약한 추세 구간의 저수익은 판정 오류가 아니라 시장에 벌 거리가 없던 것.
+
+## Celery beat / 헬스체크 (2026-09-08)
+
+- 2026-09-08 09:01 `auto_execute_open` 이 돌지 않았는데(승인 3줄 `approved` 잔존, 워커·스케줄러 로그에 태스크 기록 없음) `docker compose ps` 는 두 컨테이너 모두 **healthy** 였다 — 종전 scheduler 헬스체크가 `python -c "import app.worker"`(모듈 import 성공 = 건강)라 beat 루프의 실제 발송 여부와 무관했고, worker 의 `celery inspect ping` 도 큐 소비 여부를 말하지 않는다. 그래서 ADR-009 §5 의 하트비트(beat 가 60초마다 태스크를 보내고 워커가 Redis 키를 갱신, 헬스체크는 키 존재 확인)를 두었다. 근본 원인(beat 미발송 vs 큐 미소비)은 미확정 — 사용자 측 로그 확인 대기.
+- 하트비트 키 확인은 컨테이너 안 `python -c "import redis,os;print(redis.from_url(os.environ['REDIS_URL']).get('autoexec:pipeline:heartbeat'))"`. `start_period` 150초를 두지 않으면 첫 60초 틱 전에 unhealthy 로 뜬다. `docker compose restart` 는 헬스체크 정의 변경을 반영하지 않는다 — `docker compose up -d <svc>` 가 필요하다.
