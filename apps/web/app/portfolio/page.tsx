@@ -175,6 +175,7 @@ function PortfolioPage() {
   const [signal, setSignal] = useState<Signal | null>(null);
   const [curve, setCurve] = useState<{ date: string; equity: number; index: number; pnl?: number }[]>([]);
   const eqRef = useRef<HTMLDivElement>(null);
+  const eqTipRef = useRef<HTMLDivElement>(null);   // 롤오버 툴팁 — 날짜·수익률·평가액 (2026-09-08 지시)
   const eqApi = useRef<IChartApi | null>(null);
 
   // ── 무인 매매 헬퍼 (ADR-009) — 주문표 줄 ↔ 09:01 실행 결과(BrokerOrder) 매칭. 버튼은 '이번 실행일 무인 취소'·'되돌리기'·'다시 켜기'만 ──
@@ -475,6 +476,23 @@ function PortfolioPage() {
     });
     series.setData(curve.map((c) => ({ time: c.date, value: c.index - 100 })));
     series.createPriceLine({ price: 0, color: "#9aa1ad", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "시작" });
+    // 마우스 롤오버: 날짜 · 시작 대비 수익률 · 그날 총 평가액 (2026-09-08 지시)
+    const byDate = new Map(curve.map((c) => [c.date, c]));
+    chart.subscribeCrosshairMove((param) => {
+      const tip = eqTipRef.current;
+      const box = eqRef.current;
+      if (!tip || !box) return;
+      const t = param.time ? String(param.time) : "";
+      const c = t ? byDate.get(t) : undefined;
+      if (!c || !param.point || param.point.x < 0 || param.point.y < 0) { tip.hidden = true; return; }
+      const p = c.index - 100;
+      tip.innerHTML = `<b>${c.date}</b> · 수익률 <b class="${p >= 0 ? "text-up" : "text-down"}">${pct(p)}</b> · 평가액 <b>${fm(c.equity)}</b>`;
+      tip.hidden = false;
+      const w = tip.offsetWidth;
+      const x = param.point.x + 14 + w > box.clientWidth ? Math.max(0, param.point.x - w - 14) : param.point.x + 14;
+      tip.style.left = `${x}px`;
+      tip.style.top = "6px";
+    });
     chart.timeScale().fitContent();
     return () => { try { eqApi.current?.remove(); } catch { /* noop */ } eqApi.current = null; };
   }, [curve]);
@@ -840,7 +858,10 @@ function PortfolioPage() {
           </span>
         ) : undefined}>수익률 추이 <span className="normal-case text-faint">· 시작 대비 % · 입출금 왜곡 제거(TWR)</span></CardTitle>
         {curve.length >= 2 ? (
-          <div ref={eqRef} className="h-52" />
+          <div className="relative">
+            <div ref={eqRef} className="h-52" />
+            <div ref={eqTipRef} hidden className="pointer-events-none absolute z-10 whitespace-nowrap rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-muted shadow-md" />
+          </div>
         ) : curve.length === 1 ? (
           <div className="flex items-center gap-4 rounded-xl bg-inset px-5 py-6">
             <span className="text-3xl">🌱</span>
