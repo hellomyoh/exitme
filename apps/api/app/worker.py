@@ -68,6 +68,11 @@ celery_app.conf.update(
             "task": "app.worker.pipeline_heartbeat",
             "schedule": 60.0,
         },
+        # 거래일 캘린더 갱신 (2026-09-08, ADR-009 선결) — KIS 국내휴장일조회로 앞 120일. 배포 후 훅(scripts/post-deploy.d/20)도 같은 일을 한다
+        "refresh-trading-calendar": {
+            "task": "app.worker.refresh_trading_calendar",
+            "schedule": crontab(hour=6, minute=0, day_of_week="sun"),
+        },
     },
 )
 
@@ -341,6 +346,23 @@ def pipeline_heartbeat() -> bool:
     from app.autoexec import touch_heartbeat
 
     return touch_heartbeat()
+
+
+@celery_app.task(name="app.worker.refresh_trading_calendar", max_retries=1, autoretry_for=(Exception,), retry_backoff=300)
+def refresh_trading_calendar(days: int = 120) -> dict:
+    """거래일 캘린더 갱신 — KIS 국내휴장일조회(CTCA0903R)로 오늘부터 days 일. 키가 없으면 건너뛴다(로그)."""
+    from app.db import SessionLocal
+    from app.services.calendar import refresh_trading_calendar as _refresh
+    from app.services.kis_auth import KisAuth
+    from app.services.kis_client import KisClient
+
+    if not (settings.kis_app_key and settings.kis_app_secret):
+        logger.warning("refresh_trading_calendar skipped: KIS keys not configured")
+        return {"skipped": "no-kis-keys"}
+    today = datetime.now(KST).date()
+    client = KisClient(KisAuth(settings.kis_app_key, settings.kis_app_secret, settings.kis_env))
+    with SessionLocal() as session:
+        return _refresh(session, client, today, today + timedelta(days=days))
 
 
 @celery_app.task(name="app.worker.broker_post_close_sync", max_retries=1, autoretry_for=(Exception,), retry_backoff=120)

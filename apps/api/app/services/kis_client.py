@@ -25,6 +25,8 @@ PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
 PRICE_TR = "FHKST01010100"
 # 호가/예상체결 (2026-09-06 사전 갭 취소) — 동시호가(08:30~09:00·15:20~15:30) 중 output2.antc_cnpr = 예상체결가
 EXPECTED_PATH = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+HOLIDAY_PATH = "/uapi/domestic-stock/v1/quotations/chk-holiday"   # 국내휴장일조회 (2026-09-08, 거래일 캘린더 갱신)
+HOLIDAY_TR = "CTCA0903R"
 EXPECTED_TR = "FHKST01010200"
 # 주식일별분봉조회 — 과거 최대 1년 보관, 호출당 120건, 시간 커서 내림차순 (실응답 프로브로 확인)
 MINUTE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
@@ -159,6 +161,41 @@ class KisClient:
             {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
         )
         return body["output"]
+
+    def fetch_holidays(self, start: date, end: date, max_pages: int = 24) -> list[tuple[date, bool]]:
+        """국내휴장일조회 (CTCA0903R) — [start, end] 의 날짜별 개장 여부. 거래일 캘린더 갱신이 쓴다 (2026-09-08, ADR-009 선결).
+
+        KIS 는 BASS_DT 부터 하루 한 행(주말 포함)을 페이지(≈24일)로 주고 `ctx_area_nk` 에 다음 페이지의 기준일을 준다(2026-09-08 실측).
+        `opnd_yn`(개장 여부)을 쓴다 — `bzdy_yn`(영업일)·`tr_day_yn`(거래일)은 결제·영업 기준이라 다를 수 있다. 반환은 날짜순, end 초과분은 잘라 낸다.
+        """
+        out: list[tuple[date, bool]] = []
+        base = start
+        seen: set[date] = set()
+        for _ in range(max_pages):
+            body = self._get(HOLIDAY_PATH, HOLIDAY_TR, {"BASS_DT": base.strftime("%Y%m%d"), "CTX_AREA_NK": "", "CTX_AREA_FK": ""})
+            rows = body.get("output") or []
+            if isinstance(rows, dict):
+                rows = [rows]
+            last: date | None = None
+            for r in rows:
+                raw = str(_first(r, "bass_dt", "BASS_DT")).strip()
+                if len(raw) != 8:
+                    continue
+                d = date(int(raw[:4]), int(raw[4:6]), int(raw[6:]))
+                last = d
+                if d < start or d > end or d in seen:
+                    continue
+                seen.add(d)
+                out.append((d, str(_first(r, "opnd_yn", "OPND_YN")).strip().upper() == "Y"))
+            nk = str(body.get("ctx_area_nk") or "").strip()
+            if last is None or last >= end or len(nk) != 8:
+                break
+            nxt = date(int(nk[:4]), int(nk[4:6]), int(nk[6:]))
+            if nxt <= base:
+                break
+            base = nxt
+        out.sort(key=lambda t: t[0])
+        return out
 
     def fetch_expected(self, code: str) -> dict:
         """호가/예상체결 조회 (FHKST01010200) — 동시호가 중 예상체결가. 반환 {"expected": antc_cnpr, "expected_qty", "time": 호가 접수 시각, "raw"}.

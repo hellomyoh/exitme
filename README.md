@@ -54,12 +54,14 @@ scripts/deploy.sh v0.1.1 --force    # 같은 버전 재배포·하위 버전 롤
 scripts/deploy.sh main              # main 최신으로 (검증용)
 scripts/deploy.sh restart           # 코드 변경 없이 컨테이너만 재시작 (docker compose restart) 후 헬스 확인
 scripts/deploy.sh restart api web   # 일부 서비스만 재시작
+scripts/deploy.sh v0.11.0 --skip-hooks   # 배포 후 훅 생략
 ```
 
 마지막에 `✓ version v0.1.1 · ✓ build_time … · ✓ db 0019` 가 나오면 반영 완료이고, ✗ 가 있으면 사유와 함께 실패로 끝납니다.
 추적 파일에 로컬 변경이 있으면 덮어쓰지 않고 중단합니다(`.env` 같은 미추적 파일은 무관).
 태그 배포는 실행 중인 버전과 먼저 비교해 **같은 버전이면 재빌드하지 않고 중지**하고, 낮은 버전(롤백)도 중지합니다 — 의도한 것이면 `--force`.
 `restart` 는 이미지를 다시 만들지 않으므로 코드 변경은 반영되지 않습니다(설정·메모리 문제로 다시 띄울 때 사용).
+헬스 검증 뒤에는 **배포 후 훅** [`scripts/post-deploy.d/*.sh`](scripts/post-deploy.d/README.md)(ADR-009 전환 확인 · KIS 거래일 캘린더 갱신 · 하트비트 확인)를 번호순으로 실행합니다 — 배포되는 태그와 함께 버전 관리되는 멱등 스크립트이며, 한 번만 일어나는 데이터 전환은 alembic 마이그레이션에 둡니다.
 
 수동으로 할 때는 아래 순서입니다.
 

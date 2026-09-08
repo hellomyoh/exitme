@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ExitMe 원격 서버 배포 스크립트 (2026-09-05 지시) — 태그(버전)를 받아 코드 체크아웃 → 이미지 재빌드 → 마이그레이션 → 헬스 검증.
+# ExitMe 원격 서버 배포 스크립트 (2026-09-05 지시) — 태그(버전)를 받아 코드 체크아웃 → 이미지 재빌드 → 마이그레이션 → 헬스 검증 → 배포 후 훅.
 #
 #   사용법:  scripts/deploy.sh <태그|브랜치> [--stash] [--no-build] [--prune] [--force] [--port 12010]
 #   예시:    scripts/deploy.sh v0.1.1            # 태그 v0.1.1 로 패치 배포
@@ -9,6 +9,10 @@
 #            scripts/deploy.sh v0.1.1 --force    # 같은 버전 재배포·하위 버전 롤백을 강제
 #            scripts/deploy.sh restart           # 코드 변경 없이 컨테이너만 재시작 (docker compose restart) 후 헬스 확인
 #            scripts/deploy.sh restart api web   # 일부 서비스만 재시작
+#            scripts/deploy.sh v0.11.0 --skip-hooks   # 배포 후 훅(scripts/post-deploy.d/*.sh) 생략
+#
+#   배포 후 훅(2026-09-08): 헬스 검증 뒤 체크아웃된 태그의 scripts/post-deploy.d/*.sh 를 번호순으로 서브셸에서 source 한다 —
+#   ADR-009 전환 확인·거래일 캘린더 갱신(KIS)·하트비트 확인. 훅 실패는 배포 검증 실패(✗)로 기록하고 다음 훅은 계속. 규칙은 그 디렉터리 README.
 #
 #   태그 배포는 실행 중인 버전과 비교해 같은 버전이면 재빌드하지 않고 중지하고, 낮은 버전(롤백)도 중지한다 (2026-09-06 지시).
 #   의도한 재배포·롤백이면 --force. 브랜치 배포(main)는 코드가 바뀌어도 VERSION 이 같을 수 있어 경고만 하고 진행한다.
@@ -39,17 +43,18 @@ fi
 
 REF="${1:-}"
 if [[ -z "$REF" || "$REF" == "-h" || "$REF" == "--help" ]]; then
-  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
   exit 1
 fi
 shift
-BUILD=1; PRUNE=0; PORT=12010; STASH=0; FORCE=0; SERVICES=()
+BUILD=1; PRUNE=0; PORT=12010; STASH=0; FORCE=0; HOOKS=1; SERVICES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-build) BUILD=0 ;;
     --prune) PRUNE=1 ;;
     --stash) STASH=1 ;;
     --force) FORCE=1 ;;
+    --skip-hooks) HOOKS=0 ;;
     --port) PORT="${2:?--port 값 필요}"; shift ;;
     --*) echo "알 수 없는 옵션: $1" >&2; exit 1 ;;
     *) if [[ "$REF" == "restart" ]]; then SERVICES+=("$1"); else echo "알 수 없는 인자: $1" >&2; exit 1; fi ;;
@@ -226,6 +231,26 @@ else
   echo "⚠ build_time 없음 — 개발 구성(bind mount)으로 떠 있는 것 같습니다"
 fi
 if [[ -n "$DB_REV" && "$H_DB" == "$DB_REV" ]]; then echo "✓ db        $H_DB (alembic head 일치)"; else echo "⚠ db        응답=$H_DB alembic=$DB_REV"; fi
+
+# 5) 배포 후 훅 — 체크아웃된 태그의 scripts/post-deploy.d/*.sh 를 번호순으로 서브셸에서 source (2026-09-08 지시 "배포에 필요한 명령을 스크립트에 포함").
+#    훅은 저장소와 함께 버전 관리되고(그 버전이 필요로 하는 절차가 그 버전과 같이 감), COMPOSE·log·fail·PORT 를 그대로 쓰며 멱등이어야 한다.
+#    한 번만 일어나야 하는 데이터 전환은 훅이 아니라 alembic 마이그레이션(3단계)에 둔다. 훅 실패 = 배포 검증 실패(✗), 다음 훅은 계속.
+if [[ $HOOKS -eq 1 ]]; then
+  if compgen -G "scripts/post-deploy.d/*.sh" >/dev/null; then
+    for hook in scripts/post-deploy.d/*.sh; do
+      log "배포 후 훅 $(basename "$hook")"
+      if ( set -euo pipefail; export PORT EXITME_DIR; source "$hook" ); then
+        echo "✓ $(basename "$hook")"
+      else
+        echo "✗ $(basename "$hook") 실패"; STATUS=1
+      fi
+    done
+  else
+    echo "· 배포 후 훅 없음 (scripts/post-deploy.d)"
+  fi
+else
+  echo "· 배포 후 훅 생략 (--skip-hooks)"
+fi
 
 if [[ $PRUNE -eq 1 ]]; then
   log "docker image prune -f (안 쓰는 이미지 정리)"

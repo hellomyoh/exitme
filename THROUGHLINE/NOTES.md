@@ -70,3 +70,8 @@
 
 - 2026-09-08 09:01 `auto_execute_open` 이 돌지 않았는데(승인 3줄 `approved` 잔존, 워커·스케줄러 로그에 태스크 기록 없음) `docker compose ps` 는 두 컨테이너 모두 **healthy** 였다 — 종전 scheduler 헬스체크가 `python -c "import app.worker"`(모듈 import 성공 = 건강)라 beat 루프의 실제 발송 여부와 무관했고, worker 의 `celery inspect ping` 도 큐 소비 여부를 말하지 않는다. 그래서 ADR-009 §5 의 하트비트(beat 가 60초마다 태스크를 보내고 워커가 Redis 키를 갱신, 헬스체크는 키 존재 확인)를 두었다. 근본 원인(beat 미발송 vs 큐 미소비)은 미확정 — 사용자 측 로그 확인 대기.
 - 하트비트 키 확인은 컨테이너 안 `python -c "import redis,os;print(redis.from_url(os.environ['REDIS_URL']).get('autoexec:pipeline:heartbeat'))"`. `start_period` 150초를 두지 않으면 첫 60초 틱 전에 unhealthy 로 뜬다. `docker compose restart` 는 헬스체크 정의 변경을 반영하지 않는다 — `docker compose up -d <svc>` 가 필요하다.
+
+## KIS 국내휴장일조회 (2026-09-08 실측)
+
+- `GET /uapi/domestic-stock/v1/quotations/chk-holiday`, tr_id `CTCA0903R`, 파라미터 `BASS_DT`(YYYYMMDD)·`CTX_AREA_NK`·`CTX_AREA_FK`(빈 문자열). 응답 `output` 은 **BASS_DT 부터 하루 한 행, 주말 포함**, 페이지당 24일. `ctx_area_nk` 에 다음 페이지의 BASS_DT 가 공백 패딩으로 온다(`'20261001            '`), `msg1` 은 "조회가 계속됩니다..". 필드 `wday_dvsn_cd` 는 01=일 … 07=토(2026-09-08 화요일 = 03), `opnd_yn` 이 개장 여부(`bzdy_yn` 영업일·`tr_day_yn` 거래일·`sttl_day_yn` 결제일과 별개). 미래 날짜도 준다 — 2026-09-24(목)·25(금) 추석 휴장이 `opnd_yn=N` 으로 확인됐다.
+- pykrx `get_previous_business_days(year, month)` 는 이 환경에서 `'RangeIndex' object has no attribute 'month'` 로 실패하고 애초에 과거만 다룬다 — 미래 캘린더 소스로 쓸 수 없다.

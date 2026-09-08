@@ -34,7 +34,9 @@
 | 계획 | `app/signals.py` | `freeze_at(exec_day)`(09:00 KST) · `_state_before(cutoff: date \| datetime)` · `_portfolio_orders(force_freeze, now)` — 동결 전 실시간 갱신, `frozen_at` 뒤 스냅샷 반환(`frozen`), `gap_cancel_exact` 노출 · `_next_exec_day(base_day, session)` 캘린더 휴장 스킵 |
 | KIS | `services/kis_client.py` `place_order(code, side, qty, price \| None)` / `cancel_order` / `buyable` | 지정가(ORD_DVSN 00)·시장가(01, 단가 0). 실전 TTTC0012U/0011U/0013U/8908R, 모의 VTTC0802U/0801U/0803U/8908R |
 | 기록 | `models.py` `BrokerOrder.mode=auto`(09:01 에 생성, 최종 상태만), `BrokerCredential.auto_exec {buy, sell, daily_buy_cap_pct}`, `TradePortfolio.params.auto_exec {paused…, last_run, skip}` | 스키마 변경 없음(JSONB) |
-| 워커 | `worker.py` | `auto-exec-open` 09:01 · `auto-exec-watchdog` 09:15 · `pipeline-heartbeat` 60초 (mon–fri 는 앞 둘만). `max_retries=0`, 휴장일 스킵 |
+| 워커 | `worker.py` | `auto-exec-open` 09:01 · `auto-exec-watchdog` 09:15 · `pipeline-heartbeat` 60초 · `refresh-trading-calendar` 일 06:00 (mon–fri 는 앞 둘만). 실행 태스크는 `max_retries=0`, 휴장일 스킵 |
+| 캘린더 | `services/calendar.py` `refresh_trading_calendar` · CLI `python -m app.services.calendar --days 120`, `kis_client.fetch_holidays`(CTCA0903R) | 날짜별 `opnd_yn` upsert(바뀐 날만 갱신·기록). 배포 후 훅 20 + 주간 태스크 |
+| 배포 | `scripts/deploy.sh` 5단계 + `scripts/post-deploy.d/{10,20,30}-*.sh`, alembic `0025` | 전환 확인 · 캘린더 · 하트비트. 규칙은 그 디렉터리 README |
 | 헬스체크 | `docker-compose.yml` worker·scheduler | 하트비트 키 존재 확인(`start_period` 150초) — 종전 `import app.worker` 는 2026-09-08 미실행을 잡지 못했다 |
 | 훅 | `broker.py` | 주문 목록 응답 `auto_exec`(실행일 기준 state), `run_post_close_sync` 가 확정·정지 |
 | 알림·로그 | `app/notify.py` 카테고리 7종(autoexec·paused·sync·cash·orders·trades·daily), `app/activity.py` 종류 라벨(폐지 종류는 '(구)') | `autoexec.run`(지연 실행은 warn)·`autoexec.skip`·`autoexec.cancel`·`autoexec.account_setting` |
@@ -64,7 +66,7 @@
 3. 매일: 09:00 전에 입출금·체결이 원장에 있는지 확인(그날 수량에 바로 반영). 09:01 이후 주문표 상단 "✅ 무인 … 완료 — 발주 n건 …" 을 본다. "⚠️ 09:01 실행 기록 없음"이면 09:15 감시를 기다리고, 그 뒤에도 없으면 `docker compose ps`(하트비트 헬스체크)·워커 로그를 본다.
 4. 오늘만 손으로 하려면 주문표의 **[이번 실행일 무인 취소 → 수동]** — 09:00 전이면 발주를 건너뛰고(되돌리기 가능), 09:01 후면 살아 있는 무인 주문을 취소한다. 다음 실행일에 자동 복귀.
 5. 정지 배너(연속 실패·대조 불일치)는 사유를 확인하고 계좌·기록을 맞춘 뒤 "다시 켜기".
-6. 배포 시: 2026-09-08 이전의 `approved` 행은 실행기가 읽지 않는다 — `UPDATE broker_orders SET status='cancelled', message='ADR-009 전환 정리' WHERE status='approved'` 로 정리한다. 거래일 캘린더(`trading_calendar`)를 최신으로 유지한다(휴장 미등록이면 그날 09:01 이 '시가 확인 실패', 다음 날 '기준일 불일치'로 발주하지 않는다).
+6. 배포: `scripts/deploy.sh v0.11.0` 이 alembic 0025(옛 `approved` 행 → cancelled)와 배포 후 훅 `scripts/post-deploy.d/`(10 전환 확인 · 20 거래일 캘린더 갱신 — KIS 국내휴장일조회 `CTCA0903R`, 오늘부터 120일 · 30 하트비트 확인)를 자동으로 돈다. 캘린더는 워커가 매주 일요일 06:00 에도 갱신한다(`refresh-trading-calendar`). 휴장 미등록이면 그날 09:01 은 '시가 확인 실패', 다음 거래일은 '기준일 불일치'로 발주하지 않으므로 훅 20 실패는 반드시 확인한다.
 
 ## 5-1. 2차 검증 (2026-09-06, 사용자 지시 "논리·절차 오류 검토") — 고친 3건
 
