@@ -1,77 +1,72 @@
-# 무인 실행 — 승인된 지정가를 09:01 시가 확인 후 자동 발주 (2026-09-06)
+# 무인 매매 — 09:01 단일 실행: 계산·시가 확인·발주·동결 (2026-09-06 → 2026-09-08 ADR-009)
 
-> 정책 근거: [ADR-008](../adr/008-controlled-auto-execution.md). 이 문서는 구현·운영 지도다.
+> 정책 근거: [ADR-009](../adr/009-unattended-single-execution.md) (2026-09-08 단일 실행) — [ADR-008](../adr/008-controlled-auto-execution.md) 의 승인·보완·사전 갭 취소 구조를 대체. 이 문서는 구현·운영 지도다. §5-1 은 2026-09-06 검증 이력.
 > 지시(2026-09-06): "매도도 무인에 넣으세요. 무인 매수/매도 허용을 옵션으로 만들고, 설정화면에서 이 부분을 허용해야만 동작하도록 설계하세요. 매수/매도 각각 옵션."
 
-## 1. 흐름
+## 1. 흐름 (ADR-009, 2026-09-08 단일 실행)
 
 ```
-전날 16:40~     주문표 조회 → 줄 체크 → [🤖 무인 실행 승인] → BrokerOrder(mode=auto, status=approved)
-                (설정에서 그 방향이 허용돼 있어야 버튼이 동작. 시장가 줄은 제외 → 예약주문으로)
-전날 16:45      [완전 무인, 2026-09-07 지시] 워커 auto_approve_plan (app/autoapprove.py) → 자동 승인이 켜진(기본 켬) 국내 포트별:
-                  정지 상태·연결 계좌의 매수·매도 스위치 모두 꺼짐이면 건너뜀(로그) → 다음 실행일 주문표 계산·스냅샷 저장(_portfolio_orders)
-                  (같은 일을 켜는 즉시 1회·[지금 승인 실행] 버튼·08:40 보완 실행 auto_approve_catchup 이 반복 — 보완은 새로 한 일이 없으면 조용히)
-                  → 실행일 ≤ 오늘(오늘 일봉 미적재)이면 건너뜀 → 하루 매수 상한(총자산 대비 %, 기본 20%) 초과면 승인 없이 정지
-                  → 허용 방향의 지정가 줄 approved(자동 승인) · 시장가 줄은 옵션이면 예약주문 접수(실전·접수 창 안), 아니면 '수동 필요' 로그
-                  → params.auto_exec.auto_approve_last + 활동 로그. 이미 살아 있는 줄은 건너뜀(멱등)
-                긴급 정지: 화면 [⛔ 무인 중지 + 전량 취소] → POST …/orders/cancel-all {stop:true} → 승인 철회·예약 취소·정규 주문 취소 + 정지 + 자동 승인 끔
-실행일 08:57    워커 preopen_gap_cancel (app/preopen.py, 2026-09-06 밤 지시 — 취소만 무인) → 오늘 계획이 있는 국내 포트별:
-                  설정 auto_exec.preopen_cancel(기본 켜짐) → 200 ETF 예상체결가(FHKST01010200 antc_cnpr, 최대 3회 재시도)
-                  → 예상체결가 ≤ gap_cancel_exact ? KIS 정정취소가능(미체결) 주문 중 200 ETF 매수·오늘 그리드 지정가와 같은 것 취소(TTTC0013U)
-                    (앱 예약주문 → BrokerOrder gap_cancelled · HTS 직접 주문 → 로그에 '앱 밖 주문' · 미체결 목록에 없는 예약주문 → '취소 불가' 기록)
-                  → params.preopen_cancel.last_run + 활동 로그. 무인 승인 줄(auto)은 건드리지 않음 — 09:01 이 실제 시가로 판정
-실행일 09:01    워커 auto_execute_open → 포트별:
-                  락(하루 1회) → 정지 상태·설정 스위치 재확인 → 당일 시가 조회(현재가 TR stck_oprc, 최대 4회 재시도)
-                  → 시가 ≤ gap_cancel_exact ? 그리드 매수 skipped_gap
-                  → 잔고 조회: 원장 대조(200 ETF·레버리지 보유 = 계좌 잔고, 아니면 전부 생략+정지), 매도 수량 ≤ 보유
-                  → 매도 먼저 place_order → 매수는 얕은 그리드부터, 줄마다 발주 직전 buyable(매수가능조회) 로 가능 수량 ≥ 계획 수량이면
-                    place_order(지정가), 부족하면 그 줄 생략(수량 축소 없음) · 조회 실패 시 예수금 총액 누적 규칙으로 폴백
-                  → submitted(order_no) / skipped / failed
-                  → last_run 요약 저장, 연속 실패 2회면 paused
-15:45 / 17:10   run_post_close_sync → sync_auto_orders(당일 체결조회로 filled/partial/unfilled 확정)
-                → reconcile_for_portfolio 에 warn 이 있으면 pause_if_reconcile_warns
-화면            주문표: 승인 버튼·확인창, 줄별 상태(무인 승인/무인 발주/갭 취소 생략/생략/체결…), 마지막 실행 요약, 정지 배너(다시 켜기)
-                설정 › 무인 실행: 매수 허용 / 매도 허용 토글(켤 때 확인창)
+설정 › 무인 실행   증권사 계좌별 플래그 {무인 매수, 무인 매도, 하루 매수 상한 %} — 유일한 스위치. 끄면 그 방향의 오늘 미체결 무인 주문 즉시 취소
+~09:00           주문표 = 그 순간의 원장(입출금·체결)으로 실시간 계산 (조회마다 스냅샷 갱신). 상단 상태: 🤖 무인 매수·매도 대기 — {실행일} 09:01 발주 예정
+09:01  워커 auto_execute_open → 국내 포트별 (app/autoexec.py run_auto_execution → _execute_portfolio):
+         락(하루 1회) → 주문표 계산·동결 _portfolio_orders(force_freeze) → 실행일 ≠ 오늘이면 '기준일 불일치' 기록·발주 없음
+         → 계좌 플래그 모두 꺼짐 = 수동 모드(기록만) · 정지 · 사용자 취소(skip) → 발주 없음
+         → 줄마다 BrokerOrder(mode=auto) 생성, 꺼진 방향은 skipped('수동 처리')
+         → 시가(현재가 TR stck_oprc, 최대 4회) ≤ gap_cancel_exact ? 그리드 매수 skipped_gap
+         → 잔고 조회: 원장 보유(200 ETF·레버리지) ≠ 계좌 → 전부 생략 + 정지 · 매도 수량 ≤ 보유
+         → 매도(시장가 → 지정가) → 매수(시장가 레버리지 진입 → 얕은 그리드 → 깊은 그리드):
+              하루 매수 상한(총자산 × %)에 맞춰 수량 축소 → 매수가능조회 수량에 맞춰 축소(0 이면 생략; 조회 실패 시 예수금 누적 폴백)
+              → place_order(지정가 ORD_DVSN 00 / 시장가 01) → submitted(order_no) | skipped | failed
+         → last_run 요약·활동 로그·알림. 연속 실패 2회 → paused
+09:15  워커 auto_exec_watchdog → 실행 기록 없는 포트를 지연 실행(락·마커로 중복 없음) + 경고(trigger=watchdog)
+매 60초 pipeline_heartbeat → Redis autoexec:pipeline:heartbeat(TTL 180초) — scheduler·worker 헬스체크가 이 키를 본다
+15:45/17:10  broker_post_close_sync → 체결 가져오기 → 무인 주문 상태 확정(filled/partial/unfilled) → 계획·체결 대조(unplanned·excess 면 정지) → 예수금 대조
+화면  주문표 위 상태 한 줄(수동/대기/실행 중/완료/취소됨/정지/경고 + 사유) · 버튼은 [이번 실행일 무인 취소 → 수동]·[되돌리기]·[다시 켜기]만 · 표의 '무인' 열은 줄별 최종 상태
 ```
+
+폐지(2026-09-08): 16:45 자동 승인 · 08:40 보완 · 08:57 사전 갭 취소(`app/preopen.py` 삭제) · 승인(`approved`) 단계 · 시장가 예약 접수 · 포트별 완전 무인 토글 · 전량 취소 · 주문표의 예약주문 접수 버튼(API `POST /orders/reserve` 만 잔존).
 
 ## 2. 코드 지도
 
-| 층 | 위치 | 내용 |
+| 영역 | 위치 | 내용 |
 |---|---|---|
-| 정책·실행 | `app/autoexec.py` | 설정 GET/PUT `/settings/auto-exec`(기본값 + 모든 계좌 일괄), **계좌별** `PUT /settings/auto-exec/accounts/{aid}` (0024) — `account_auto_exec(cred)` 가 승인·실행·자동 승인·사전 갭 취소의 판정 함수. 승인 `POST /portfolio/{pid}/orders/approve`, 상태 `GET /portfolio/{pid}/auto-exec`(allowed = 연결 계좌 스위치, account), 해제 `POST …/auto-exec/resume`, `run_auto_execution`, `sync_auto_orders`, `pause_if_reconcile_warns` |
-| KIS | `services/kis_client.py` `KisTradingClient.place_order / cancel_order / buyable` | 실전 TTTC0012U(매수)·TTTC0011U(매도)·TTTC0013U(취소)·TTTC8908R(매수가능조회), 모의 VTTC0802U·VTTC0801U·VTTC0803U·VTTC8908R. 지정가만 |
-| 기록 | `models.py` `BrokerOrder.mode`('reserve'/'auto'), `UserSettings.auto_exec`, `TradePortfolio.params.auto_exec` | 마이그레이션 0021 |
-| 훅 | `broker.py` | `STATUS_KO` 확장, 주문 목록 응답에 `auto_exec`, 취소 엔드포인트가 무인 줄 처리(승인 철회 / 정규 주문 취소), `run_post_close_sync` 가 확정·정지 |
-| 계획 | `signals.py` | `PortfolioPlan.payload.gap_cancel_exact`(정확값) 추가 — 시가 판정용 |
-| 워커 | `worker.py` | `auto-exec-open` 09:01 mon–fri, `max_retries=0`, 휴장일 스킵 · `preopen-gap-cancel` 08:57 mon–fri (2026-09-06 밤) |
-| 완전 무인 | `app/autoapprove.py` `run_auto_approve`·`run_auto_approve_for`, `PUT /portfolio/{pid}/auto-exec/auto-approve`(켜면 즉시 1회 실행 → `run_now`), `POST …/auto-exec/auto-approve/run-now`, `POST /portfolio/{pid}/orders/cancel-all`, `worker.py` `auto-approve-plan` 16:45 · `auto-approve-catchup` 08:40 | 포트별 자동 승인(**기본 켬**, 2026-09-07 밤)·시장가 예약 접수 옵션(기본 켬)·하루 매수 상한 `daily_buy_cap_pct`(총자산 대비 %, 기본 20, 0 = 없음). 판정은 연결 계좌 스위치. 전량 취소(승인·예약·발주) + stop 이면 정지·자동 승인 끔. 상태는 `auto_exec_view` 의 `auto_approve`·`auto_approve_last` |
-| 사전 갭 취소 | `app/preopen.py` `run_preopen_cancel`, `services/kis_client.py` `fetch_expected`(FHKST01010200)·`list_open_orders`(TTTC0084R 실전 전용) | 예상체결가 ≤ 기준 → 그리드 가격과 같은 200 ETF 매수 미체결 취소. `BrokerOrder.status=gap_cancelled`, `params.preopen_cancel.last_run`. 설정 `auto_exec.preopen_cancel` 기본 켜짐 |
-| 알림 | `app/notify.py` `notify_event`(활동 로그 훅)·`notify_trade`·`send_daily_status`, `GET/PUT /settings/notify`, `POST /settings/notify/test`, `user_settings.telegram_bot_token`(🔒)·`telegram_chat_id`·`notify`(0023) | 텔레그램 Bot API sendMessage/getUpdates. 카테고리 9종(기본: 결과·경고 켬, 주문·체결 등록 꺼짐). 실패는 `notify.failed` 로그만 — 본 작업 계속 |
-| 로그 | `app/activity.py` `log_event`, `GET /logs`, `models.ActivityLog`(0022) | 거래(원장)·주문(BrokerOrder)·이벤트(ActivityLog) 병합. 기록 지점: 무인 실행 요약·정지·승인, 예약주문 접수·취소, 사전 갭 취소, 장 마감 동기화 결과·오류, 예수금 대조 경고·보정, 거래 삭제 |
-| 웹 | `portfolio/page.tsx`, `settings/page.tsx`, `logs/page.tsx` | 승인 버튼·확인창·상태·배너·사전 갭 확인 한 줄 / 무인 실행 탭(매수·매도·사전 갭 취소 스위치) / 매매 로그(기간·유형·수준·포트·검색 필터) |
+| 정책·실행 | `app/autoexec.py` | 설정 GET/PUT `/settings/auto-exec`(기본값 + 일괄), 계좌별 `PUT /settings/auto-exec/accounts/{aid}` — `account_auto_exec(cred)` 가 유일한 판정 함수, 끈 방향은 `_cancel_for_turned_off`. 상태 `GET /portfolio/{pid}/auto-exec?date=` (`auto_exec_view` → `state`), 취소 `POST …/auto-exec/skip {date}` · `unskip`, 해제 `resume`. 실행 `run_auto_execution`(09:01) · `run_watchdog`(09:15) · `touch_heartbeat`/`heartbeat_age`, 확정 `sync_auto_orders`, 정지 `pause_if_reconcile_warns` |
+| 계획 | `app/signals.py` | `freeze_at(exec_day)`(09:00 KST) · `_state_before(cutoff: date \| datetime)` · `_portfolio_orders(force_freeze, now)` — 동결 전 실시간 갱신, `frozen_at` 뒤 스냅샷 반환(`frozen`), `gap_cancel_exact` 노출 · `_next_exec_day(base_day, session)` 캘린더 휴장 스킵 |
+| KIS | `services/kis_client.py` `place_order(code, side, qty, price \| None)` / `cancel_order` / `buyable` | 지정가(ORD_DVSN 00)·시장가(01, 단가 0). 실전 TTTC0012U/0011U/0013U/8908R, 모의 VTTC0802U/0801U/0803U/8908R |
+| 기록 | `models.py` `BrokerOrder.mode=auto`(09:01 에 생성, 최종 상태만), `BrokerCredential.auto_exec {buy, sell, daily_buy_cap_pct}`, `TradePortfolio.params.auto_exec {paused…, last_run, skip}` | 스키마 변경 없음(JSONB) |
+| 워커 | `worker.py` | `auto-exec-open` 09:01 · `auto-exec-watchdog` 09:15 · `pipeline-heartbeat` 60초 · `refresh-trading-calendar` 일 06:00 (mon–fri 는 앞 둘만). 실행 태스크는 `max_retries=0`, 휴장일 스킵 |
+| 캘린더 | `services/calendar.py` `refresh_trading_calendar` · CLI `python -m app.services.calendar --days 120`, `kis_client.fetch_holidays`(CTCA0903R) | 날짜별 `opnd_yn` upsert(바뀐 날만 갱신·기록). 배포 후 훅 20 + 주간 태스크 |
+| 배포 | `scripts/deploy.sh` 5단계 + `scripts/post-deploy.d/{10,20,30}-*.sh`, alembic `0025` | 전환 확인 · 캘린더 · 하트비트. 규칙은 그 디렉터리 README |
+| 헬스체크 | `docker-compose.yml` worker·scheduler | 하트비트 키 존재 확인(`start_period` 150초) — 종전 `import app.worker` 는 2026-09-08 미실행을 잡지 못했다 |
+| 훅 | `broker.py` | 주문 목록 응답 `auto_exec`(실행일 기준 state), `run_post_close_sync` 가 확정·정지 |
+| 알림·로그 | `app/notify.py` 카테고리 7종(autoexec·paused·sync·cash·orders·trades·daily), `app/activity.py` 종류 라벨(폐지 종류는 '(구)') | `autoexec.run`(지연 실행은 warn)·`autoexec.skip`·`autoexec.cancel`·`autoexec.account_setting` |
+| 웹 | `portfolio/page.tsx`, `settings/page.tsx` | 상태 배너 + 취소/되돌리기/다시 켜기 · '무인' 열(읽기 전용) · 제목의 동결/실시간 표기 / 계좌별 플래그 2개 + 상한 입력, 켬·끔 확인창(끄면 즉시 취소 안내) |
+| 챗봇 | `app/chat.py` `auto_exec_status` | 계좌 플래그·포트별 `state`·`skip`·마지막 실행·살아 있는 주문 수 |
 
 ## 3. 상태 흐름 (BrokerOrder.mode=auto)
 
-`approved` → (09:01) `submitted` → (15:45) `filled` | `partial` | `unfilled`
-`approved` → `skipped_gap`(갭 취소) | `skipped`(설정 꺼짐·시장가·시가 미확인·예수금/잔고 부족·정지) | `failed`(KIS 오류)
-`approved` → `cancelled`(사용자 승인 철회, KIS 호출 없음) · `submitted` → `cancelled`(정규 주문 취소 TR)
-(mode=reserve) `reserved` → (08:57 사전 갭 취소) `gap_cancelled` — 예상체결가 ≤ 기준일 때 미체결 목록에서 찾아 취소한 그리드 매수. 못 찾으면 `reserved` 유지 + 메시지 '취소 불가'
+09:01 에 줄마다 생성되어 그 자리에서 최종 상태가 정해진다: `submitted`(order_no) → (15:45) `filled` | `partial` | `unfilled` · `skipped_gap`(갭 취소) · `skipped`(꺼진 방향·시가 미확인·잔고/대조·상한 0·주문가능 0) · `failed`(KIS 오류).
+`submitted`/`partial` → `cancelled`: 사용자 취소(skip, 09:01 후) · 설정 해제(`_cancel_for_turned_off`). 축소 발주는 `submitted` 에 메시지("상한으로 5→4주", "주문가능 수량에 맞춰 3→1주")와 `response.plan_qty`.
+`approved`·`reserved`·`gap_cancelled` 는 2026-09-08 이전 행에만 남는다(화면 '(구)').
 
-## 4. 테스트 (`tests/test_autoexec.py`)
+## 4. 테스트 (`tests/test_autoexec.py` · `test_account_autoexec.py` · `test_autoexec_review.py` · `test_signals.py`)
 
-- 설정 꺼짐 → 승인 409, 매수만 켬 → 매도 줄·시장가 줄 409, 승인 2건, 중복/불일치 판정, 목록의 `auto_exec`, 승인 철회.
-- 실행 ①: 갭 발생 → 그리드 2건 `skipped_gap`, 익절 매도 1건 발주(매도 먼저), 같은 날 재실행 차단, 15:45 확정 `filled`.
-- 실행 ②: 갭 없음·예수금 부족 → 매수 생략, 보유 0 → 매도 생략; 발주 연속 실패 2회 → `paused`, 승인 거절, `resume` 로 해제.
-- 미국 포트 승인 409, 대조 경고로 정지.
+- 플래그 기본값·일괄·계좌별·상한(0~100)·상속·타 사용자 404 · 상태 off → waiting · 승인/전량 취소/완전 무인 엔드포인트 404.
+- 단일 실행: 갭 발생 → 그리드 2건 `skipped_gap`, 익절 매도(지정가) + 레버리지 진입(시장가 `price=None`) 발주(매도 먼저), 상태 `ran`(건수·시가), 09:03 재실행·09:15 감시 모두 already-ran, 15:45 확정 filled/unfilled.
+- 축소: 총자산 200만·상한 20% → grid1 5→4주, grid2 생략, 매도 꺼짐 → '수동 처리' · 주문가능현금 60만 → grid1 5주, grid2 3→1주 · 예수금 폴백 60만/20만 · 연속 실패 2회 → paused → resume.
+- 수동 모드(기록 없음) · 기준일 불일치(발주 없음, error 로그) · 사용자 취소(09:00 전 건너뜀·되돌리기·지난 날 409 / 09:01 후 살아 있는 주문 취소·되돌리기 409) · 설정 해제 → 그 방향만 즉시 취소 + 로그.
+- 감시: 09:01 기록 없음 → 지연 실행, `last_run.trigger=watchdog`, warn 로그 "지연 실행".
+- 계좌 플래그: 다른 계좌를 켜도 수동, 연결 계좌 매수만 켬 → 매수 줄만 발주. 원장 vs 계좌 불일치 → 전부 생략 + 정지. 대조 경고는 unplanned·excess 만 정지.
+- 동결 규칙(`test_signals.py`): 실행일 08:30 입금 즉시 반영·09:30 입금 미반영·force_freeze 뒤 스냅샷 고정·캘린더 휴장 스킵.
 
 ## 5. 운영 절차
 
-1. 설정 › 무인 실행에서 매수·매도 허용을 켠다(각각). 확인창의 통제 규칙을 읽는다.
-2. **모의투자 계좌로 먼저**: 설정 › 증권사 계좌에 모의(vps) 계좌를 등록해 포트에 연결 → 주문표에서 1주 승인 → 다음 날 09:01 결과를 주문표에서 확인. (모의는 정규 주문 TR 을 지원한다. 예약주문은 미지원)
-3. 실계좌 소액 → 정상 운용. 각 단계는 사용자 확인 후.
-4. 매일: 장 마감 후 주문표에서 줄을 체크해 승인(승인은 09:00 전까지 철회 가능). 09:01 이후 주문표의 "🤖 무인 실행" 요약과 표의 상태를 본다.
-5. 정지 배너가 뜨면 사유(연속 실패/대조 경고)를 확인하고 계좌·기록을 맞춘 뒤 "다시 켜기".
-6. **완전 무인(2026-09-07)**: 주문표 위 "🤖 완전 무인 운영 › 설정"에서 자동 승인을 켠다(시장가 줄 예약 접수·하루 매수 상한 선택). 이후 매일 승인 없이 16:45 자동 승인 → 09:01 발주. 매매 로그의 "자동 승인"·"무인 실행" 이벤트와 정지 배너를 하루 한 번은 확인한다(사람이 보지 않는 운영이라 '정지된 채 모르는 상태'가 가장 큰 위험). 문제가 보이면 [⛔ 무인 중지 + 전량 취소]로 살아 있는 주문을 모두 거두고 정지한다 — 체결된 것은 취소되지 않으니 반대 매매로 정리한다. 표의 승인·발주 줄은 개별 "취소"로도 거둘 수 있다.
+1. 설정 › 무인 실행에서 계좌의 **무인 매수·매도** 플래그를 켠다(확인창). 하루 매수 상한(기본 20%)을 정한다. 이것이 유일한 스위치다.
+2. **모의투자 계좌로 먼저**: 모의(vps) 계좌를 포트에 연결하고 플래그를 켠 뒤 다음 거래일 09:01 결과(주문표 상태 한 줄·표의 '무인' 열·매매 로그)를 본다. 실계좌 소액 → 정상 운용.
+3. 매일: 09:00 전에 입출금·체결이 원장에 있는지 확인(그날 수량에 바로 반영). 09:01 이후 주문표 상단 "✅ 무인 … 완료 — 발주 n건 …" 을 본다. "⚠️ 09:01 실행 기록 없음"이면 09:15 감시를 기다리고, 그 뒤에도 없으면 `docker compose ps`(하트비트 헬스체크)·워커 로그를 본다.
+4. 오늘만 손으로 하려면 주문표의 **[이번 실행일 무인 취소 → 수동]** — 09:00 전이면 발주를 건너뛰고(되돌리기 가능), 09:01 후면 살아 있는 무인 주문을 취소한다. 다음 실행일에 자동 복귀.
+5. 정지 배너(연속 실패·대조 불일치)는 사유를 확인하고 계좌·기록을 맞춘 뒤 "다시 켜기".
+6. 배포: `scripts/deploy.sh v0.11.0` 이 alembic 0025(옛 `approved` 행 → cancelled)와 배포 후 훅 `scripts/post-deploy.d/`(10 전환 확인 · 20 거래일 캘린더 갱신 — KIS 국내휴장일조회 `CTCA0903R`, 오늘부터 120일 · 30 하트비트 확인)를 자동으로 돈다. 캘린더는 워커가 매주 일요일 06:00 에도 갱신한다(`refresh-trading-calendar`). 휴장 미등록이면 그날 09:01 은 '시가 확인 실패', 다음 거래일은 '기준일 불일치'로 발주하지 않으므로 훅 20 실패는 반드시 확인한다.
 
 ## 5-1. 2차 검증 (2026-09-06, 사용자 지시 "논리·절차 오류 검토") — 고친 3건
 
@@ -94,11 +89,11 @@
 
 ## 6. 알려진 한계·주의
 
-- 09:01 발주라 09:00:00~09:01:00 사이의 체결 기회는 놓친다(1분). 그리드 지정가는 시가 아래에 있어 대부분 영향 없다.
-- 시가 조회가 09:01 에도 0 이면(휴장·지연) 4회(30초) 기다린 뒤 그날 발주를 생략하고 사유를 남긴다 — 다음 날 다시 승인해야 한다.
+- 09:01 발주라 09:00:00~09:01:00 사이의 체결 기회는 놓친다(1분). 그리드 지정가는 시가 아래에 있어 대부분 영향 없다. 09:15 지연 실행이면 14분.
+- 시가 조회가 09:01 에도 0 이면(휴장·지연) 4회(30초) 기다린 뒤 그날 발주를 생략하고 사유를 남긴다. 캘린더에 없는 휴장이면 다음 거래일 09:01 은 '기준일 불일치'(계산된 실행일이 어제)로 발주하지 않는다 — 캘린더 갱신이 선결.
 - 매수 한도는 발주 직전 KIS 매수가능조회(주문가능현금·미수 없는 수량)로 판정한다. 조회가 실패한 날만 예수금 총액(`dnca_tot_amt`, D+2 기준) 누적 규칙으로 물러나며 그때는 당일 매도 대금이 반영되지 않아 보수적이다.
 - 하루 1회 락은 Redis 기준이며, Redis 가 없으면 `last_run.date` 마커로 대신한다.
 - 대조 경고로 정지되면 그날 이미 발주된 주문은 취소하지 않는다(사용자 판단). 배너에서 확인 후 해제.
-- 미국 포트·시장가 줄은 대상 외(예약주문/수동).
+- 미국 포트는 대상 외(수동). 시장가 줄(레버리지 진입·청산)은 2026-09-08 부터 09:01 시장가 무인 발주 — 시가 급변 시 체결가 통제 불가(사용자 결정).
 - **사전 갭 취소의 한계**(2026-09-06 밤): 예상체결가는 동시호가 호가 잔량으로 계산한 근사값이다 — 08:57 예상이 기준 아래여도 09:00 실제 시가가 위로 열리면 그날 그리드 매수를 놓친다(손실 아님). KIS 예약주문이 정규 주문으로 전송되는 시각이 08:57 보다 늦으면 미체결 목록에 없어 취소하지 못하고 '취소 불가'로 기록된다(실계좌 첫 주에 확인할 것). 미체결 조회 TR 은 실전 전용이라 모의 계좌는 대상 외. 대상은 **오늘 계획의 그리드 지정가와 정확히 같은 200 ETF 매수**뿐이라 사용자가 다른 가격으로 넣은 주문은 건드리지 않는다.
 - **예수금 대조**(2026-09-06, `app/cashcheck.py`): 15:45/17:10 동기화가 체결을 가져온 뒤 원장 현금과 계좌 **D+2 예수금**(가수도정산금액)을 비교해 `params.cash_check` 에 저장한다. 허용 오차(1만원 또는 총자산 0.1% 중 큰 값 — 수수료·분배금 범위)를 넘으면 주문표 위에 경고 배너. **자동 수정·자동 정지 없음** — "차액을 입출금으로 등록" 버튼 한 번으로 원장을 계좌에 맞춘다(오늘 대조 결과이고 대조 이후 원장이 안 바뀐 경우만). 주문표(그리드 수량)는 원장 현금으로 계산되므로 차이가 크면 매수 수량이 실제와 어긋난다 — 발주 자체는 매수가능조회가 막아 주지만 계획은 틀어진다. 시작 패널의 "계좌에서 불러오기"로 처음부터 계좌 값(D+2 예수금·전략 종목 보유)으로 시작할 수 있다.

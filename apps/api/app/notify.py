@@ -39,9 +39,7 @@ MAX_LEN = 3900
 
 # 설정 화면의 체크 항목 — (키, 표시명, 설명, 기본값). 기본은 '사람이 봐야 하는 결과·경고' 만 켬
 CATEGORIES: list[tuple[str, str, str, bool]] = [
-    ("autoexec", "무인 실행 결과", "09:01 발주·갭 취소 생략·생략·실패 요약, 무인 실행 오류", True),
-    ("auto_approve", "자동 승인 결과", "16:45 다음 실행일 주문표 자동 승인·시장가 예약 접수 결과, 건너뜀 사유", True),
-    ("preopen", "사전 갭 취소", "08:57 예상 시가 갭 판정과 그리드 매수 취소 결과·실패·취소 불가", True),
+    ("autoexec", "무인 실행 결과", "09:01 발주·갭 취소 생략·생략·축소·실패 요약, 09:15 감시 지연 실행, 무인 실행 오류", True),
     ("paused", "정지 · 긴급 정지", "무인 실행 자동 정지(연속 실패·대조 불일치·상한 초과), 전량 취소", True),
     ("post_close", "장 마감 동기화", "15:45 체결 가져오기·주문 상태 확정 결과, 동기화·조회 오류", True),
     ("cash_check", "예수금 대조", "원장 현금 vs 계좌 D+2 예수금 경고, 차액 보정 등록", True),
@@ -53,12 +51,11 @@ DEFAULT_EVENTS = {k: d for k, _l, _d, d in CATEGORIES}
 # 활동 로그 이벤트 종류 → 카테고리. 없는 종류(줄 단위 사전 갭 취소 등)는 보내지 않는다 — 요약 한 건이 대신한다
 KIND_TO_CATEGORY = {
     "autoexec.run": "autoexec", "autoexec.error": "autoexec",
-    "autoexec.auto_approve": "auto_approve",
-    "preopen.run": "preopen", "preopen.cancel_failed": "preopen", "preopen.unmatched": "preopen", "preopen.error": "preopen",
-    "autoexec.paused": "paused", "order.cancel_all": "paused",
+    "autoexec.paused": "paused",
+    "autoexec.skip": "orders", "autoexec.cancel": "orders",   # 사용자 취소(수동 전환)·설정 해제로 취소 (ADR-009)
     "sync.post_close": "post_close", "sync.error": "post_close", "sync.reserved_failed": "post_close",
     "cash_check.warn": "cash_check", "cash_check.align": "cash_check",
-    "order.reserve": "orders", "order.cancel": "orders", "autoexec.approve": "orders", "autoexec.auto_approve_setting": "orders",
+    "order.reserve": "orders", "order.cancel": "orders", "autoexec.account_setting": "orders",
     "tx.delete": "trades",
 }
 LEVEL_EMOJI = {"info": "ℹ️", "warn": "⚠️", "error": "🛑"}

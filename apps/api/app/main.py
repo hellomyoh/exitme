@@ -18,7 +18,6 @@ from app.portfolios import router as portfolios_router
 from app.quotes import router as quotes_router
 from app.autoexec import router as autoexec_router
 from app.activity import router as activity_router
-from app.autoapprove import router as autoapprove_router
 from app.notify import router as notify_router
 from app.cashcheck import router as cashcheck_router
 from app.broker import router as broker_router
@@ -102,7 +101,6 @@ app.include_router(settings_router)
 app.include_router(autoexec_router)
 app.include_router(cashcheck_router)
 app.include_router(activity_router)
-app.include_router(autoapprove_router)
 app.include_router(notify_router)
 app.include_router(chat_router)
 app.include_router(mjournal_router)

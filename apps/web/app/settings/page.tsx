@@ -141,7 +141,7 @@ export default function SettingsPage() {
   const TABS_ALL = [
     { key: "account", label: "계정", desc: "비밀번호 · 세션" },
     { key: "broker", label: "증권사 계좌", desc: "체결 자동 가져오기 연동" },
-    { key: "auto", label: "무인 실행", desc: "무인 발주 · 장 시작 전 갭 취소" },
+    { key: "auto", label: "무인 실행", desc: "계좌별 무인 매수·매도 플래그 · 하루 매수 상한" },
     { key: "notify", label: "알림", desc: "텔레그램 봇 · 보낼 항목" },
     { key: "chat", label: "챗봇", desc: "시스템 프롬프트 (관리자)", adminOnly: true },
   ] as const;
@@ -457,60 +457,75 @@ export default function SettingsPage() {
   );
 }
 
-/** 무인 실행 허용 — **증권사 계좌별** (2026-09-07 지시). 포트에 연결된 계좌의 스위치가 승인·자동 승인·09:01 실행의 판정 기준이다.
- *  옵션 설명은 상단에 한 번만, 계좌는 한 줄씩 스위치만 (2026-09-07 지시 "매번 같은 내용을 반복 출력할 필요 없음"). */
-type AE = { buy: boolean; sell: boolean; preopen_cancel: boolean };
+/** 무인 매매 플래그 — **증권사 계좌별** (2026-09-07 지시, ADR-009 2026-09-08). 포트에 연결된 계좌의 플래그가 09:01 실행의 유일한 판정 기준이다.
+ *  승인 단계·주문표 버튼은 없다. 끄면 그 방향의 오늘 무인 주문이 즉시 취소된다(사용자 결정). 옵션 설명은 상단에 한 번만, 계좌는 한 줄씩. */
+type AE = { buy: boolean; sell: boolean; daily_buy_cap_pct: number };
 type AEAccount = { id: number; label: string; account_no: string; acnt_prdt_cd: string; env: string; linked_portfolios: string[]; auto_exec: AE };
-type AEView = { default: AE; accounts: AEAccount[] };
-const AE_ROWS: { k: keyof AE; label: string; short: string; desc: string }[] = [
-  { k: "buy", label: "무인 매수 허용", short: "무인 매수", desc: "그리드 매수 등 매수 지정가 줄. 켜면 이 계좌에 연결된 국내 포트의 주문표가 매일 자동 승인되어(포트별로 끌 수 있음) 09:01 시가 확인 후 발주됩니다. 갭 취소 기준 이하 출발이면 그리드 매수는 내지 않고, 줄마다 매수가능조회로 수량을 확인합니다." },
-  { k: "sell", label: "무인 매도 허용", short: "무인 매도", desc: "익절·축소 등 매도 지정가 줄. 꺼져 있으면 매수만 자동 발주되고 매도 줄은 '수동 필요'로 남습니다. 계좌 보유 수량을 넘는 매도는 내지 않고, 매도는 매수보다 먼저 냅니다." },
-  { k: "preopen_cancel", label: "장 시작 전 갭 취소 (취소만)", short: "사전 갭 취소", desc: "08:57 에 200 ETF 예상체결가가 갭 취소 기준(전일 종가 − 1.5×ATR) 이하면 이 계좌의 그리드 매수 미체결(앱 예약주문·HTS 직접 주문)을 취소합니다. 발주는 하지 않습니다." },
+type AEView = { default: AE; accounts: AEAccount[]; cancelled?: number; failed?: number };
+const AE_ROWS: { k: "buy" | "sell"; label: string; short: string; desc: string }[] = [
+  { k: "buy", label: "무인 매수", short: "무인 매수", desc: "그리드 매수(지정가)·레버리지 진입(시장가). 켜면 이 계좌에 연결된 국내 포트가 매 실행일 09:01 에 그 순간의 원장으로 주문표를 계산해 곧바로 발주합니다 — 승인 단계 없음. 시가가 갭 취소 기준 이하면 그리드 매수는 내지 않고, 하루 매수 상한·매수가능조회에 맞춰 수량을 줄여 냅니다." },
+  { k: "sell", label: "무인 매도", short: "무인 매도", desc: "익절·축소(지정가)·레버리지 청산(시장가). 꺼져 있으면 매도 줄은 '수동 처리'로 남고 매수만 발주됩니다. 계좌 보유를 넘는 매도는 내지 않으며, 매도는 매수보다 먼저 냅니다." },
 ];
-const AE_CONFIRM = "무인 실행을 켭니다.\n\n· 이 계좌에 연결된 국내 포트의 주문표를 매일 16:45(보완 08:40)에 자동 승인해 실행일 09:01 에 발주합니다 — 표에서 따로 체크하지 않아도 됩니다(포트별 '완전 무인 운영'에서 끌 수 있음).\n· 09:01 에 시가를 확인해 갭 취소 기준 이하면 그리드 매수를 생략하고, 그 외 지정가 줄을 정규 주문으로 냅니다. 시장가 줄은 예약주문으로 자동 접수됩니다.\n· 승인 전과 발주 직전에 이 계좌의 허용 스위치를 다시 검사합니다. 매수가능조회·잔고 한도를 넘는 줄은 내지 않고, 발주 2회 연속 실패·대조 불일치·하루 매수 상한 초과 시 해당 포트는 자동 정지됩니다.\n\n계속할까요?";
+const AE_ON_CONFIRM = "무인을 켭니다.\n\n· 이 계좌에 연결된 국내 포트는 매 실행일 09:01 에 그 순간의 원장·설정으로 주문표를 계산해 곧바로 발주합니다 — 주문표에서 따로 승인하지 않습니다.\n· 09:00 까지 등록한 입출금·체결은 그날 수량에 바로 반영됩니다. 09:01 에 시가 확인 → 갭 판정 → 원장 vs 계좌 잔고 대조 → 하루 매수 상한 → 매수가능조회 → 지정가·시장가 발주.\n· 발주 2회 연속 실패·잔고 대조 불일치·장 마감 대조의 계획 외 거래가 있으면 그 포트는 자동 정지됩니다(주문표 배너에서 다시 켜기).\n· 주문표의 '이번 실행일 무인 취소' 버튼으로 하루만 수동으로 돌릴 수 있습니다.\n\n계속할까요?";
+const AE_OFF_CONFIRM = "무인을 끕니다.\n\n· 오늘 이미 증권사에 접수된 이 방향의 무인 주문(미체결)은 즉시 취소됩니다. 체결된 주문은 그대로입니다.\n· 다음 09:01 부터 이 방향은 발주하지 않습니다(주문표는 참고용 — HTS 에서 직접 주문).\n\n계속할까요?";
 
 function AutoExecSettings() {
   const [v, setV] = useState<AEView | null>(null);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  const [capDraft, setCapDraft] = useState<Record<number, string>>({});
   const load = useCallback(async () => {
     const r = await apiFetch("/settings/auto-exec");
     if (r.ok) setV((await r.json()) as AEView);
   }, []);
   useEffect(() => { void load(); }, [load]);
-  async function saveAccount(a: AEAccount, k: keyof AE, val: boolean) {
-    if (val && (k === "buy" || k === "sell") && !window.confirm(AE_CONFIRM)) return;
+  const done = (j: AEView, who: string) => {
+    setV(j);
+    setMsg(`${who} 저장되었습니다${(j.cancelled ?? 0) > 0 ? ` · 살아 있는 무인 주문 ${j.cancelled}건 취소` : ""}${(j.failed ?? 0) > 0 ? ` · 취소 실패 ${j.failed}건 — 매매 로그를 확인하세요` : ""}`);
+  };
+  async function saveAccount(a: AEAccount, body: Partial<AE>, confirmText?: string) {
+    if (confirmText && !window.confirm(confirmText)) return;
     setBusy(true); setMsg("");
-    const r = await apiFetch(`/settings/auto-exec/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ [k]: val }) });
+    const r = await apiFetch(`/settings/auto-exec/accounts/${a.id}`, { method: "PUT", body: JSON.stringify(body) });
     setBusy(false);
-    if (r.ok) { setV((await r.json()) as AEView); setMsg(`${a.label} 저장되었습니다`); }
+    if (r.ok) done((await r.json()) as AEView, a.label);
     else setMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `저장 실패 (${r.status})`);
   }
-  async function saveAll(k: keyof AE, val: boolean) {
+  async function saveAll(k: "buy" | "sell", val: boolean) {
     if (!v) return;
-    if (val && (k === "buy" || k === "sell") && !window.confirm(AE_CONFIRM)) return;
+    if (!window.confirm(val ? AE_ON_CONFIRM : AE_OFF_CONFIRM)) return;
     if (!window.confirm(`모든 계좌(${v.accounts.length}개)에 적용하고 새 계좌의 기본값으로도 저장합니다. 계속할까요?`)) return;
     setBusy(true); setMsg("");
-    const r = await apiFetch("/settings/auto-exec", { method: "PUT", body: JSON.stringify({ ...v.default, [k]: val }) });
+    const r = await apiFetch("/settings/auto-exec", { method: "PUT", body: JSON.stringify({ buy: v.default.buy, sell: v.default.sell, [k]: val }) });
     setBusy(false);
-    if (r.ok) { setV((await r.json()) as AEView); setMsg("모든 계좌에 적용했습니다"); }
+    if (r.ok) done((await r.json()) as AEView, "모든 계좌에");
     else setMsg(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `저장 실패 (${r.status})`);
+  }
+  function commitCap(a: AEAccount) {
+    const raw = (capDraft[a.id] ?? String(a.auto_exec.daily_buy_cap_pct)).trim().replace(",", ".");
+    const n = raw === "" ? 20 : Number(raw);
+    if (!Number.isFinite(n) || n < 0 || n > 100) { setMsg("하루 매수 상한은 0~100 사이의 %로 입력하세요 (0 = 없음)"); return; }
+    if (n === a.auto_exec.daily_buy_cap_pct) return;
+    void saveAccount(a, { daily_buy_cap_pct: n });
   }
   return (
     <Card className="mb-4">
-      <CardTitle>무인 매수 · 매도 허용 — 계좌별 <span className="normal-case text-faint">· 포트에 연결된 계좌의 스위치로 승인·자동 승인·09:01 발주를 판정합니다</span></CardTitle>
+      <CardTitle>무인 매수 · 매도 — 계좌별 플래그 <span className="normal-case text-faint">· 포트에 연결된 계좌의 플래그만 보고 09:01 에 계산·발주합니다 (ADR-009)</span></CardTitle>
       {/* 옵션 설명 — 한 번만 */}
       <div className="mb-4 grid gap-2 text-[13px] sm:grid-cols-3">
         {AE_ROWS.map((row) => (
           <div key={row.k} className="rounded-lg border border-line bg-inset px-3 py-2">
-            <div className="font-semibold text-ink">{row.label} <span className="text-[11.5px] font-normal text-faint">{row.k === "preopen_cancel" ? "기본 켜짐" : "기본 꺼짐"}</span></div>
+            <div className="font-semibold text-ink">{row.label} <span className="text-[11.5px] font-normal text-faint">기본 꺼짐</span></div>
             <div className="mt-0.5 leading-relaxed text-muted">{row.desc}</div>
           </div>
         ))}
+        <div className="rounded-lg border border-line bg-inset px-3 py-2">
+          <div className="font-semibold text-ink">하루 매수 상한 <span className="text-[11.5px] font-normal text-faint">총자산 대비 %, 기본 20 · 0 = 없음</span></div>
+          <div className="mt-0.5 leading-relaxed text-muted">그날 매수 합계가 총자산의 이 비율을 넘지 않게 수량을 줄여 냅니다(정지하지 않음). 레짐 전환일의 레버리지 진입처럼 큰 매수는 며칠에 나눠 채워집니다.</div>
+        </div>
       </div>
-      {/* 계좌 표 — 한 줄에 스위치 3개 */}
       {v && v.accounts.length === 0 && (
-        <p className="text-[13.5px] text-muted">등록된 증권사 계좌가 없습니다 — <b className="text-ink">증권사 계좌</b> 탭에서 먼저 등록하면 여기에 계좌별 스위치가 나타납니다.</p>
+        <p className="text-[13.5px] text-muted">등록된 증권사 계좌가 없습니다 — <b className="text-ink">증권사 계좌</b> 탭에서 먼저 등록하면 여기에 계좌별 플래그가 나타납니다.</p>
       )}
       {v && v.accounts.length > 0 && (
         <div className="overflow-x-auto">
@@ -520,6 +535,7 @@ function AutoExecSettings() {
                 <th className="pb-2 pr-3 font-medium">계좌</th>
                 <th className="pb-2 pr-3 font-medium">연결 포트</th>
                 {AE_ROWS.map((row) => <th key={row.k} className="pb-2 px-3 text-center font-medium">{row.short}</th>)}
+                <th className="pb-2 px-3 text-center font-medium">하루 매수 상한</th>
               </tr>
             </thead>
             <tbody>
@@ -539,12 +555,21 @@ function AutoExecSettings() {
                       <td key={row.k} className="px-3 py-2.5 text-center">
                         <label className="inline-flex cursor-pointer items-center gap-1.5">
                           <input type="checkbox" className="h-4 w-4 accent-[#c2410c]" checked={on} disabled={busy}
-                            onChange={(e) => void saveAccount(a, row.k, e.target.checked)} />
-                          <span className={`rounded-md px-1.5 py-0.5 text-[11.5px] font-semibold ${on ? "bg-accent-dim text-accent" : "bg-raised text-faint"}`}>{on ? "허용" : "꺼짐"}</span>
+                            onChange={(e) => void saveAccount(a, { [row.k]: e.target.checked }, e.target.checked ? AE_ON_CONFIRM : AE_OFF_CONFIRM)} />
+                          <span className={`rounded-md px-1.5 py-0.5 text-[11.5px] font-semibold ${on ? "bg-accent-dim text-accent" : "bg-raised text-faint"}`}>{on ? "켬" : "꺼짐"}</span>
                         </label>
                       </td>
                     );
                   })}
+                  <td className="px-3 py-2.5 text-center">
+                    <span className="inline-flex items-center gap-1">
+                      <input className="input w-20 !py-1 text-right" disabled={busy} inputMode="decimal"
+                        value={capDraft[a.id] ?? String(a.auto_exec.daily_buy_cap_pct)}
+                        onChange={(e) => setCapDraft({ ...capDraft, [a.id]: e.target.value })}
+                        onBlur={() => commitCap(a)} onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }} />
+                      <span className="text-muted">%</span>
+                    </span>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -564,9 +589,9 @@ function AutoExecSettings() {
         </div>
       )}
       <p className="mt-3 text-[12.5px] leading-relaxed text-faint">
-        연결 포트가 없는 계좌의 스위치는 켜 두어도 동작하지 않습니다 — 실전매매 &apos;증권사 연동&apos;에서 계좌를 포트에 연결하세요.
-        승인은 완전 무인(기본 켜짐)이 16:45·08:40 에 자동으로 하거나 표에서 직접 하며, 두 경우 모두 그 포트 계좌의 스위치를 먼저 검사하고 09:01 발주 직전에 다시 검사합니다.
-        발주 2회 연속 실패·대조 불일치·하루 매수 상한 초과 시 그 포트의 무인 실행은 자동 정지됩니다(주문표 배너에서 다시 켜기). 모든 발주·생략·실패는 주문표와 매매 로그에 기록됩니다.
+        연결 포트가 없는 계좌의 플래그는 켜 두어도 동작하지 않습니다 — 실전매매 &apos;증권사 연동&apos;에서 계좌를 포트에 연결하세요.
+        여기 플래그가 유일한 스위치입니다: 켜면 다음 09:01 부터 발주하고, 끄면 그 방향의 오늘 미체결 무인 주문을 즉시 취소합니다. 하루만 수동으로 돌리려면 주문표의 &apos;이번 실행일 무인 취소&apos;를 쓰세요.
+        발주 2회 연속 실패·잔고 대조 불일치·장 마감 대조의 계획 외 거래가 있으면 그 포트는 자동 정지됩니다(주문표 배너에서 다시 켜기). 09:01 이 돌지 않으면 09:15 감시가 지연 실행합니다. 모든 발주·생략·축소·실패는 주문표와 매매 로그에 남습니다.
         {msg && <span className="ml-2 text-ink">{msg}</span>}
       </p>
     </Card>

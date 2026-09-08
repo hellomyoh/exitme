@@ -43,11 +43,13 @@ ORDER_LEVEL = {"failed": "error", "mismatch": "error",
                "skipped": "warn", "skipped_gap": "warn", "gap_cancelled": "warn", "unfilled": "warn",
                "cancelled": "warn", "duplicate": "warn"}
 KIND_KO = {  # 이벤트 종류 표시명 (화면 배지)
-    "autoexec.run": "무인 실행", "autoexec.paused": "무인 실행 정지", "autoexec.approve": "무인 승인", "autoexec.error": "무인 실행 오류",
-    "autoexec.auto_approve": "자동 승인", "autoexec.auto_approve_setting": "완전 무인 설정", "autoexec.account_setting": "계좌 무인 설정",
-    "order.reserve": "예약주문 접수", "order.cancel": "주문 취소", "order.cancel_all": "전량 취소",
-    "preopen.run": "사전 갭 확인", "preopen.cancel": "사전 갭 취소", "preopen.cancel_failed": "사전 갭 취소 실패",
-    "preopen.unmatched": "사전 갭 취소 불가", "preopen.error": "사전 갭 확인 오류",
+    "autoexec.run": "무인 실행", "autoexec.paused": "무인 실행 정지", "autoexec.error": "무인 실행 오류",
+    "autoexec.skip": "무인 취소(수동)", "autoexec.cancel": "무인 주문 취소", "autoexec.account_setting": "계좌 무인 설정",
+    # 2026-09-08 이전 기록 표시용 (ADR-009 로 폐지된 종류)
+    "autoexec.approve": "무인 승인(구)", "autoexec.auto_approve": "자동 승인(구)", "autoexec.auto_approve_setting": "완전 무인 설정(구)",
+    "order.reserve": "예약주문 접수", "order.cancel": "주문 취소", "order.cancel_all": "전량 취소(구)",
+    "preopen.run": "사전 갭 확인(구)", "preopen.cancel": "사전 갭 취소(구)", "preopen.cancel_failed": "사전 갭 취소 실패(구)",
+    "preopen.unmatched": "사전 갭 취소 불가(구)", "preopen.error": "사전 갭 확인 오류(구)",
     "sync.post_close": "장 마감 동기화", "sync.error": "동기화 오류", "sync.reserved_failed": "예약주문 상태 조회 실패",
     "cash_check.warn": "예수금 대조 경고", "cash_check.align": "예수금 보정",
     "tx.delete": "거래 삭제", "notify.failed": "알림 전송 실패",

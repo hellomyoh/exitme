@@ -13,7 +13,7 @@
 | [us-transfer-study-20260831.md](us-transfer-study-20260831.md) | 운영자 | 한·미 동일 알고리즘 적용 검증 — 파라미터 고원 확인, 세금·환율·운영 선결 조건 |
 | [ltv-strategy-study-20260906.md](ltv-strategy-study-20260906.md) | 운영자 | 미국 지수 추세 자산용 신규 공식 LTM 연구 — 문헌·4차 개선 반복·민감도·국내 상장 S&P 판정 |
 | [krx-aftermarket-20260914-review.md](krx-aftermarket-20260914-review.md) | 운영자 | KRX 애프터마켓 개장(2026-09-14) 영향 검토 — ETF 제외로 공식 수정 없음, 운영 보완(20:15 동기화·예약주문 창 확인), 11월 NXT ETF 관찰 항목, ETF 밤갭 통계 |
-| [auto-execution-20260906.md](auto-execution-20260906.md) | 운영자·개발자 | 통제된 무인 실행([ADR-008](../adr/008-controlled-auto-execution.md)) — 승인된 지정가를 09:01 시가 확인 후 발주 + 08:57 사전 갭 취소 + 16:45 완전 무인(자동 승인·전량 취소) + 15:45 예수금 대조 + 매매 로그·텔레그램 알림: 흐름·코드 지도·상태 흐름·테스트·운영 절차·한계 |
+| [auto-execution-20260906.md](auto-execution-20260906.md) | 운영자·개발자 | 무인 매매 단일 실행([ADR-009](../adr/009-unattended-single-execution.md), 2026-09-08) — 계좌 플래그 → 09:01 계산·시가 확인·발주·동결 + 09:15 감시·하트비트 + 15:45 확정·예수금 대조 + 매매 로그·텔레그램 알림: 흐름·코드 지도·상태 흐름·테스트·운영 절차·한계(§5-1 은 2026-09-06 검증 이력) |
 | [broker-reserved-orders-20260905.md](broker-reserved-orders-20260905.md) | 운영자·개발자 | 증권사(KIS) 조회 연동·예약주문 접수·장 마감 동기화 설계 |
 | [mjournal-broker-link-review-20260905.md](mjournal-broker-link-review-20260905.md) | 운영자·개발자 | 매매일지 증권사 연동 검토 — 체결 가져오기·기초 보유 등록·계좌 평가금액 |
 | [manual-holdings-tp-review-20260903.md](manual-holdings-tp-review-20260903.md) | 운영자 | 수동 등록 보유분의 전량 익절 근사 검토(설계 정합 유지) |

@@ -491,9 +491,9 @@ def reconcile_for_portfolio(session: Session, pid: int, market: str = "KR") -> d
 
 STATUS_KO = {"reserved": "등록완료", "cancelled": "취소됨", "filled": "체결", "partial": "일부 체결",
              "unfilled": "미체결", "failed": "접수 실패", "duplicate": "이미 접수됨", "mismatch": "주문표 불일치",
-             # 무인 실행 (2026-09-06)
-             "approved": "무인 승인", "submitted": "무인 발주", "skipped_gap": "갭 취소 생략", "skipped": "생략",
-             # 장 시작 전 예상 시가 갭 취소 (2026-09-06, app.preopen) — 접수된 예약주문(정규 주문 전환분)을 08:57 에 취소
+             # 무인 실행 (2026-09-06 → ADR-009 단일 실행 2026-09-08: approved 는 옛 행 표시용으로만 남는다)
+             "approved": "무인 승인(구)", "submitted": "무인 발주", "skipped_gap": "갭 취소 생략", "skipped": "생략",
+             # 장 시작 전 예상 시가 갭 취소 (2026-09-06 → 2026-09-08 폐지, 옛 행 표시용)
              "gap_cancelled": "갭 취소됨(예상 시가)"}
 
 
@@ -643,8 +643,7 @@ def list_broker_orders(pid: int, date_: date | None = Query(default=None, alias=
     from app.autoexec import auto_exec_view
 
     return {"window": reservation_window(session=session), "items": [_order_out(r) for r in rows],
-            "auto_exec": auto_exec_view(session, pf),
-            "preopen": (pf.params or {}).get("preopen_cancel")}  # 사전 갭 취소 마지막 실행 요약 (2026-09-06)
+            "auto_exec": auto_exec_view(session, pf, date_)}   # 상태 한 줄(state) 포함 — 화면이 보는 실행일 기준 (ADR-009)
 
 
 @router.post("/portfolio/{pid}/orders/reserve")

@@ -83,26 +83,19 @@ def test_logs_merge_filters_and_isolation():
     assert c.get("/logs?type=trade", headers=h).json()["total"] == 2
 
 
-def test_autoexec_approve_and_run_write_events(monkeypatch):
-    """무인 실행 승인·실행 요약이 이벤트로 남는다 (줄별 결과는 주문 원천에서)."""
-    import app.autoexec as ae
-    from tests.test_autoexec import LINES, FakeKis, _setup_portfolio
+def test_autoexec_setting_and_run_write_events():
+    """계좌 플래그 변경·09:01 실행 요약이 이벤트로 남는다 (줄별 결과는 주문 원천에서). ADR-009."""
+    from tests.test_autoexec import LINES, FakeKis, _run, _setup_portfolio
 
     c, h = _client()
     today = datetime.now(KST).date()
-    pid, aid = _setup_portfolio(c, h, today, LINES, gap_exact=None)
+    pid, aid = _setup_portfolio(c, h, today, deposit_krw=9_000_000)
     c.put("/settings/auto-exec", json={"buy": True, "sell": False}, headers=h)
-    monkeypatch.setattr(ae, "OPEN_TIME", ae.time(23, 59))
-    r = c.post(f"/portfolio/{pid}/orders/approve", json={"date": today.isoformat(), "lines": [LINES[0], LINES[1]]}, headers=h)
-    assert r.status_code == 200 and r.json()["approved"] == 2
     ev = c.get("/logs?type=event", headers=h).json()["items"]
-    assert any(i["kind"] == "autoexec.approve" and "무인 실행 승인 2건" in i["text"] for i in ev)
-    # 실행은 DB 에 남은 다른 테스트의 오늘 승인 줄도 함께 처리한다 — 이 계좌만 넉넉한 가짜 클라이언트를 받게 해 결과를 고정한다
+    assert any(i["kind"] == "autoexec.account_setting" and "무인 매수 허용" in i["text"] and i["level"] == "warn" for i in ev)
     fake = FakeKis(open_px=100_000, deposit=9_000_000, holdings={}, psbl_cash=9_000_000)
-    idle = FakeKis(open_px=100_000, deposit=0, holdings={})
-    with SessionLocal() as s:
-        ae.run_auto_execution(s, now=datetime.combine(today, ae.time(9, 1), tzinfo=KST),
-                              client_factory=lambda cred: fake if cred.id == aid else idle, sleep_fn=lambda _s: None)
+    rec, _ = _run(fake, aid, today, [LINES[0], LINES[1]])
+    assert rec["submitted"] == 2
     ev = c.get("/logs?type=event", headers=h).json()["items"]
     run = next(i for i in ev if i["kind"] == "autoexec.run")
     assert run["level"] == "info" and "발주 2건" in run["text"] and run["portfolio"] == "무인"

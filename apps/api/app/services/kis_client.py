@@ -25,6 +25,8 @@ PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
 PRICE_TR = "FHKST01010100"
 # 호가/예상체결 (2026-09-06 사전 갭 취소) — 동시호가(08:30~09:00·15:20~15:30) 중 output2.antc_cnpr = 예상체결가
 EXPECTED_PATH = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+HOLIDAY_PATH = "/uapi/domestic-stock/v1/quotations/chk-holiday"   # 국내휴장일조회 (2026-09-08, 거래일 캘린더 갱신)
+HOLIDAY_TR = "CTCA0903R"
 EXPECTED_TR = "FHKST01010200"
 # 주식일별분봉조회 — 과거 최대 1년 보관, 호출당 120건, 시간 커서 내림차순 (실응답 프로브로 확인)
 MINUTE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
@@ -160,10 +162,45 @@ class KisClient:
         )
         return body["output"]
 
+    def fetch_holidays(self, start: date, end: date, max_pages: int = 24) -> list[tuple[date, bool]]:
+        """국내휴장일조회 (CTCA0903R) — [start, end] 의 날짜별 개장 여부. 거래일 캘린더 갱신이 쓴다 (2026-09-08, ADR-009 선결).
+
+        KIS 는 BASS_DT 부터 하루 한 행(주말 포함)을 페이지(≈24일)로 주고 `ctx_area_nk` 에 다음 페이지의 기준일을 준다(2026-09-08 실측).
+        `opnd_yn`(개장 여부)을 쓴다 — `bzdy_yn`(영업일)·`tr_day_yn`(거래일)은 결제·영업 기준이라 다를 수 있다. 반환은 날짜순, end 초과분은 잘라 낸다.
+        """
+        out: list[tuple[date, bool]] = []
+        base = start
+        seen: set[date] = set()
+        for _ in range(max_pages):
+            body = self._get(HOLIDAY_PATH, HOLIDAY_TR, {"BASS_DT": base.strftime("%Y%m%d"), "CTX_AREA_NK": "", "CTX_AREA_FK": ""})
+            rows = body.get("output") or []
+            if isinstance(rows, dict):
+                rows = [rows]
+            last: date | None = None
+            for r in rows:
+                raw = str(_first(r, "bass_dt", "BASS_DT")).strip()
+                if len(raw) != 8:
+                    continue
+                d = date(int(raw[:4]), int(raw[4:6]), int(raw[6:]))
+                last = d
+                if d < start or d > end or d in seen:
+                    continue
+                seen.add(d)
+                out.append((d, str(_first(r, "opnd_yn", "OPND_YN")).strip().upper() == "Y"))
+            nk = str(body.get("ctx_area_nk") or "").strip()
+            if last is None or last >= end or len(nk) != 8:
+                break
+            nxt = date(int(nk[:4]), int(nk[4:6]), int(nk[6:]))
+            if nxt <= base:
+                break
+            base = nxt
+        out.sort(key=lambda t: t[0])
+        return out
+
     def fetch_expected(self, code: str) -> dict:
         """호가/예상체결 조회 (FHKST01010200) — 동시호가 중 예상체결가. 반환 {"expected": antc_cnpr, "expected_qty", "time": 호가 접수 시각, "raw"}.
 
-        장중에는 예상체결가가 0 이고 현재가만 의미가 있다. 장 시작 전 갭 취소(app.preopen)가 08:57 에 쓴다.
+        장중에는 예상체결가가 0 이고 현재가만 의미가 있다. (08:57 사전 갭 취소는 2026-09-08 ADR-009 로 폐지 — 조회 메서드만 남긴다)
         """
         body = self._get(EXPECTED_PATH, EXPECTED_TR, {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
         out2 = body.get("output2") or {}
@@ -481,16 +518,19 @@ class KisTradingClient(KisClient):
         return out
 
     # ── 정규 주문 (2026-09-06 지시: 무인 실행) — 지정가 현금 주문·취소. 호출자는 app.autoexec 만 ──
-    def place_order(self, code: str, side: str, qty: int, price: int) -> dict:
-        """국내주식 지정가 현금 주문 (실전 TTTC0012U 매수 / TTTC0011U 매도, 모의 VTTC0802U / VTTC0801U).
+    def place_order(self, code: str, side: str, qty: int, price: int | None) -> dict:
+        """국내주식 현금 주문 (실전 TTTC0012U 매수 / TTTC0011U 매도, 모의 VTTC0802U / VTTC0801U).
 
-        시장가는 받지 않는다(무인 실행은 지정가만). 반환 {"order_no": 주문번호, "orgno": 거래소코드, "msg", "raw"}.
+        price 가 양수면 지정가(ORD_DVSN 00), None/0 이면 시장가(ORD_DVSN 01, 단가 0) — 레버리지 진입·청산 줄의 09:01 무인 발주
+        (사용자 결정 2026-09-08, ADR-009). 반환 {"order_no": 주문번호, "orgno": 거래소코드, "msg", "raw"}.
         """
-        if qty <= 0 or not price or price <= 0:
-            raise KisError("지정가 주문은 수량·가격이 0 보다 커야 합니다")
+        if qty <= 0:
+            raise KisError("주문 수량이 0 보다 커야 합니다")
+        if price is not None and price < 0:
+            raise KisError("지정가는 0 보다 커야 합니다")
         tr = ORDER_TR[(self.auth.env if self.auth.env in ("prod", "vps") else "prod", side)]
         body = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "PDNO": code,
-                "ORD_DVSN": "00", "ORD_QTY": str(int(qty)), "ORD_UNPR": str(int(price))}
+                "ORD_DVSN": "00" if price else "01", "ORD_QTY": str(int(qty)), "ORD_UNPR": str(int(price or 0))}
         data = self._post(ORDER_PATH, tr, body)
         out = data.get("output") or {}
         if isinstance(out, list):

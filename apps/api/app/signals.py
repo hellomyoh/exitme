@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -23,12 +23,27 @@ router = APIRouter()
 MODEL_CAPITAL = 100_000_000  # 모델 포트 기본 자본 (표시용 — 수량 산출 기준)
 
 
-def _next_exec_day(base_day: date) -> date:
-    """신호 기준일(base_day 종가)의 실행일 — 다음 평일 (주말 스킵)."""
+KST = timezone(timedelta(hours=9))
+FREEZE_TIME = time(9, 0)   # 실행일 이 시각의 원장 상태로 주문표를 동결한다 (ADR-009) — 09:01 실행기가 같은 기준으로 계산·발주
+
+
+def freeze_at(exec_day: date) -> datetime:
+    """실행일 주문표의 동결 시각 (KST 09:00). 이 시각 전 등록(입출금·체결)은 즉시 반영, 이후 등록은 다음 주문표부터."""
+    return datetime.combine(exec_day, FREEZE_TIME, tzinfo=KST)
+
+
+def _next_exec_day(base_day: date, session: Session | None = None) -> date:
+    """신호 기준일(base_day 종가)의 실행일 — 다음 거래일. 주말 스킵, 캘린더에 휴장으로 등록된 날도 스킵(행이 없으면 개장으로 간주)."""
     from datetime import timedelta as _td
 
+    from app.models import TradingCalendar
+
     exec_day = base_day + _td(days=1)
-    while exec_day.weekday() >= 5:
+    for _ in range(30):
+        if exec_day.weekday() < 5:
+            cal = session.get(TradingCalendar, exec_day) if session is not None else None
+            if cal is None or cal.is_open:
+                return exec_day
         exec_day += _td(days=1)
     return exec_day
 
@@ -47,37 +62,38 @@ def _plan_pending(exec_day: date) -> tuple[bool, str | None]:
     if exec_day > today or (exec_day == today and not closed):
         return False, None
     return True, ("아직 다음 거래일 주문표가 작성되지 않았습니다 — 장 마감 후 "
-                  "16:05 시세 수집 → 16:45 주문표 갱신 후 표시됩니다. "
+                  "16:05 시세 수집이 끝나면 다음 거래일 주문표가 표시됩니다. "
                   f"아래는 {exec_day.isoformat()} 실행 기준의 이전 주문표입니다.")
 
 
-def _state_before(session: Session, pid: int, cutoff: date) -> tuple[list[dict], int]:
-    """cutoff(KST 일자) 이전에 체결된 거래만으로 로트·현금을 재구성 — B안 (2026-09-02).
+def _state_before(session: Session, pid: int, cutoff: date | datetime) -> tuple[list[dict], int]:
+    """cutoff 이전에 체결된 거래만으로 로트·현금을 재구성 — B안 (2026-09-02) → 시각 동결 (ADR-009, 2026-09-08).
 
-    주문표 = 신호 기준일 종가 시점 상태의 함수(정본 §8 "종가 신호 → 익일 발주").
-    실행일 당일의 체결 등록이 당일 계획을 바꾸지 않도록 원장을 시점 재생한다.
-    FIFO 의미론은 등록 경로(portfolios — opened_at ≤ 매도 시각 필터 포함)와 동일하며,
+    주문표 = 동결 시각 직전 상태의 함수(정본 §8 "종가 신호 → 익일 발주"). cutoff 가 날짜면 그날 00:00 KST(미국 포트·종전 규칙),
+    시각이면 그 시각(국내 포트 = 실행일 09:00 — 09:01 실행기가 같은 기준으로 계산·발주하므로 그 전 등록한 입출금·체결은 당일 주문표에
+    바로 반영되고, 이후 등록은 다음 주문표부터). FIFO 의미론은 등록 경로(portfolios — opened_at ≤ 매도 시각 필터 포함)와 동일하며,
     동등성은 테스트(cutoff=미래 ↔ 현재 로트 테이블 일치)로 고정한다.
     반환: ([{instrument_id, qty, price}] 체결 시각순, 현금).
     """
-    from datetime import timedelta as _td, timezone as _tz
-
     from app.models import TradeTransaction
 
-    kst = _tz(_td(hours=9))
+    if isinstance(cutoff, datetime):
+        cutoff_dt = cutoff if cutoff.tzinfo else cutoff.replace(tzinfo=KST)
+    else:
+        cutoff_dt = datetime.combine(cutoff, time(0, 0), tzinfo=KST)
     txs = session.scalars(
         select(TradeTransaction).where(TradeTransaction.portfolio_id == pid)
         .order_by(TradeTransaction.executed_at, TradeTransaction.id)
     ).all()
 
-    def kdate(t):
+    def kdt(t):
         dt = t.executed_at
-        return (dt.astimezone(kst) if dt.tzinfo else dt).date()
+        return dt.astimezone(KST) if dt.tzinfo else dt.replace(tzinfo=KST)
 
     cash = 0
     lots: list[dict] = []
     for t in txs:
-        if kdate(t) >= cutoff:
+        if kdt(t) >= cutoff_dt:
             continue
         if t.kind == "deposit":
             cash += t.amount
@@ -162,8 +178,11 @@ def _record(session: Session, trade_date: date, status: str, regime=None, e=None
     return snap
 
 
-def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
+def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bool = False,
+                      now: datetime | None = None) -> dict:
     """내 실전 포트 기준 주문표 — 보유 로트·현금을 플래너 Portfolio 로 변환해 plan() 직접 실행 (ADR-005).
+
+    force_freeze=True 는 09:01 실행기 전용 — 이 계산을 그날의 주문표로 동결한다(ADR-009). 화면 조회는 동결 뒤에는 스냅샷을 그대로 돌려준다.
 
     근사 규칙(ASSUMPTIONS): 실전 로트의 익절가는 '오늘 Grid' 기준 매수가×(1+Grid)로 부여,
     상승장이면 코어로 간주. 200 ETF 는 KODEX/TIGER 모두 K200 레그로 매핑.
@@ -229,11 +248,13 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
     last = len(bars_200) - 1
     grid_today = grid_ratio(m200.atr20[last], m200.closes[last], params)
     base_day = date.fromisoformat(bars_200[last]["date"])
-    exec_day = _next_exec_day(base_day)
+    exec_day = _next_exec_day(base_day, session if pf_row.market == "KR" else None)
+    now = now or datetime.now(KST)
 
-    # 계좌 상태 = 신호 기준일 종가 시점(실행일 이전 체결만) — B안 (feature-portfolio §5, 2026-09-02).
-    # 실행일 당일의 체결 등록은 당일 주문표를 바꾸지 않는다 (HTS 주문장과 화면 불일치 방지).
-    lot_rows, cash = _state_before(session, pid, exec_day)
+    # 계좌 상태 = 실행일 09:00 KST 직전 상태 — B안(2026-09-02) 의 동결 기준을 날짜에서 시각으로 (ADR-009, 2026-09-08).
+    # 09:00 전 등록(입출금·체결)은 즉시 반영, 09:01 실행기가 같은 기준으로 발주하므로 HTS 주문장 = 화면. 이후 등록은 다음 주문표부터.
+    cutoff = freeze_at(exec_day) if pf_row.market == "KR" else exec_day
+    lot_rows, cash = _state_before(session, pid, cutoff)
     lots: list[Lot] = []
     qty_200 = qty_lev = 0
     SUPPORTED = ({"QQQ", "QLD", "TQQQ"} if pf_row.market == "US"
@@ -298,6 +319,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
                     "equity": round(user_pf.equity(m200.closes[last], mlev.closes[last]))},
         "orders": list(merged.values()),
         "gap_cancel_below": p.gap_cancel_below,
+        "gap_cancel_exact": p.gap_cancel_exact,  # 09:01 실행기의 시가 판정용 정확값 (ADR-009)
     }
     # '그날의 주문표' 보존 — 일자별 매매 일지의 계획 vs 체결 대조 (2026-08-29 지시).
     # 주문표는 기준일(bars[last]) 종가 계획 = 다음 거래일 실행분이라 다음 거래일 키로 저장.
@@ -310,11 +332,31 @@ def _portfolio_orders(session: Session, pid: int, user_id: int) -> dict:
                "gap_cancel_exact": p.gap_cancel_exact,  # 무인 실행의 시가 판정은 정확값 (2026-09-06)
                "account": out["account"], "e_target": p.e_target}
     from app.dashboard import kst_today
-    if row is None:
+
+    existing = (row.payload or {}) if row is not None else {}
+    if force_freeze:
+        # 09:01 실행기 — 이 계산이 그날의 주문표다 (ADR-009). 이후 화면은 이 스냅샷을 그대로 보인다
+        payload["frozen_at"] = now.isoformat(timespec="seconds")
+        if row is None:
+            session.add(PortfolioPlan(portfolio_id=pid, trade_date=exec_day, payload=payload))
+        else:
+            row.payload = payload
+        out["frozen"], out["frozen_at"] = True, payload["frozen_at"]
+    elif row is None:
         session.add(PortfolioPlan(portfolio_id=pid, trade_date=exec_day, payload=payload))
-    elif exec_day > kst_today():
-        row.payload = payload  # 아직 실행 전 — 최신 상태로 갱신
-    # 실행일 도래(오늘·과거) 계획은 불변 — "그날 아침의 계획" 보존 (2026-09-02 지시)
+        out["frozen"] = False
+    elif existing.get("frozen_at"):
+        # 동결 뒤 — 재계산 결과 대신 09:01 발주 기준이 된 스냅샷을 보인다 (실행일 09:00 이후 등록은 다음 주문표부터)
+        out["orders"] = list(existing.get("orders") or [])
+        out["account"] = dict(existing.get("account") or out["account"])
+        out["gap_cancel_below"] = existing.get("gap_cancel_below", out["gap_cancel_below"])
+        out["frozen"], out["frozen_at"] = True, existing["frozen_at"]
+    elif exec_day > kst_today() or (pf_row.market == "KR" and now < freeze_at(exec_day)):
+        row.payload = payload  # 동결 전 — 최신 원장 상태로 갱신 (실시간 반영)
+        out["frozen"] = False
+    else:
+        # 실행일 09:00 이후(미국은 실행일 도래 이후) 계획은 불변 — "그날 아침의 계획" 보존 (2026-09-02 지시). 화면은 재계산값
+        out["frozen"] = False
     session.commit()
     return out
 
