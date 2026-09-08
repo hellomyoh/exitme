@@ -465,11 +465,16 @@ function PortfolioPage() {
       autoSize: true,
     });
     eqApi.current = chart;
-    chart.addSeries(LineSeries, {
-      color: "#f97316", lineWidth: 2, title: "수익률 지수",
+    // 축·라벨은 시작 대비 % (2026-09-08 지시 "109 는 다른 뜻처럼 보인다 — 몇 % 올랐는지가 관건") — 지수 100 = 0%
+    const pct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+    const series = chart.addSeries(LineSeries, {
+      color: "#f97316", lineWidth: 2, title: "수익률",
+      priceFormat: { type: "custom", formatter: pct, minMove: 0.01 },
       // 데이터가 짧아도(시작 직후) 점이 잘 보이도록 마커 표시
       pointMarkersVisible: curve.length <= 30,
-    }).setData(curve.map((c) => ({ time: c.date, value: c.index })));
+    });
+    series.setData(curve.map((c) => ({ time: c.date, value: c.index - 100 })));
+    series.createPriceLine({ price: 0, color: "#9aa1ad", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "시작" });
     chart.timeScale().fitContent();
     return () => { try { eqApi.current?.remove(); } catch { /* noop */ } eqApi.current = null; };
   }, [curve]);
@@ -831,16 +836,16 @@ function PortfolioPage() {
       <Card className="mb-4">
         <CardTitle right={curve.length > 0 ? (
           <span className={`text-[15px] font-bold normal-case ${curve[curve.length - 1].index >= 100 ? "text-up" : "text-down"}`}>
-            {(curve[curve.length - 1].index - 100).toFixed(2)}%
+            {curve[curve.length - 1].index >= 100 ? "+" : ""}{(curve[curve.length - 1].index - 100).toFixed(2)}%
           </span>
-        ) : undefined}>수익률 추이 <span className="normal-case text-faint">· 시작 = 100 · 입출금 왜곡 제거(TWR)</span></CardTitle>
+        ) : undefined}>수익률 추이 <span className="normal-case text-faint">· 시작 대비 % · 입출금 왜곡 제거(TWR)</span></CardTitle>
         {curve.length >= 2 ? (
           <div ref={eqRef} className="h-52" />
         ) : curve.length === 1 ? (
           <div className="flex items-center gap-4 rounded-xl bg-inset px-5 py-6">
             <span className="text-3xl">🌱</span>
             <div>
-              <div className="text-[16px] font-bold">오늘 시작한 실전매매입니다 — 현재 수익률 {(curve[0].index - 100).toFixed(2)}%</div>
+              <div className="text-[16px] font-bold">오늘 시작한 실전매매입니다 — 현재 수익률 {curve[0].index >= 100 ? "+" : ""}{(curve[0].index - 100).toFixed(2)}%</div>
               <div className="mt-1 text-[13.5px] text-muted">평가액 {curve[0].equity.toLocaleString()}원 · 내일 종가부터 추이 그래프가 그려집니다.</div>
             </div>
           </div>

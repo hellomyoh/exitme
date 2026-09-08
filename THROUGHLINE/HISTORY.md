@@ -588,3 +588,8 @@
 - 원인: 0.12.0 의 조건이 "시작 후 10거래일 + 목표 미달"이어서 보유분을 입력해 시작한 포트(400주 보유)에도 boot 줄이 나왔다. 연구(fast-entry-study)는 현금만으로 시작하는 콜드 스타트를 가정했다.
 - 작업 내용: `signals._portfolio_orders` — 시작일까지 등록된 매수(보유분 입력·전환 시드)가 있으면 `days_since_start=None`. 엔진 — `initial_lots` 시작이면 None. ADR-010 결정문·feature §5.5·user-guide 갱신. 테스트: 엔진 initial_lots → boot 없음, 실전 보유 시작 포트 → boot 없음.
 - Git commit: fix: bootstrap entry only for portfolios that started with zero holdings
+
+## [2026-09-08] ui | 수익률 추이 차트를 지수(100) 대신 시작 대비 % 로 (사용자 지시 "109 가 9% 상승이라는 뜻인지 직관적으로")
+
+- 작업 내용: `portfolio/page.tsx` 차트 값 = index − 100, 가격 축 포맷 `+9.20%`, 마지막 값 라벨·헤더 '시작 대비 %', 0% 기준 점선('시작'). 상단 수익률에 + 부호. API·데이터 변경 없음.
+- Git commit: ui: show the TWR chart as % vs start instead of an index
