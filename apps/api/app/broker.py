@@ -443,13 +443,15 @@ def reconcile_plan(planned: list[dict], fills: list[dict]) -> list[dict]:
         p, f = plan_by.get(k, 0), fill_by.get(k, 0)
         leg, side = k
         label = f"{ko.get(leg, leg)} {side_ko.get(side, side)}"
+        base = {"label": label, "plan": p, "filled": f}
+        # 문구는 한 줄·핵심만 (2026-09-08 지시 "간단하게 핵심만"). missing 은 참고(info) — 화면은 ⓘ 툴팁, warn 만 배너
         if p and not f:
-            out.append({"level": "info", "kind": "missing", "text": f"{label} 계획 {p}주 — 등록된 체결 없음(미이행 또는 미등록)"})
+            out.append({**base, "level": "info", "kind": "missing", "text": f"{label} {p}주 — 체결 등록 없음"})
         elif f and not p:
-            out.append({"level": "warn", "kind": "unplanned", "text": f"{label} {f}주 등록 — 이날 계획에 없던 거래"})
+            out.append({**base, "level": "warn", "kind": "unplanned", "text": f"계획에 없던 거래: {label} {f}주"})
         elif p != f:
-            out.append({"level": "warn", "kind": "excess" if f > p else "short",
-                        "text": f"{label} 계획 {p}주 ≠ 등록 {f}주 ({f - p:+d}주)"})
+            out.append({**base, "level": "warn", "kind": "excess" if f > p else "short",
+                        "text": f"{label}: 계획 {p}주 → 등록 {f}주 ({f - p:+d})"})
     return out
 
 

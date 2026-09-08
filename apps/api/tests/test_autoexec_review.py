@@ -17,7 +17,7 @@ def test_reconcile_kind_and_pause_only_on_dangerous_items():
 
     plan = [{"kind": "grid1", "instrument": "K200", "side": "buy", "qty": 8, "price": 100000}]
     short = reconcile_plan(plan, [{"leg": "K200", "side": "buy", "qty": 5, "price": 100000}])
-    assert short[0]["level"] == "warn" and short[0]["kind"] == "short" and "-3주" in short[0]["text"]
+    assert short[0]["level"] == "warn" and short[0]["kind"] == "short" and "(-3)" in short[0]["text"] and short[0]["plan"] == 8 and short[0]["filled"] == 5
     excess = reconcile_plan(plan, [{"leg": "K200", "side": "buy", "qty": 11, "price": 100000}])
     assert excess[0]["kind"] == "excess"
     unplanned = reconcile_plan([], [{"leg": "LEV", "side": "buy", "qty": 1, "price": 9000}])
@@ -34,7 +34,7 @@ def test_reconcile_kind_and_pause_only_on_dangerous_items():
         assert ae.pause_if_reconcile_warns(s, pf, {"items": short}) is False        # 부분체결 → 정지 안 함
         assert ae.pause_if_reconcile_warns(s, pf, {"items": missing}) is False      # 미이행 → 정지 안 함
         assert ae.pause_if_reconcile_warns(s, pf, {"items": excess}) is True        # 초과 체결 → 정지
-        assert "계획 8주 ≠ 등록 11주" in ae.pf_auto_state(pf)["paused_reason"]
+        assert "계획 8주 → 등록 11주" in ae.pf_auto_state(pf)["paused_reason"]
 
 
 def test_deposit_fallback_fills_shallow_grid_first_and_clips_deeper(monkeypatch):

@@ -560,3 +560,10 @@
 - 작업 내용: 체크아웃 직후 1-0 단계 — 배포되는 버전의 `scripts/deploy.sh` 가 실행 중인 복사본과 다르면(`cmp`) `DEPLOY_SH_UPGRADED=1` 로 그 스크립트를 원본 인자 그대로 `exec`(한 번만). 재실행된 스크립트의 fetch·checkout 은 같은 대상이라 멱등. 첫 전환용 우회(README·operator-guide): `git show <태그>:scripts/deploy.sh > /tmp/deploy.sh && bash /tmp/deploy.sh <태그>`. VERSION 0.11.1(패치 — 스크립트 보강).
 - 테스트 결과: `bash -n` 통과. 샌드박스 git 저장소(bare origin + 태그의 deploy.sh 를 스텁으로 교체)에서 실제 실행 — ① 새 스크립트로 `v0.12.0` 배포 시 체크아웃 뒤 "배포되는 버전의 스크립트로 다시 실행합니다" 로그 후 스텁이 원본 인자(`v0.12.0 --skip-hooks --port 19999`)와 `DEPLOY_SH_UPGRADED=1` 을 받아 실행됨 ② `DEPLOY_SH_UPGRADED=1` 이 이미 있으면 재실행하지 않고 다음 단계로 진행. API 테스트 변경 없음(직전 240 passed).
 - Git commit: fix: deploy.sh re-executes itself with the deployed version's script
+
+## [2026-09-08] ui | 대조 경고 → ⓘ 참고/⚠️ 경고 분리·문구 축약, 포트 선택 칩 강조, 연결 계좌 잠금 (사용자 지시 3건)
+
+- 지시: "⚠️ 계획과 등록된 거래가 다릅니다가 왜 자꾸 나오나" → 원인: 지정가 미체결(`missing`, 서버 level=info)을 화면이 warn 과 같은 배너로 띄워 그리드 전략에서 거의 매일 노출. "참고용은 이모티콘 + 롤오버 설명" / "문장이 너무 어려워요, 핵심만" / "선택된 계좌가 잘 안 보임 — 완전히 구분" / "연동된 계좌는 수정 못 하게 비활성화 검토·포함".
+- 작업 내용: (1) `reconcile_plan` 문구 한 줄 축약(`200 ETF 매수 111주 — 체결 등록 없음` / `계획에 없던 거래: 레버리지 매수 3주` / `200 ETF 매수: 계획 8주 → 등록 11주 (+3)`) + `label/plan/filled` 필드. 화면은 warn 만 ⚠️ 배너(각주 한 줄), info 만 있으면 주문표 제목 옆 ⓘ 툴팁("09-08 미체결 — 200 ETF 매수 111주 · 200 ETF 매도 666주 / 지정가 미도달이면 정상"). (2) 무인 상태 줄 설명·제목 부제·수동 모드 각주를 핵심만으로 축약. (3) 포트 칩: 선택 = `bg-ink` 흰 굵은 글씨·✓·`ring-2 ring-accent`, 비선택 = 20% 틴트·회색·opacity-80. (4) 증권사 연동: 연결되면 select 비활성(🔒 연결됨, 툴팁), 확인창 있는 '연결 해제' 버튼으로만 변경(체결 가져오기·무인 발주가 계좌에 묶여 실수 변경 시 원장이 섞임). 카드 문구의 '예약주문 접수' 잔재 제거. VERSION 0.11.2(패치).
+- 테스트 결과: api `test_broker`·`test_autoexec_review`·`test_autoexec`·`test_account_autoexec` 통과(문구 변경에 맞춰 assertion 2곳 갱신: `(-3)`·`계획 8주 → 등록 11주`, `체결 등록 없음`). web `tsc --noEmit` 무오류. 화면 실행 확인은 로컬 web 컨테이너 결함으로 불가 — 배포 후 확인.
+- Git commit: ui: split reconcile info/warn (ⓘ tooltip vs banner), terse texts, distinct selected chip, lock linked broker account

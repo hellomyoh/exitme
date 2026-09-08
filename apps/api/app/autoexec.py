@@ -233,13 +233,13 @@ def auto_exec_state(pf: TradePortfolio, cred: BrokerCredential | None, allowed: 
     if pf.market != "KR":
         return {"code": "off", "label": "수동 모드 — 무인 매매는 국내 포트만 지원", "detail": None}
     if cred is None:
-        return {"code": "off", "label": "수동 모드 — 연결된 증권사 계좌 없음", "detail": "아래 증권사 연동에서 계좌를 연결하고 설정 › 무인 실행에서 켜면 다음 09:01 부터 발주됩니다"}
+        return {"code": "off", "label": "수동 모드 — 연결된 증권사 계좌 없음", "detail": "계좌 연결 후 설정 › 무인 실행에서 켜면 09:01 발주"}
     if not on:
         return {"code": "off", "label": f"수동 모드 — 계좌 '{cred.label}' 무인 매수·매도 꺼짐",
-                "detail": "설정 › 무인 실행에서 이 계좌의 플래그를 켜면 다음 실행일 09:01 부터 발주됩니다. 주문표는 참고용이며 HTS 에서 직접 주문하세요"}
+                "detail": "주문표는 참고용 — HTS 에서 직접 주문 · 켜기: 설정 › 무인 실행"}
     if st.get("paused"):
         return {"code": "paused", "label": f"정지 — {st.get('paused_reason') or ''}",
-                "detail": f"{(st.get('paused_at') or '')[:16].replace('T', ' ')}부터 발주가 멈춰 있습니다. 계좌와 기록을 맞춘 뒤 '다시 켜기'"}
+                "detail": f"{(st.get('paused_at') or '')[:16].replace('T', ' ')}부터 정지 · 계좌·기록 확인 후 '다시 켜기'"}
     ed = exec_day
     skip = st.get("skip") or {}
     last = st.get("last_run") or {}
@@ -247,8 +247,7 @@ def auto_exec_state(pf: TradePortfolio, cred: BrokerCredential | None, allowed: 
     if ed is not None and skip.get("date") == ed.isoformat():
         n = int(skip.get("cancelled") or 0)
         return {"code": "skipped_user", "label": f"무인 취소됨 — {ed.isoformat()} 은 수동 처리",
-                "detail": (f"접수돼 있던 무인 주문 {n}건을 취소했습니다. " if n else "") + ("09:00 전까지는 '되돌리기'로 무인을 다시 켤 수 있습니다. " if now < freeze_at(ed) else "")
-                + "다음 실행일부터 자동으로 무인 대기로 돌아갑니다"}
+                "detail": (f"무인 주문 {n}건 취소 · " if n else "") + ("09:00 전 '되돌리기' 가능 · " if now < freeze_at(ed) else "") + "다음 실행일 자동 복귀"}
     if ed is not None and last.get("date") == ed.isoformat():
         parts = [f"발주 {last.get('submitted', 0)}건"]
         if last.get("skipped_gap"):
@@ -268,7 +267,7 @@ def auto_exec_state(pf: TradePortfolio, cred: BrokerCredential | None, allowed: 
         if last.get("open") is not None:
             detail.append(f"시가 {int(last['open']):,}원" + (" — 갭 취소 발동" if last.get("gap_hit") else ""))
         if last.get("trigger") == "watchdog":
-            detail.append("09:01 배치가 돌지 않아 09:15 감시가 지연 실행")
+            detail.append("09:15 감시가 지연 실행")
         if last.get("reason"):
             detail.append(str(last["reason"]))
         return {"code": "ran", "label": label, "detail": " · ".join(detail) or None, "run": last}
@@ -276,11 +275,11 @@ def auto_exec_state(pf: TradePortfolio, cred: BrokerCredential | None, allowed: 
         return {"code": "waiting", "label": f"무인 {who} 대기", "detail": None}
     if ed > now.date() or now < freeze_at(ed):
         return {"code": "waiting", "label": f"무인 {who} 대기 — {ed.isoformat()} 09:01 발주 예정",
-                "detail": "09:00 까지 등록한 입출금·체결은 이 주문표에 바로 반영됩니다. 09:01 에 시가 확인 → 갭 판정 → 잔고 대조 → 상한 → 발주"}
+                "detail": "09:00 까지 등록분 반영 · 09:01 시가 확인 후 발주"}
     if ed == now.date() and now.time() < RUN_GRACE:
         return {"code": "running", "label": "09:01 무인 실행 중", "detail": "결과가 곧 표시됩니다"}
     return {"code": "missed", "label": f"경고 — {ed.isoformat()} 09:01 실행 기록 없음",
-            "detail": "09:15 감시가 지연 실행합니다. 그 뒤에도 기록이 없으면 스케줄러·워커 컨테이너 상태(하트비트)를 확인하세요"}
+            "detail": "09:15 감시가 지연 실행 · 그래도 없으면 워커·스케줄러 상태 확인"}
 
 
 def auto_exec_view(session: Session, pf: TradePortfolio, exec_day: date | None = None, now: datetime | None = None) -> dict:
