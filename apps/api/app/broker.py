@@ -438,7 +438,7 @@ def reconcile_plan(planned: list[dict], fills: list[dict]) -> list[dict]:
     side_ko = {"buy": "매수", "sell": "매도"}
     out: list[dict] = []
     # kind (2026-09-06): missing(계획 있고 체결 없음) · unplanned(계획 없고 체결) · short(부분·미달) · excess(초과).
-    # level·text 는 종전과 동일(수동 검토 배너 호환). 무인 자동 정지는 unplanned·excess(위험)만 본다 — short(정상 부분체결)는 정지하지 않는다.
+    # level: missing·short = info(참고, 화면 ⓘ 툴팁) / unplanned·excess = warn(배너). 무인 자동 정지도 unplanned·excess 만 본다.
     for k in sorted(set(plan_by) | set(fill_by)):
         p, f = plan_by.get(k, 0), fill_by.get(k, 0)
         leg, side = k
@@ -450,7 +450,8 @@ def reconcile_plan(planned: list[dict], fills: list[dict]) -> list[dict]:
         elif f and not p:
             out.append({**base, "level": "warn", "kind": "unplanned", "text": f"계획에 없던 거래: {label} {f}주"})
         elif p != f:
-            out.append({**base, "level": "warn", "kind": "excess" if f > p else "short",
+            # 부분 체결(short)은 지정가의 정상 결과 → 참고(info, 화면 ⓘ). 초과 체결(excess)만 경고 (2026-09-08 사용자 지적)
+            out.append({**base, "level": "warn" if f > p else "info", "kind": "excess" if f > p else "short",
                         "text": f"{label}: 계획 {p}주 → 등록 {f}주 ({f - p:+d})"})
     return out
 

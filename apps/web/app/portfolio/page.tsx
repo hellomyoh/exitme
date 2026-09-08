@@ -4,7 +4,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { createChart, IChartApi, LineSeries } from "lightweight-charts";
+import { createChart, IChartApi, LineSeries, LineStyle } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { fmtMoneyM, fmtPriceM, MARKET_CODES, MARKET_LABEL, marketOf, priceToApi } from "../../lib/market";
 import { Badge, Card, CardTitle, EmptyState, fmtPct, GaugeBar, PageTitle, pnlTone, Stat, Tip } from "../../components/ui";
@@ -458,18 +458,17 @@ function PortfolioPage() {
     try { eqApi.current?.remove(); } catch { /* already disposed */ }
     eqApi.current = null;
     if (curve.length < 2) return;  // 1일 이하 → 차트 대신 안내 문구 (오늘 시작 케이스)
+    // 매매일지 수익률 차트와 같은 스타일 (2026-09-08 지시): 축은 시작 대비 %(+9.2%), 0% 점선, 크로스헤어로 날짜·값 확인. 지수 100 = 0%
     const chart = createChart(eqRef.current, {
-      layout: { background: { color: "transparent" }, textColor: "#858c9b", attributionLogo: false, fontSize: 12 },
-      grid: { vertLines: { visible: false }, horzLines: { color: "rgba(18,24,40,0.07)" } },
-      rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
-      autoSize: true,
+      localization: { priceFormatter: (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+      layout: { background: { color: "transparent" }, textColor: "#9aa1ad", attributionLogo: false, fontSize: 11 },
+      grid: { vertLines: { visible: false }, horzLines: { color: "#eef0f3" } },
+      height: 190, autoSize: true, rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
     });
     eqApi.current = chart;
-    chart.addSeries(LineSeries, {
-      color: "#f97316", lineWidth: 2, title: "수익률 지수",
-      // 데이터가 짧아도(시작 직후) 점이 잘 보이도록 마커 표시
-      pointMarkersVisible: curve.length <= 30,
-    }).setData(curve.map((c) => ({ time: c.date, value: c.index })));
+    const series = chart.addSeries(LineSeries, { color: "#f97316", lineWidth: 2, title: "수익률", priceLineVisible: false });
+    series.setData(curve.map((c) => ({ time: c.date, value: c.index - 100 })));
+    series.createPriceLine({ price: 0, color: "#c9ced6", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
     chart.timeScale().fitContent();
     return () => { try { eqApi.current?.remove(); } catch { /* noop */ } eqApi.current = null; };
   }, [curve]);
@@ -831,16 +830,16 @@ function PortfolioPage() {
       <Card className="mb-4">
         <CardTitle right={curve.length > 0 ? (
           <span className={`text-[15px] font-bold normal-case ${curve[curve.length - 1].index >= 100 ? "text-up" : "text-down"}`}>
-            {(curve[curve.length - 1].index - 100).toFixed(2)}%
+            {curve[curve.length - 1].index >= 100 ? "+" : ""}{(curve[curve.length - 1].index - 100).toFixed(2)}%
           </span>
-        ) : undefined}>수익률 추이 <span className="normal-case text-faint">· 시작 = 100 · 입출금 왜곡 제거(TWR)</span></CardTitle>
+        ) : undefined}>수익률 추이 <span className="normal-case text-faint">· 시작 대비 % · 입출금 왜곡 제거(TWR)</span></CardTitle>
         {curve.length >= 2 ? (
-          <div ref={eqRef} className="h-52" />
+          <div ref={eqRef} className="h-[190px]" />
         ) : curve.length === 1 ? (
           <div className="flex items-center gap-4 rounded-xl bg-inset px-5 py-6">
             <span className="text-3xl">🌱</span>
             <div>
-              <div className="text-[16px] font-bold">오늘 시작한 실전매매입니다 — 현재 수익률 {(curve[0].index - 100).toFixed(2)}%</div>
+              <div className="text-[16px] font-bold">오늘 시작한 실전매매입니다 — 현재 수익률 {curve[0].index >= 100 ? "+" : ""}{(curve[0].index - 100).toFixed(2)}%</div>
               <div className="mt-1 text-[13.5px] text-muted">평가액 {curve[0].equity.toLocaleString()}원 · 내일 종가부터 추이 그래프가 그려집니다.</div>
             </div>
           </div>
@@ -915,7 +914,7 @@ function PortfolioPage() {
               : `${ed.slice(5)} 실행 예정 주문표`;
           })()}
           {recInfo.length > 0 && recWarn.length === 0 && signal?.reconcile && (
-            <Tip tip={<span><b className="text-ink">{signal.reconcile.date.slice(5)} 미체결</b> — {recInfo.map((it) => `${it.label ?? it.text} ${it.plan ?? ""}주`.replace(/\s+주$/, "")).join(" · ")}<br />지정가 미도달이면 정상. 체결됐는데 미등록이면 아래 &apos;체결 등록&apos;.</span>}>
+            <Tip tip={<span><b className="text-ink">{signal.reconcile.date.slice(5)} 미체결·부분 체결</b> — {recInfo.map((it) => it.label ? (it.filled ? `${it.label} ${it.plan}주 중 ${it.filled}주 체결` : `${it.label} ${it.plan}주 미체결`) : it.text).join(" · ")}<br />지정가 미도달·부분 체결은 정상. 체결됐는데 미등록이면 아래 &apos;체결 등록&apos;.</span>}>
               <span className="ml-1 cursor-help text-[13px] font-normal text-faint">ⓘ</span>
             </Tip>
           )}

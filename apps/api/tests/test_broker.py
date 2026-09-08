@@ -28,7 +28,7 @@ def test_reconcile_plan_cases():
     # 수량 불일치
     out = reconcile_plan(plan, [{"leg": "K200", "side": "buy", "qty": 20, "price": 103840},
                                 {"leg": "K200", "side": "sell", "qty": 461, "price": 112500}])
-    assert len(out) == 1 and out[0]["level"] == "warn" and "(-6)" in out[0]["text"]
+    assert len(out) == 1 and out[0]["level"] == "info" and out[0]["kind"] == "short" and "(-6)" in out[0]["text"]   # 부분 체결 = 참고
     # 계획에 없던 거래
     out = reconcile_plan([], [{"leg": "LEV", "side": "buy", "qty": 3, "price": 9000}])
     assert len(out) == 1 and out[0]["level"] == "warn" and "계획에 없던" in out[0]["text"]

@@ -105,3 +105,14 @@ def test_engine_counts_days_from_first_ok_plan_and_off_equals_previous():
     # 끔 = 종전 규칙 (부트스트랩 도입 전 엔진과 같은 경로) — 하락장 시작이면 주문이 없을 수 있으니 계획 목록 자체를 비교
     assert [p.orders for p in off.plans[:first]] == [p.orders for p in on.plans[:first]]
     assert len(on.equity) == len(off.equity)
+
+
+def test_engine_no_bootstrap_when_started_with_holdings():
+    """보유 상태로 시작(initial_lots, 실전 '보유분 입력'과 같은 의미론)이면 부트스트랩 없음 — 콜드 스타트 전용."""
+    from app.strategy.backtest import run_backtest
+    from tests.test_strategy_backtest import make_bars
+
+    b200, blev = make_bars(n=600), make_bars(n=600, ratio=0.3)
+    r = run_backtest(b200, blev, 50_000_000, Params(), collect_plans=True,
+                     initial_lots=[{"leg": "K200", "qty": 300, "price": int(b200[0]["close"])}])
+    assert not any(o.kind == "boot" for p in r.plans for o in p.orders)

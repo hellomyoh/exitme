@@ -17,7 +17,7 @@ def test_reconcile_kind_and_pause_only_on_dangerous_items():
 
     plan = [{"kind": "grid1", "instrument": "K200", "side": "buy", "qty": 8, "price": 100000}]
     short = reconcile_plan(plan, [{"leg": "K200", "side": "buy", "qty": 5, "price": 100000}])
-    assert short[0]["level"] == "warn" and short[0]["kind"] == "short" and "(-3)" in short[0]["text"] and short[0]["plan"] == 8 and short[0]["filled"] == 5
+    assert short[0]["level"] == "info" and short[0]["kind"] == "short" and "(-3)" in short[0]["text"]   # 부분 체결 = 참고(2026-09-08) and short[0]["plan"] == 8 and short[0]["filled"] == 5
     excess = reconcile_plan(plan, [{"leg": "K200", "side": "buy", "qty": 11, "price": 100000}])
     assert excess[0]["kind"] == "excess"
     unplanned = reconcile_plan([], [{"leg": "LEV", "side": "buy", "qty": 1, "price": 9000}])

@@ -181,14 +181,15 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
 
     prev_grid = 0.0
     active_start: int | None = None  # 첫 OK 계획 시점 — KPI 는 활동 구간 기준 (검증 B4)
-    first_ok_i: int | None = None    # 첫 OK 계획의 바 인덱스 — 소량 진입 부트스트랩의 days_since_start 기준 (ADR-010)
+    first_ok_i: int | None = None    # 첫 OK 계획의 바 인덱스 — 소량 진입 부트스트랩의 days_since_start 기준 (ADR-010). 보유 상태 시작(initial_lots)은 대상 외
     total = max(len(dates) - 1 - first, 1)
     for i in range(first, len(dates) - 1):
         if progress_cb is not None and (i - first) % max(total // 100, 1) == 0:
             if progress_cb(i - first, total) is False:
                 raise Cancelled()
         # 워밍업 통과 여부는 i 만의 함수라, 첫 OK 가 될 수 있는 날은 0일째로 넘긴다 (OK 가 아니면 무시)
-        p = plan(i, m200, mlev, regime, pf, params, days_since_start=(i - first_ok_i) if first_ok_i is not None else 0)
+        p = plan(i, m200, mlev, regime, pf, params,
+                 days_since_start=None if initial_lots else ((i - first_ok_i) if first_ok_i is not None else 0))
         if collect_plans:
             plans.append(p)
         nxt = i + 1
@@ -306,7 +307,8 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
         # 마지막 바(최신 종가) 기준 계획 — 일일 시그널 엔진용. 체결은 하지 않는다.
         # 백테스트를 d+1개 바로 절단 실행하면 이 계획이 전체 실행의 plans[d]와 동일하다 (ADR-005).
         last = len(dates) - 1
-        p_final = plan(last, m200, mlev, regime, pf, params, days_since_start=(last - first_ok_i) if first_ok_i is not None else 0)
+        p_final = plan(last, m200, mlev, regime, pf, params,
+                       days_since_start=None if initial_lots else ((last - first_ok_i) if first_ok_i is not None else 0))
         plans.append(p_final)
 
     kpi = compute_kpi(equity_curve[active_start or 0:], base_capital, ledger.closed)

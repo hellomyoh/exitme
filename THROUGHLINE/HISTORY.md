@@ -576,3 +576,20 @@
 - 단계별 검증: ① 플래너·엔진 기존 48 테스트 통과(플래너 테스트는 인자 미지정 = 종전) ② **끔 = 도입 전과 비트 동일** — 2017~2026 KODEX 백테스트 KPI(total_return 2.454899·CAGR 16.02%·MDD −21.66%·거래 375)·최종 자산 345,489,906원 일치, boot 줄 0 ③ 기본값 영향: boot 는 첫 OK 계획일(2018-02-08)부터 정확히 10일, 최종 자산 346,063,150원(+0.17%), 거래 379, MDD −21.67% — 모델 포트 잔고가 소폭 달라져 공용 KR 신호의 그리드 수량도 소폭 변함(가격·레짐·E 동일) ④ 신규 단위 6종(`test_bootstrap_entry.py`) ⑤ 실전 경로(`test_signals`): 오늘 시작 포트 boot 줄·`boot {day:1, days:10}`·스냅샷 저장, 시작 40일 전 포트 없음, 모델 신호 없음 ⑥ 실행기(`test_autoexec`): 갭 출발이면 boot 도 생략, 아니면 종가 지정가가 그리드보다 먼저 ⑦ 상한 기본 0 반영으로 기대값 3곳 갱신(상한 검증 테스트는 20% 명시) ⑧ 전체 `pytest -q tests/` **247 passed**, web `tsc --noEmit` 무오류.
 - 사이드 이펙트 점검: 새 백테스트 잡은 첫 10 활동일에 boot 포함(저장된 잡 불변) · 포트 동결 변수(`params.algo`)에 boot 키가 없으면 기본값 적용(켬) · 미국 TF/LTM 경로 무영향 · `reconcile_plan` 은 종목·방향 합계라 boot 를 매수로 정상 집계 · 화면 실행 확인은 로컬 web 컨테이너 결함으로 불가(배포 후).
 - Git commit: feat: bootstrap small-entry for cold starts — 10 trading days, 15% of shortfall at last close (ADR-010); daily buy cap default 0
+
+## [2026-09-08] ui | 대조 — 부분 체결(short)도 참고(ⓘ)로 (사용자 지적 "이모지·롤오버로 바꾼 것 아닌가")
+
+- 원인: 0.11.2 에서 `missing`(미체결)만 info 로 내리고 `short`(계획 > 등록, 부분 체결)는 warn 배너에 남겨 두어, 익절 425주 중 25주 체결 같은 정상 부분 체결이 "⚠️ 계획과 등록 체결이 다릅니다"로 떴다. 무인 정지 판정은 이미 short 를 정상으로 보고 있었으므로 표시만 어긋난 상태.
+- 작업 내용: `reconcile_plan` short → level info(kind 불변). 배너는 unplanned·excess 만. ⓘ 툴팁에 "200 ETF 매도 425주 중 25주 체결" 형식 추가. 테스트 기대값 2곳 갱신. VERSION 0.12.1.
+- Git commit: ui: treat partial fills (short) as info in the reconcile tooltip; banner only for unplanned/excess
+
+## [2026-09-08] fix | 초기 진입은 보유 0 으로 시작한 포트만 (사용자 지적 "보유 수량이 있는 계좌인데 초기 진입이 왜 나오나")
+
+- 원인: 0.12.0 의 조건이 "시작 후 10거래일 + 목표 미달"이어서 보유분을 입력해 시작한 포트(400주 보유)에도 boot 줄이 나왔다. 연구(fast-entry-study)는 현금만으로 시작하는 콜드 스타트를 가정했다.
+- 작업 내용: `signals._portfolio_orders` — 시작일까지 등록된 매수(보유분 입력·전환 시드)가 있으면 `days_since_start=None`. 엔진 — `initial_lots` 시작이면 None. ADR-010 결정문·feature §5.5·user-guide 갱신. 테스트: 엔진 initial_lots → boot 없음, 실전 보유 시작 포트 → boot 없음.
+- Git commit: fix: bootstrap entry only for portfolios that started with zero holdings
+
+## [2026-09-08] ui | 수익률 추이 차트를 지수(100) 대신 시작 대비 % 로 (사용자 지시 "109 가 9% 상승이라는 뜻인지 직관적으로")
+
+- 작업 내용: `portfolio/page.tsx` 차트 값 = index − 100, 가격 축 포맷 `+9.20%`, 마지막 값 라벨·헤더 '시작 대비 %', 0% 기준 점선. 상단 수익률에 + 부호. 후속 지시로 **매매일지 수익률 차트와 같은 스타일**(포맷·격자·글꼴·크로스헤어)로 맞추고 평가액 툴팁은 제외. API·데이터 변경 없음.
+- Git commit: ui: show the TWR chart as % vs start instead of an index
