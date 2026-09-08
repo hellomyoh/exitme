@@ -68,6 +68,15 @@ celery_app.conf.update(
             "task": "app.worker.pipeline_heartbeat",
             "schedule": 60.0,
         },
+        # 장 시작 전 예상 시가 관찰 (2026-09-09 지시) — 08:30~09:10 매 분 KIS 예상체결가/확정 시가 → Redis → 주문표 '예상 시가' 표기 (표시 전용)
+        "preopen-expected-open-a": {
+            "task": "app.worker.poll_expected_open",
+            "schedule": crontab(hour=8, minute="30-59", day_of_week="mon-fri"),
+        },
+        "preopen-expected-open-b": {
+            "task": "app.worker.poll_expected_open",
+            "schedule": crontab(hour=9, minute="0-10", day_of_week="mon-fri"),
+        },
         # 거래일 캘린더 갱신 (2026-09-08, ADR-009 선결) — KIS 국내휴장일조회로 앞 120일. 배포 후 훅(scripts/post-deploy.d/20)도 같은 일을 한다
         "refresh-trading-calendar": {
             "task": "app.worker.refresh_trading_calendar",
@@ -346,6 +355,21 @@ def pipeline_heartbeat() -> bool:
     from app.autoexec import touch_heartbeat
 
     return touch_heartbeat()
+
+
+@celery_app.task(name="app.worker.poll_expected_open", max_retries=0, ignore_result=True)
+def poll_expected_open() -> dict:
+    """장 시작 전 예상 시가 관찰 — 08:30~08:59 예상체결가, 09:00~09:10 확정 시가. 휴장일 스킵. 표시 전용(발주는 09:01 실행기가 실제 시가로)."""
+    from app.db import SessionLocal
+    from app.models import TradingCalendar
+    from app.preopen_watch import poll_expected_open as _poll
+
+    today = datetime.now(KST).date()
+    with SessionLocal() as session:
+        cal = session.get(TradingCalendar, today)
+        if cal is not None and not cal.is_open:
+            return {"skipped": "holiday", "date": today.isoformat()}
+    return _poll()
 
 
 @celery_app.task(name="app.worker.refresh_trading_calendar", max_retries=1, autoretry_for=(Exception,), retry_backoff=300)

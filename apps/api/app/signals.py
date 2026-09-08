@@ -338,6 +338,13 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
         # 소량 진입 구간 표시 (ADR-010): {"day": n, "days": 10} — 부트스트랩 주문이 있는 날만
         "boot": ({"day": p.indicators.get("boot_day"), "days": p.indicators.get("boot_days")} if p.indicators.get("boot_day") else None),
     }
+    # 장 시작 전 예상 시가 (2026-09-09): 08:30~09:10 관찰값 — 실행일 아침에만 값이 있다. 표시 전용, Redis 장애면 None
+    if pf_row.market == "KR":
+        from app.preopen_watch import expected_open_view
+
+        out["expected_open"] = expected_open_view(codes[0], exec_day, p.gap_cancel_exact)
+    else:
+        out["expected_open"] = None
     # '그날의 주문표' 보존 — 일자별 매매 일지의 계획 vs 체결 대조 (2026-08-29 지시).
     # 주문표는 기준일(bars[last]) 종가 계획 = 다음 거래일 실행분이라 다음 거래일 키로 저장.
     # B안 이후 계획은 실행일 당일 체결과 무관하게 결정론적이라 upsert 갱신이 보존을 해치지 않는다.

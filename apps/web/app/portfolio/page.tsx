@@ -45,7 +45,7 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; exec_day?: string; pending?: boolean; pending_note?: string | null; frozen?: boolean; frozen_at?: string | null; boot?: { day: number; days: number } | null; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; kind?: string; text: string; label?: string; plan?: number; filled?: number }[] } | null };
+type Signal = { status: string; exec_day?: string; pending?: boolean; pending_note?: string | null; frozen?: boolean; frozen_at?: string | null; boot?: { day: number; days: number } | null; expected_open?: { price: number; at: string; kind: "expected" | "open" | "current"; gap_hit: boolean; samples: { at: string; price: number }[] } | null; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; kind?: string; text: string; label?: string; plan?: number; filled?: number }[] } | null };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -1091,6 +1091,21 @@ function PortfolioPage() {
             {signal.gap_cancel_below && (
               <p className="mt-2 text-[13px] text-faint">⚠️ 시가 {fpx(signal.gap_cancel_below)} 이하 출발 시 그리드 전량 취소</p>
             )}
+            {/* 장 시작 전 예상 시가 (2026-09-09 지시) — 08:30~08:59 동시호가 예상체결가, 09:00 뒤 확정 시가. 롤오버에 최근 표본 */}
+            {signal.expected_open && (() => {
+              const e = signal.expected_open!;
+              const label = e.kind === "open" ? "시가(확정)" : e.kind === "current" ? "현재가" : "예상 시가";
+              return (
+                <p className={`mt-1 text-[13px] ${e.gap_hit ? "font-semibold text-down" : "text-muted"}`}>
+                  <Tip tip={<span><b className="text-ink">{signal.exec_day} 08:30~09:10 관찰</b> — 동시호가 예상체결가는 호가 잔량 기반 근사값입니다.<br />
+                    {e.samples.map((s) => `${s.at} ${fpx(s.price)}`).join(" · ")}</span>}>
+                    <span className="cursor-help">{e.gap_hit ? "⤫" : "🕗"} {label} <b className="text-ink">{fpx(e.price)}</b> ({e.at})
+                      {signal.gap_cancel_below ? (e.gap_hit ? ` — 갭 기준 ${fpx(signal.gap_cancel_below)} 이하 → 그리드·초기 진입 매수 생략 예정` : ` — 갭 기준 ${fpx(signal.gap_cancel_below)} 위, 그리드 유지`) : ""}
+                      <span className="text-faint"> ⓘ</span></span>
+                  </Tip>
+                </p>
+              );
+            })()}
             {/* 계산 근거 — 구 주문표 페이지 이관 (2026-09-05): 주문별 실행 조건 + 지표값 */}
             <details className="mt-3 border-t border-line pt-2">
               <summary className="cursor-pointer text-[13px] font-semibold text-muted">▸ 계산 근거 (실행 조건 · 지표값)</summary>
