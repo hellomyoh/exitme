@@ -1058,8 +1058,10 @@ function PortfolioPage() {
                     {showAutoCol && (
                       <td className="py-2 pl-3 text-[12.5px]">
                         {(() => {
-                          const b = boFor(o);
                           const st = ae?.state.code;
+                          // 실행 전(대기·실행 중·이번 실행일 취소)에는 예고만 — 같은 줄의 옛 행(ADR-009 전환 정리로 취소된 승인 행 등)이 예고를 가리지 않게 (2026-09-08 지적)
+                          const pre = st === "waiting" || st === "running" || st === "skipped_user";
+                          const b = pre ? null : boFor(o);
                           if (!b) {
                             if (st === "skipped_user") return <span className="text-warn" title="이번 실행일 무인 취소 — 직접 주문">수동(취소)</span>;
                             if (st !== "waiting" && st !== "running") return <span className="text-faint">—</span>;
