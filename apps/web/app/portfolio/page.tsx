@@ -45,7 +45,7 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; exec_day?: string; pending?: boolean; pending_note?: string | null; frozen?: boolean; frozen_at?: string | null; boot?: { day: number; days: number } | null; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; kind?: string; text: string; label?: string; plan?: number; filled?: number }[] } | null };
+type Signal = { status: string; exec_day?: string; pending?: boolean; pending_note?: string | null; frozen?: boolean; frozen_at?: string | null; boot?: { day: number; days: number } | null; expected_open?: { price: number; at: string; kind: "expected" | "open" | "current"; gap_hit: boolean; samples: { at: string; price: number }[] } | null; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; kind?: string; text: string; label?: string; plan?: number; filled?: number }[] } | null };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -191,6 +191,29 @@ function PortfolioPage() {
   const ae = bo?.auto_exec ?? null;
   const aeOn = !!ae && (ae.allowed.buy || ae.allowed.sell) && !!broker?.linked;
   const showAutoCol = market === "KR" && (aeOn || (bo?.items ?? []).some((i) => i.plan_date === signal?.exec_day));
+  // 상태 칩(제목 오른쪽)·'무인' 열 헤더(취소/되돌리기) 공용 (2026-09-09 지시 "붉은 박스 삭제, 취소 버튼은 무인 탭으로")
+  const aeState = ae?.state;
+  const aeBeforeFreeze = !!signal?.exec_day && Date.now() < new Date(`${signal.exec_day}T09:00:00+09:00`).getTime();
+  const aeCanSkip = !!ae && aeOn && !ae.paused && aeState?.code !== "skipped_user" && aeState?.code !== "off";
+  const aeGo = (signal?.orders ?? []).filter((o) => (o.side === "buy" ? !!ae?.allowed.buy : !!ae?.allowed.sell)).length;
+  const aeManual = (signal?.orders?.length ?? 0) - aeGo;
+  const aeIcon: Record<string, string> = { off: "○", paused: "⛔", skipped_user: "✋", waiting: "🤖", running: "⏳", ran: "✅", missed: "⚠️" };
+  const aeShort = (() => {
+    if (!ae || !aeState) return "";
+    const r = ae.last_run;
+    switch (aeState.code) {
+      case "waiting": return "09:01 발주 예정";
+      case "running": return "09:01 실행 중";
+      case "ran": return r && r.note === "ran" ? `발주 ${r.submitted}건${r.skipped_gap ? ` · 갭 생략 ${r.skipped_gap}` : ""}${r.skipped ? ` · 생략 ${r.skipped}` : ""}${r.failed ? ` · 실패 ${r.failed}` : ""}` : aeState.label;
+      case "paused": return `정지 — ${(ae.paused_reason ?? "").slice(0, 40)}`;
+      case "missed": return "09:01 기록 없음";
+      case "skipped_user": return "무인 취소(수동)";
+      default: return "수동 모드";
+    }
+  })();
+  const aeTone = aeState?.code === "paused" || aeState?.code === "missed" ? "border-down/40 bg-down/5 text-down"
+    : aeState?.code === "waiting" || aeState?.code === "running" ? "border-accent/40 bg-accent/5 text-accent"
+    : aeState?.code === "ran" ? "border-ok/40 bg-ok/5 text-ok" : aeState?.code === "skipped_user" ? "border-warn/40 bg-warn/5 text-warn" : "border-line bg-inset text-muted";
   async function resumeAutoExec() {
     if (!sum) return;
     if (!window.confirm("무인 실행 정지를 해제할까요? 정지 사유를 확인하고 계좌·기록이 맞는지 점검한 뒤 켜세요.")) return;
@@ -903,7 +926,24 @@ function PortfolioPage() {
             ⏳ {signal.pending_note}
           </div>
         )}
-        <CardTitle>
+        {/* 무인 상태 칩 — 종전 붉은 박스 대신 제목 오른쪽 한 줄 (2026-09-09 지시). 정지·기록 없음만 붉게, 상세는 롤오버 */}
+        <CardTitle right={market === "KR" && ae && aeState ? (
+          <span className={`inline-flex flex-wrap items-center gap-1.5 rounded-lg border px-2 py-1 text-[12px] font-semibold normal-case ${aeTone}`}>
+            <Tip tip={<span><b className="text-ink">{aeState.label}</b>{aeState.detail && <><br />{aeState.detail}</>}
+              {ae.account && <><br />계좌 {ae.account.label}{ae.account.env === "vps" ? " (모의)" : ""}</>}
+              {(aeState.code === "waiting" || aeState.code === "running") && (signal?.orders?.length ?? 0) > 0 && <><br />09:01 발주 예정 {aeGo}줄{aeManual > 0 ? ` · 수동 ${aeManual}줄` : ""}</>}
+              {aeState.code === "off" && <><br />켜고 끄기: 설정 › 무인 실행 (끄면 오늘 무인 주문도 취소)</>}</span>}>
+              <span className="cursor-help">{aeIcon[aeState.code] ?? "•"} {aeShort}</span>
+            </Tip>
+            {ae.account && (["buy", "sell"] as const).map((side) => (
+              <span key={side} className={`rounded px-1 py-0.5 text-[11px] ${ae.allowed[side] ? "bg-accent-dim text-accent" : "bg-raised text-faint"}`}
+                title={`설정 › 무인 실행 › 계좌 '${ae.account?.label}' 무인 ${side === "buy" ? "매수" : "매도"} ${ae.allowed[side] ? "켬" : "꺼짐"}`}>
+                {side === "buy" ? "매수" : "매도"} {ae.allowed[side] ? "ON" : "OFF"}
+              </span>
+            ))}
+            {ae.paused && <button className="rounded border border-down/40 bg-surface px-1.5 py-0.5 text-[11.5px] text-down hover:bg-down/10" disabled={boBusy} onClick={() => void resumeAutoExec()}>다시 켜기</button>}
+          </span>
+        ) : undefined}>
           {(() => {
             const today = new Date().toISOString().slice(0, 10);
             const ed = signal?.exec_day;
@@ -974,48 +1014,7 @@ function PortfolioPage() {
         {signal?.snapshot_missing && (
           <p className="mb-2 text-[12.5px] text-faint">ⓘ 장 마감 배치 스냅샷이 아직 없어 시세로 직접 계산한 주문표입니다 — 배치(16:05) 이후 확정 표기로 바뀝니다.</p>
         )}
-        {/* 무인 매매 상태 한 줄 (ADR-009 §3, 2026-09-08 지시 "대기 상태를 명확히") — 주문표의 버튼은 취소/되돌리기/다시 켜기만 */}
-        {market === "KR" && ae && (() => {
-          const st = ae.state;
-          const tone = st.code === "paused" || st.code === "missed" ? "border-down/40 bg-down/5"
-            : st.code === "waiting" || st.code === "running" ? "border-accent/40 bg-accent/5"
-            : st.code === "ran" ? "border-ok/40 bg-ok/5" : st.code === "skipped_user" ? "border-warn/40 bg-warn/5" : "border-line bg-inset";
-          const icon: Record<string, string> = { off: "○", paused: "⛔", skipped_user: "✋", waiting: "🤖", running: "⏳", ran: "✅", missed: "⚠️" };
-          const beforeFreeze = !!signal?.exec_day && Date.now() < new Date(`${signal.exec_day}T09:00:00+09:00`).getTime();
-          const canSkip = aeOn && !ae.paused && st.code !== "skipped_user" && st.code !== "off";
-          return (
-            <div className={`mb-3 rounded-lg border px-3.5 py-2.5 text-[13px] ${tone}`}>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-bold text-ink">{icon[st.code] ?? "•"} {st.label}</span>
-                {ae.account && <span className="text-faint">· 계좌 {ae.account.label}{ae.account.env === "vps" ? " (모의)" : ""}</span>}
-                {/* 설정 플래그를 그대로 보여 준다 — 어느 방향이 나가는지 표에서도 줄별로 구분 (2026-09-08 지시) */}
-                {ae.account && (["buy", "sell"] as const).map((side) => (
-                  <span key={side} className={`rounded-md px-1.5 py-0.5 text-[11.5px] font-semibold ${ae.allowed[side] ? "bg-accent-dim text-accent" : "bg-raised text-faint"}`}
-                    title={`설정 › 무인 실행 › 계좌 '${ae.account?.label}' 무인 ${side === "buy" ? "매수" : "매도"} ${ae.allowed[side] ? "켬" : "꺼짐"}`}>
-                    {side === "buy" ? "매수" : "매도"} {ae.allowed[side] ? "ON" : "OFF"}
-                  </span>
-                ))}
-                {(st.code === "waiting" || st.code === "running") && (signal?.orders?.length ?? 0) > 0 && (() => {
-                  const go = (signal?.orders ?? []).filter((o) => (o.side === "buy" ? ae.allowed.buy : ae.allowed.sell)).length;
-                  const manual = (signal?.orders?.length ?? 0) - go;
-                  return <span className="text-muted">· 09:01 발주 예정 {go}줄{manual > 0 ? ` · 수동 ${manual}줄` : ""}</span>;
-                })()}
-                <span className="ml-auto flex flex-wrap items-center gap-2">
-                  {ae.paused && <button className="btn !py-1" disabled={boBusy} onClick={() => void resumeAutoExec()}>다시 켜기</button>}
-                  {st.code === "skipped_user" && beforeFreeze && <button className="btn !py-1" disabled={boBusy} onClick={() => void unskipAutoExec()}>되돌리기</button>}
-                  {canSkip && <button className="btn !py-1 !text-down" disabled={boBusy} onClick={() => void skipAutoExec()}>이번 실행일 무인 취소 → 수동</button>}
-                </span>
-              </div>
-              {st.detail && <div className="mt-1 text-[12.5px] text-muted">{st.detail}</div>}
-              {st.code === "off" && (
-                <div className="mt-1 text-[12px] text-faint">
-                  켜고 끄기: <Link href="/settings?tab=auto" className="text-accent hover:underline">설정 › 무인 실행</Link> (끄면 오늘 무인 주문도 취소)
-                </div>
-              )}
-              {boMsg && <div className="mt-1 text-[12.5px] text-ink">{boMsg}</div>}
-            </div>
-          );
-        })()}
+        {boMsg && market === "KR" && <p className="mb-2 text-[12.5px] text-ink">{boMsg}</p>}
         {signal?.status === "OK" && signal.regime === "BEAR" && market === "KR" && !(signal.orders ?? []).some((o) => o.side === "buy") && (
           <p className="mb-2 text-[12.5px] text-muted">하락장 — 그리드 매수 정지. 중립장 전환까지 매수 없음{signal.account && signal.account.qty_200 === 0 ? " (보유 0 · 현금 대기)" : ""}</p>
         )}
@@ -1029,7 +1028,21 @@ function PortfolioPage() {
                 <th className="pb-2 text-right font-medium">방식 · 가격</th>
                 <th className="pb-2 text-right font-medium">수량<span className="hidden sm:inline">{signal?.basis === "portfolio" ? " (내 계좌 기준)" : " (모델 1억)"}</span></th>
                 <th className="pb-2 pl-4 font-medium">체결</th>
-                {showAutoCol && <th className="pb-2 pl-3 font-medium">무인</th>}
+                {showAutoCol && (
+                  <th className="pb-2 pl-3 font-medium">
+                    <span className="inline-flex items-center gap-1.5">무인
+                      {ae && aeState && (
+                        <Tip tip={<span><b className="text-ink">{aeState.label}</b>{aeState.detail && <><br />{aeState.detail}</>}{ae.account && <><br />계좌 {ae.account.label}</>}
+                          {(aeState.code === "waiting" || aeState.code === "running") && <><br />09:01 발주 예정 {aeGo}줄{aeManual > 0 ? ` · 수동 ${aeManual}줄` : ""}</>}
+                          <br />취소: 09:00 전이면 오늘 발주를 건너뛰고(되돌리기 가능), 09:01 후면 살아 있는 무인 주문을 취소합니다. 다음 실행일 자동 복귀.</span>}>
+                          <span className="cursor-help text-faint">ⓘ</span>
+                        </Tip>
+                      )}
+                      {aeCanSkip && <button className="text-[12px] font-normal text-down hover:underline disabled:opacity-50" disabled={boBusy} onClick={() => void skipAutoExec()}>취소</button>}
+                      {aeState?.code === "skipped_user" && aeBeforeFreeze && <button className="text-[12px] font-normal text-accent hover:underline disabled:opacity-50" disabled={boBusy} onClick={() => void unskipAutoExec()}>되돌리기</button>}
+                    </span>
+                  </th>
+                )}
               </tr></thead>
               <tbody>
                 {signal.orders.map((o, i) => (
@@ -1091,6 +1104,21 @@ function PortfolioPage() {
             {signal.gap_cancel_below && (
               <p className="mt-2 text-[13px] text-faint">⚠️ 시가 {fpx(signal.gap_cancel_below)} 이하 출발 시 그리드 전량 취소</p>
             )}
+            {/* 장 시작 전 예상 시가 (2026-09-09 지시) — 08:30~08:59 동시호가 예상체결가, 09:00 뒤 확정 시가. 롤오버에 최근 표본 */}
+            {signal.expected_open && (() => {
+              const e = signal.expected_open!;
+              const label = e.kind === "open" ? "시가(확정)" : e.kind === "current" ? "현재가" : "예상 시가";
+              return (
+                <p className={`mt-1 text-[13px] ${e.gap_hit ? "font-semibold text-down" : "text-muted"}`}>
+                  <Tip tip={<span><b className="text-ink">{signal.exec_day} 08:30~09:10 관찰</b> — 동시호가 예상체결가는 호가 잔량 기반 근사값입니다.<br />
+                    {e.samples.map((s) => `${s.at} ${fpx(s.price)}`).join(" · ")}</span>}>
+                    <span className="cursor-help">{e.gap_hit ? "⤫" : "🕗"} {label} <b className="text-ink">{fpx(e.price)}</b> ({e.at})
+                      {signal.gap_cancel_below ? (e.gap_hit ? ` — 갭 기준 ${fpx(signal.gap_cancel_below)} 이하 → 그리드·초기 진입 매수 생략 예정` : ` — 갭 기준 ${fpx(signal.gap_cancel_below)} 위, 그리드 유지`) : ""}
+                      <span className="text-faint"> ⓘ</span></span>
+                  </Tip>
+                </p>
+              );
+            })()}
             {/* 계산 근거 — 구 주문표 페이지 이관 (2026-09-05): 주문별 실행 조건 + 지표값 */}
             <details className="mt-3 border-t border-line pt-2">
               <summary className="cursor-pointer text-[13px] font-semibold text-muted">▸ 계산 근거 (실행 조건 · 지표값)</summary>
