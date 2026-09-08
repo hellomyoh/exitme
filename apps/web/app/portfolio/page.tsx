@@ -988,6 +988,18 @@ function PortfolioPage() {
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-bold text-ink">{icon[st.code] ?? "•"} {st.label}</span>
                 {ae.account && <span className="text-faint">· 계좌 {ae.account.label}{ae.account.env === "vps" ? " (모의)" : ""}</span>}
+                {/* 설정 플래그를 그대로 보여 준다 — 어느 방향이 나가는지 표에서도 줄별로 구분 (2026-09-08 지시) */}
+                {ae.account && (["buy", "sell"] as const).map((side) => (
+                  <span key={side} className={`rounded-md px-1.5 py-0.5 text-[11.5px] font-semibold ${ae.allowed[side] ? "bg-accent-dim text-accent" : "bg-raised text-faint"}`}
+                    title={`설정 › 무인 실행 › 계좌 '${ae.account?.label}' 무인 ${side === "buy" ? "매수" : "매도"} ${ae.allowed[side] ? "켬" : "꺼짐"}`}>
+                    {side === "buy" ? "매수" : "매도"} {ae.allowed[side] ? "ON" : "OFF"}
+                  </span>
+                ))}
+                {(st.code === "waiting" || st.code === "running") && (signal?.orders?.length ?? 0) > 0 && (() => {
+                  const go = (signal?.orders ?? []).filter((o) => (o.side === "buy" ? ae.allowed.buy : ae.allowed.sell)).length;
+                  const manual = (signal?.orders?.length ?? 0) - go;
+                  return <span className="text-muted">· 09:01 발주 예정 {go}줄{manual > 0 ? ` · 수동 ${manual}줄` : ""}</span>;
+                })()}
                 <span className="ml-auto flex flex-wrap items-center gap-2">
                   {ae.paused && <button className="btn !py-1" disabled={boBusy} onClick={() => void resumeAutoExec()}>다시 켜기</button>}
                   {st.code === "skipped_user" && beforeFreeze && <button className="btn !py-1" disabled={boBusy} onClick={() => void unskipAutoExec()}>되돌리기</button>}
@@ -1048,7 +1060,14 @@ function PortfolioPage() {
                         {(() => {
                           const b = boFor(o);
                           const st = ae?.state.code;
-                          if (!b) return <span className="text-faint" title={st === "waiting" ? "09:01 에 발주됩니다" : ""}>{st === "waiting" || st === "running" ? "대기" : "—"}</span>;
+                          if (!b) {
+                            if (st === "skipped_user") return <span className="text-warn" title="이번 실행일 무인 취소 — 직접 주문">수동(취소)</span>;
+                            if (st !== "waiting" && st !== "running") return <span className="text-faint">—</span>;
+                            const on = o.side === "buy" ? !!ae?.allowed.buy : !!ae?.allowed.sell;
+                            return on
+                              ? <span className="font-semibold text-accent" title="설정 › 무인 실행에서 이 방향이 켜져 있어 09:01 에 발주됩니다">🤖 09:01 발주</span>
+                              : <span className="text-faint" title={`설정 › 무인 실행에서 무인 ${o.side === "buy" ? "매수" : "매도"}가 꺼져 있어 직접 주문해야 합니다`}>수동</span>;
+                          }
                           const clip = b.message && /→\s*[\d,]+주/.test(b.message) ? " · 축소" : "";
                           if (b.status === "submitted") return <span className="font-semibold text-ok" title={b.message ?? ""}>🤖 발주됨 #{b.order_no}{clip}</span>;
                           if (b.status === "filled") return <span className="font-semibold text-ok" title={b.message ?? ""}>✓ 체결 {b.filled_qty.toLocaleString()}주</span>;
