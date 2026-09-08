@@ -915,7 +915,7 @@ function PortfolioPage() {
               : `${ed.slice(5)} 실행 예정 주문표`;
           })()}
           {recInfo.length > 0 && recWarn.length === 0 && signal?.reconcile && (
-            <Tip tip={<span><b className="text-ink">{signal.reconcile.date.slice(5)} 미체결</b> — {recInfo.map((it) => `${it.label ?? it.text} ${it.plan ?? ""}주`.replace(/\s+주$/, "")).join(" · ")}<br />지정가 미도달이면 정상. 체결됐는데 미등록이면 아래 &apos;체결 등록&apos;.</span>}>
+            <Tip tip={<span><b className="text-ink">{signal.reconcile.date.slice(5)} 미체결·부분 체결</b> — {recInfo.map((it) => it.label ? (it.filled ? `${it.label} ${it.plan}주 중 ${it.filled}주 체결` : `${it.label} ${it.plan}주 미체결`) : it.text).join(" · ")}<br />지정가 미도달·부분 체결은 정상. 체결됐는데 미등록이면 아래 &apos;체결 등록&apos;.</span>}>
               <span className="ml-1 cursor-help text-[13px] font-normal text-faint">ⓘ</span>
             </Tip>
           )}
