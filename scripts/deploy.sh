@@ -13,6 +13,8 @@
 #
 #   배포 후 훅(2026-09-08): 헬스 검증 뒤 체크아웃된 태그의 scripts/post-deploy.d/*.sh 를 번호순으로 서브셸에서 source 한다 —
 #   ADR-009 전환 확인·거래일 캘린더 갱신(KIS)·하트비트 확인. 훅 실패는 배포 검증 실패(✗)로 기록하고 다음 훅은 계속. 규칙은 그 디렉터리 README.
+#   자기 갱신(2026-09-08): 체크아웃한 버전의 deploy.sh 가 실행 중인 것과 다르면 그것으로 다시 실행한다 — 옛 스크립트로 시작해도 새 절차가 돈다.
+#   (이 기능이 없는 옛 스크립트로 처음 올릴 때만: git show <태그>:scripts/deploy.sh > /tmp/deploy.sh && bash /tmp/deploy.sh <태그>)
 #
 #   태그 배포는 실행 중인 버전과 비교해 같은 버전이면 재빌드하지 않고 중지하고, 낮은 버전(롤백)도 중지한다 (2026-09-06 지시).
 #   의도한 재배포·롤백이면 --force. 브랜치 배포(main)는 코드가 바뀌어도 VERSION 이 같을 수 있어 경고만 하고 진행한다.
@@ -41,9 +43,10 @@ if [[ -z "${DEPLOY_SH_COPY:-}" ]]; then
   DEPLOY_SH_COPY=1 exec bash "$_tmp" "$@"
 fi
 
+ALL_ARGS=("$@")   # 자기 갱신 재실행용 원본 인자 (2026-09-08)
 REF="${1:-}"
 if [[ -z "$REF" || "$REF" == "-h" || "$REF" == "--help" ]]; then
-  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
   exit 1
 fi
 shift
@@ -169,6 +172,14 @@ fi
 HEAD_DESC="$(git describe --tags --always)"
 FILE_VER="v$(tr -d '[:space:]' < apps/api/app/VERSION)"
 log "체크아웃: $HEAD_DESC ($(git rev-parse --short HEAD)) · app/VERSION=$FILE_VER"
+
+# 1-0) 스크립트 자기 갱신 (2026-09-08 사용자 지적 "변경된 deploy.sh 는 기존 스크립트로 적용 안 되지 않나") — 실행 중인 것은 배포 전 버전의
+#      임시 복사본이라, 체크아웃한 버전의 scripts/deploy.sh 가 다르면 그것으로 처음부터 다시 실행한다(배포 절차·훅은 배포되는 버전의 것이어야 함).
+#      DEPLOY_SH_UPGRADED 로 한 번만. 재실행된 새 스크립트는 fetch·checkout 을 다시 하지만 같은 대상이라 멱등이다.
+if [[ -z "${DEPLOY_SH_UPGRADED:-}" && -f scripts/deploy.sh ]] && ! cmp -s scripts/deploy.sh "$0" 2>/dev/null; then
+  log "scripts/deploy.sh 가 $HEAD_DESC 의 것과 다릅니다 — 배포되는 버전의 스크립트로 다시 실행합니다"
+  DEPLOY_SH_UPGRADED=1 DEPLOY_SH_COPY= exec bash scripts/deploy.sh "${ALL_ARGS[@]}"
+fi
 if [[ "$REF" == v* && "$FILE_VER" != "$REF" ]]; then
   echo "⚠ app/VERSION($FILE_VER) 이 태그($REF) 와 다릅니다 — 태그 커밋에 VERSION 갱신이 빠졌을 수 있습니다 (AGENTS.md 버저닝 규칙)"
 fi

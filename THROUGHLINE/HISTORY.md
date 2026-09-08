@@ -553,3 +553,10 @@
 - 테스트 결과: `tests/test_calendar.py` 2건(TR 파싱·페이지 추적 / upsert 멱등·변경 기록·`_next_exec_day` 연동) 통과. 로컬 dev 스택에서 실제 실행: alembic 0025 적용(head 0025) → 훅 3종 모두 ✓ — 캘린더 CLI 가 KIS 에서 121일을 받아 추가하고 2026-09-24·25(추석)·10-05·10-09·12-25·12-31·2027-01-01 휴장을 등록, 재실행은 변경 0(멱등), 하트비트 확인. `bash -n` 구문 검사 통과. 전체 스위트 결과는 아래 항목.
 - 문서: ADR-009 영향(배포), auto-execution §2·§5-6, operator-guide(훅·검토), README 배포 블록, TODO(캘린더 완료), NOTES(KIS 휴장일 TR 실측·pykrx 한계).
 - Git commit: feat: post-deploy hooks, alembic 0025 transition cleanup, KIS trading-calendar refresh
+
+## [2026-09-08] fix | deploy.sh 자기 갱신 — 배포되는 버전의 스크립트로 다시 실행 (사용자 지적 "변경된 deploy.sh 는 기존 스크립트로 적용 안 되지 않나")
+
+- 지적이 맞다: deploy.sh 는 시작 시 자기 임시 복사본으로 재실행되므로 서버의 옛 스크립트(v0.11.0 이하)로 `deploy.sh v0.11.0` 을 돌리면 체크아웃으로 새 스크립트가 내려와도 끝까지 옛 절차가 돈다 — 재빌드·alembic 0025·헬스 검증·컨테이너 재생성은 되지만 5단계 배포 후 훅(전환 확인·캘린더·하트비트)은 실행되지 않는다.
+- 작업 내용: 체크아웃 직후 1-0 단계 — 배포되는 버전의 `scripts/deploy.sh` 가 실행 중인 복사본과 다르면(`cmp`) `DEPLOY_SH_UPGRADED=1` 로 그 스크립트를 원본 인자 그대로 `exec`(한 번만). 재실행된 스크립트의 fetch·checkout 은 같은 대상이라 멱등. 첫 전환용 우회(README·operator-guide): `git show <태그>:scripts/deploy.sh > /tmp/deploy.sh && bash /tmp/deploy.sh <태그>`. VERSION 0.11.1(패치 — 스크립트 보강).
+- 테스트 결과: `bash -n` 통과. 샌드박스 git 저장소(bare origin + 태그의 deploy.sh 를 스텁으로 교체)에서 실제 실행 — ① 새 스크립트로 `v0.12.0` 배포 시 체크아웃 뒤 "배포되는 버전의 스크립트로 다시 실행합니다" 로그 후 스텁이 원본 인자(`v0.12.0 --skip-hooks --port 19999`)와 `DEPLOY_SH_UPGRADED=1` 을 받아 실행됨 ② `DEPLOY_SH_UPGRADED=1` 이 이미 있으면 재실행하지 않고 다음 단계로 진행. API 테스트 변경 없음(직전 240 passed).
+- Git commit: fix: deploy.sh re-executes itself with the deployed version's script
