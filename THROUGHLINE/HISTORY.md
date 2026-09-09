@@ -711,3 +711,11 @@
 - 작업 내용: 차트 생성은 code 당 한 번(`[code, name]`), 생성 직후 이미 받은 데이터를 즉시 반영. 주문선은 별도 효과에서 `removePriceLine` → `createPriceLine` 으로 제자리 갱신(터치 시 실선·✓ 라벨 포함). 마커·축척 provider 는 그대로. 문서 feature-portfolio §5. VERSION 0.15.4.
 - 테스트 결과: `tsc --noEmit` 무오류(웹만 변경). 화면 확인은 배포 후 — 주문표 아래 카드에 축 눈금과 선이 바로 보여야 정상.
 - Git commit: fix: keep the live chart instance across order-line updates so it never renders empty
+
+## [2026-09-10] test | 오늘 봉을 심는 테스트 4건이 오전(15:30 전)에 확정봉 가드에 걸려 실패 — 심는 순간만 장 마감 상태로
+
+- 증상: 08:00 KST 전체 스위트 264 passed / 4 failed — `test_chat_ops::test_trading_journal_overview…`, `test_portfolios::test_summary_separates…`, `test_snapshot_consistency` 2건. 모두 `upsert_daily_bars` 로 **오늘 날짜** 봉을 심고 그 종가로 평가를 검증하는데, 0.9.4 의 확정봉 가드(`bar_is_final` — 오늘 봉은 KR 15:30 뒤에만 허용)가 오전에는 그 봉을 거부해 전일 종가로 평가됐다. 09-09 저녁(15:30 뒤) 실행에서는 통과해 발견되지 않았다.
+- 작업 내용: 네 곳의 봉 심기를 `unittest.mock.patch("app.services.ingest.market_session_state", return_value=(today, True))` 로 감싸 심는 순간만 장 마감으로 본다(가드 자체 테스트는 그대로). 코드 변경 없음.
+- 테스트 결과: 4건 통과 후 전체 `pytest -q tests/` → **268 passed** (08:00 KST, 오전 실행).
+- Git commit: test: seed today's bars under a closed-market patch so valuation tests pass before 15:30 KST
+

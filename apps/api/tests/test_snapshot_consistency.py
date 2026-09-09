@@ -29,12 +29,16 @@ def _client():
 
 
 def _instrument_with_bars(closes: dict[date, int]) -> str:
+    from unittest.mock import patch
+
     from app.services.ingest import get_or_create_instrument, upsert_daily_bars
 
     code = "S" + uuid.uuid4().hex[:5].upper()
     with SessionLocal() as s:
         inst = get_or_create_instrument(s, code, f"정합{code}", "KOSPI", type_="ETF")
-        upsert_daily_bars(s, inst.id, [{"trade_date": d, "open": c, "high": c, "low": c, "close": c, "volume": 1} for d, c in closes.items()], source="kis")
+        # 오늘 봉은 확정봉 가드(15:30 전 거부)에 걸리므로 심는 순간만 장 마감 상태로 — 오전에 돌려도 같은 결과 (2026-09-10)
+        with patch("app.services.ingest.market_session_state", return_value=(max(closes), True)):
+            upsert_daily_bars(s, inst.id, [{"trade_date": d, "open": c, "high": c, "low": c, "close": c, "volume": 1} for d, c in closes.items()], source="kis")
         s.commit()
     return code
 
