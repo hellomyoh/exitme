@@ -231,8 +231,22 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
     if (days_since_start is not None and 0 <= days_since_start < params.boot_days and params.boot_frac > 0
             and target_200 > value_200):
         boot_f = min(1.0, params.boot_frac * (params.boot_bear_mult if regime is Regime.BEAR else 1.0))
+        # 연구용 이동평균 참조 (2026-09-09): 필터 — 종가 ≤ MA(n) 인 날만 / 지정가 기준 — MA 또는 min(종가, MA). 기본값(close, 0)은 현행 그대로
+        def _ma(n: int) -> float | None:   # 임의 기간 단순이동평균 (i 까지, 인과적)
+            return (sum(m200.closes[i - n + 1:i + 1]) / n) if n > 0 and i - n + 1 >= 0 else None
+        if params.boot_ma_filter > 0:
+            ma_v = _ma(params.boot_ma_filter)
+            if ma_v is None or close > ma_v:
+                boot_f = 0.0
+        ref_px = close
+        ref = str(params.boot_price_ref or "close")
+        if ref.startswith("ma"):
+            n_ = int(ref[2:].rstrip("min") or 0)
+            ma_v = _ma(n_)
+            if ma_v is not None:
+                ref_px = min(close, ma_v) if ref.endswith("min") else ma_v
         if boot_f > 0:
-            boot_price = round_tick(close * (1 - params.boot_delta * grid), params.tick, up=False)
+            boot_price = round_tick(ref_px * (1 - params.boot_delta * grid), params.tick, up=False)
             boot_qty = int(boot_f * (target_200 - value_200) // boot_price) if boot_price > 0 else 0
             if boot_qty > 0 and boot_qty * boot_price <= cash_left:
                 cash_left -= boot_qty * boot_price

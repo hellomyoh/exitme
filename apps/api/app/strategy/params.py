@@ -52,6 +52,9 @@ class Params:
     boot_frac: float = 0.15
     boot_delta: float = 0.0
     boot_bear_mult: float = 0.5
+    # 연구용 (2026-09-09 사용자 제안 "이동평균선을 참고해 진입, 아주 소량") — 기본값은 현행과 동일. docs/boot-entry-price-study §5
+    boot_price_ref: str = "close"   # close | ma{n} (지정가 = n일 이동평균, 종가 위면 시가 체결) | ma{n}min (지정가 = min(종가, MA n))
+    boot_ma_filter: int = 0         # 0 | n — 종가 ≤ MA(n) 인 날만 초기 진입(눌림 매수), 그 외 날은 그리드만
     # 레버리지 (정본 §7)
     lev_multiple: float = 2.0       # 레버리지 ETF 배율 — 국내 2배 기본, 해외 3배(TQQQ) 검토용 (2026-08-31)
     lev_strategic_ratio: float = 0.7
