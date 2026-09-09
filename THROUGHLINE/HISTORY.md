@@ -620,3 +620,11 @@
 - 작업 내용: `KisClient._shared_throttle` — Redis 초당 카운터 `kis:rl:{env}:{앱키해시}:{초}` (실전 10/초, 모의 1/초, Redis 없으면 인스턴스 스로틀만) · `KisTradingClient._post` EGW00201 한정 1/2/4초 재시도(다른 오류 무재시도 유지) · 실행기 `autoexec:running` 플래그(180초) + 포트 사이 1초 간격 · `poll_quotes`·`poll_expected_open` 은 실행 중이면 건너뜀 · '무인' 열 사유 60/80자(전문 롤오버). VERSION 0.13.1.
 - 테스트 결과: `tests/test_kis_rate_limit.py` 2건(앱키·환경별 초당 한도·다음 초 대기·Redis 없음 통과 / 유량 초과 2회 뒤 성공·4회 실패·다른 오류 무재시도) + 전체 `pytest -q tests/` **252 passed, 238 warnings**, `tsc --noEmit` 무오류.
 - Git commit: fix: shared per-app-key KIS rate limit, retry orders on EGW00201 only, pollers yield during the 09:01 run
+
+## [2026-09-09] feat | 실시간 현재가 vs 주문선 그래프 (사용자 지시 · 기술 검토 후 승인)
+
+- 지시: "그래프 하나 추가 — 그리드 매수·매도 가격을 점선으로, KIS 로 현재가 수집, 일정 간격, 실시간으로 흐르며, 매수·매도 선과 얼마나 떨어져 있는지가 핵심, 과도한 KIS 호출 금지".
+- 검토·결정: 기존 10초 현재가 폴링(7종목 ≈ 0.7건/초)을 재사용해 **KIS 호출 추가 0** — 워커가 Redis 시계열에 누적, 화면은 첫 로드 REST + WS `/ws/quotes` 구독(기존 채널). 5초 주기·KIS 웹소켓(체결가 스트림)은 이득 대비 범위가 커 2단계로 보류.
+- 작업 내용: `quotes.py` `append_sample/read_series/backfill_from_minutes` + `GET /quotes/series`(인증, 오늘·빈 시계열이면 1분봉 1회 백필·10분 잠금) · `worker.poll_quotes` 누적 한 줄 · 웹 `components/livechart.tsx`(lightweight-charts 라인 + 점선 가격선: 그리드/초기 진입 빨강·익절 파랑·갭 기준 회색, KST 시각축, 최근 60분 따라가기/하루 전체, 상태 배지 실시간/폴링, 줄별 거리 % 패널·가장 가까운 선 강조, WS 실패 시 15초 폴링) · 실전매매 주문표 아래 카드(국내·주문표 있을 때). 문서: feature-portfolio §5/§8, feature-market-data, user-guide. VERSION 0.14.0(마이너 — 새 화면).
+- 테스트 결과: `tests/test_quotes_series.py` 3건(누적·정렬·상한 / 백필 1회 잠금 / 엔드포인트 인증·오늘 조회) 통과, 전체 `pytest -q tests/` **254 passed + 1 flake**(`test_ws_quotes::test_cached_quote_sent_on_subscribe` — 공유 Redis 타이밍, NOTES 기록 항목, 단독 실행 통과), `tsc --noEmit` 무오류. 로컬 워커 재시작 뒤 `quotes:series:102110:2026-09-09` 에 10초 점이 쌓이는 것 확인. 화면 확인은 배포 후(로컬 web 컨테이너 결함).
+- Git commit: feat: live price vs order-line chart on the order sheet (Redis series from the 10s poller, WS stream, distance panel)

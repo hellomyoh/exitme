@@ -162,7 +162,7 @@ def poll_quotes() -> dict:
 
     from app.db import SessionLocal
     from app.models import Instrument, TradingCalendar
-    from app.quotes import CHANNEL, cache_key
+    from app.quotes import CHANNEL, append_sample, cache_key
     from app.services.kis_auth import KisAuth
     from app.services.kis_client import KisClient
 
@@ -195,6 +195,7 @@ def poll_quotes() -> dict:
             payload = json.dumps(quote, ensure_ascii=False)
             r.set(cache_key(code), payload, ex=300)
             r.publish(CHANNEL, payload)
+            append_sample(r, code, now.date(), int(now.timestamp()), quote["price"])   # 실시간 그래프용 시계열 (2026-09-09)
             pushed += 1
         except Exception:
             logger.warning("poll_quotes failed for %s", code, exc_info=True)

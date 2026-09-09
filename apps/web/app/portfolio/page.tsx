@@ -9,6 +9,7 @@ import { apiFetch, ensureSession } from "../../lib/api";
 import { fmtMoneyM, fmtPriceM, MARKET_CODES, MARKET_LABEL, marketOf, priceToApi } from "../../lib/market";
 import { Badge, Card, CardTitle, EmptyState, fmtPct, GaugeBar, PageTitle, pnlTone, Stat, Tip } from "../../components/ui";
 import MarketSwitch from "../../components/marketswitch";
+import LiveChart, { type OrderLine } from "../../components/livechart";
 
 type Position = {
   code: string; name: string; qty: number; avg_price: number; price: number; value: number;
@@ -1151,7 +1152,21 @@ function PortfolioPage() {
             {signal?.status === "OK" ? "오늘은 신규 주문이 없습니다." : "시그널이 아직 없습니다 — 장 마감 배치(16:05) 이후 표시됩니다."}
           </p>
         )}
-        {/* 체결 입력 — 장 마감 후 실제 체결만 등록. 주문 행의 '체결 등록'이 값을 채워줌 (2026-08-29 일지 개편) */}
+        {/* 실시간 현재가 vs 주문선 (2026-09-09 지시) — 기존 10초 폴링 시계열 + WS, KIS 호출 추가 없음. 국내·주문표 있을 때만 */}
+      {market === "KR" && signal?.status === "OK" && signal.code_200 && (signal.orders?.length ?? 0) > 0 && (() => {
+        const lines: OrderLine[] = (signal.orders ?? [])
+          .filter((o) => o.instrument === "K200" && o.otype === "limit" && o.price)
+          .map((o) => ({ kind: o.kind, label: ORDER_KIND_KO[o.kind] ?? o.kind, side: o.side === "buy" ? "buy" as const : "sell" as const, price: o.price as number }));
+        if (signal.gap_cancel_below) lines.push({ kind: "gap", label: "갭 취소 기준", side: "gap", price: signal.gap_cancel_below });
+        return (
+          <Card className="mb-4">
+            <CardTitle>실시간 현재가 vs 주문선 <span className="normal-case text-faint">· {signal.name_200 ?? signal.code_200} · 10초 간격 · {signal.exec_day?.slice(5)} 주문표의 지정가를 점선으로</span></CardTitle>
+            <LiveChart code={signal.code_200} name={signal.name_200 ?? signal.code_200} lines={lines} fpx={fpx} />
+          </Card>
+        );
+      })()}
+
+      {/* 체결 입력 — 장 마감 후 실제 체결만 등록. 주문 행의 '체결 등록'이 값을 채워줌 (2026-08-29 일지 개편) */}
         <details id="fill-entry" className="mt-3 rounded-xl border border-line bg-inset px-4 py-3" open={entryOpen}
           onToggle={(e) => setEntryOpen((e.target as HTMLDetailsElement).open)}>
           <summary className="cursor-pointer text-[13.5px] font-semibold text-accent">
