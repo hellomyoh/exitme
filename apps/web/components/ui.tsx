@@ -100,22 +100,25 @@ export function GaugeBar({ ratio, color = "var(--color-accent)", height = 8 }: {
  *  화면 오른쪽 끝(TWR·XIRR 카드 등)에서는 왼쪽으로, 화면 위쪽에서는 아래로 펼친다 —
  *  항상 left-0/bottom-full 로만 열려 오른쪽 카드의 도움말이 화면 밖으로 잘리던 문제 (2026-09-05 지시). */
 export function Tip({ tip, children }: { tip: ReactNode; children: ReactNode }) {
+  /** 툴팁은 뷰포트 기준 fixed 로 띄운다 — 표를 감싼 overflow-x-auto 컨테이너(세로도 잘림) 안의 ⓘ 에서 absolute 툴팁이 잘려
+   *  아예 보이지 않던 문제 (2026-09-09 지적: 주문표 '무인' 열 헤더). 위치는 hover/focus 순간의 트리거 사각형으로 계산. */
   const ref = useRef<HTMLSpanElement>(null);
-  const [side, setSide] = useState<"left" | "right">("left");
-  const [vert, setVert] = useState<"up" | "down">("up");
+  const [pos, setPos] = useState<{ left: number; top: number; up: boolean; width: number } | null>(null);
   const place = () => {
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    setSide(r.left + 336 > window.innerWidth - 12 ? "right" : "left");  // 툴팁 폭 320 + 여백
-    setVert(r.top < 240 ? "down" : "up");
+    const width = Math.min(320, window.innerWidth - 40);
+    const left = Math.max(12, Math.min(r.left, window.innerWidth - width - 12));
+    const up = r.top > 240;
+    setPos({ left, top: up ? r.top - 8 : r.bottom + 8, up, width });
   };
   return (
     <span ref={ref} tabIndex={0} onMouseEnter={place} onFocus={place}
       className="group relative inline-flex cursor-help items-center gap-1 outline-none">
       {children}
-      <span className={`pointer-events-none invisible absolute z-30 w-80 max-w-[calc(100vw-2.5rem)] rounded-xl border border-line bg-surface p-3.5 text-left text-[13.5px] font-normal normal-case leading-relaxed text-muted opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100 ${
-        side === "right" ? "right-0" : "left-0"} ${vert === "up" ? "bottom-full mb-2" : "top-full mt-2"}`}>
+      <span className="pointer-events-none invisible fixed z-50 rounded-xl border border-line bg-surface p-3.5 text-left text-[13.5px] font-normal normal-case leading-relaxed text-muted opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+        style={pos ? { left: pos.left, top: pos.top, width: pos.width, transform: pos.up ? "translateY(-100%)" : undefined } : { left: 0, top: 0, width: 320 }}>
         {tip}
       </span>
     </span>

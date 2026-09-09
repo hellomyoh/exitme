@@ -643,3 +643,9 @@
 - 작업 내용: `notify.py` — 마지막 전송 성공/실패(시각·사유)를 `user_settings.notify.last` 에 기록(자동 발송·연결 확인 모두), `GET /settings/notify` 의 `last`; `_humanize` 에 연결·TLS·시간 초과 사유("텔레그램 서버에 연결할 수 없습니다 — 서버 네트워크 차단 …"). 설정 › 알림 상단에 "✓ 마지막 전송 성공 시각" / "⚠️ 마지막 전송 실패 시각 — 사유" 줄. VERSION 0.14.2.
 - 테스트 결과: `test_notify` 갱신(실패 뒤 `last.error`·`sent_at`, 연결 오류 문구) 통과 — `test_notify`·`test_activity` 8 passed, 18 warnings, `tsc --noEmit` 무오류.
 - Git commit: fix: surface the last Telegram send result and humanize network errors
+
+## [2026-09-09] fix | 툴팁(Tip)이 표 안에서 잘려 보이지 않던 문제 (사용자 지적 "무인 롤오버 설명이 안 나온다")
+
+- 원인: `Tip` 툴팁이 `position:absolute` 라 표를 감싼 `overflow-x-auto` 컨테이너(CSS 규칙상 세로 overflow 도 auto 로 바뀜) 안의 '무인' 열 헤더 ⓘ 에서 위로 뜨는 툴팁이 잘려 보이지 않았다. 제목 줄의 ⓘ(컨테이너 밖)는 정상이라 차이가 났다.
+- 작업 내용: `Tip` 을 뷰포트 기준 `fixed` 로 — hover/focus 순간 트리거 사각형으로 위치(위/아래·좌우 여백) 계산. 모든 Tip 에 적용. VERSION 0.14.3.
+- Git commit: fix: render Tip tooltips as fixed so they are not clipped inside scroll containers
