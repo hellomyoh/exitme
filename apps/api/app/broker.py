@@ -413,8 +413,13 @@ def import_fills_for_portfolio(session: Session, pid: int, cred: BrokerCredentia
         _rebuild_ledger(session, pid)
         cred.last_import_at = datetime.now(KST)
         session.commit()
+    # 오늘분 / 이전일분 구분 (2026-09-09 사용자 지적 "오늘 체결이 없는데 체결 1건 조회") — 조회 창(2일)의 어제 체결이 오늘 것처럼 읽혔다
+    today_rows = [i for i in items if i["date"] == end.isoformat()]
+    prev_rows = [i for i in items if i["date"] != end.isoformat()]
     return {"range": [start.isoformat(), end.isoformat()], "dry_run": dry_run,
             "fetched": len(execs), "added": added, "skipped": skipped,
+            "today": {"fetched": len(today_rows), "added": sum(1 for i in today_rows if i["status"] == "등록됨")},
+            "prev": {"fetched": len(prev_rows), "added": sum(1 for i in prev_rows if i["status"] == "등록됨")},
             "unknown_codes": sorted(set(unknown)), "items": items}
 
 
@@ -555,6 +560,7 @@ def _order_out(o: BrokerOrder) -> dict:
             "qty": o.qty, "price": o.price, "rsvn_ord_seq": o.rsvn_ord_seq, "order_no": o.order_no,
             "filled_qty": o.filled_qty, "status": o.status, "status_ko": STATUS_KO.get(o.status, o.status),
             "message": o.message, "mode": getattr(o, "mode", "reserve") or "reserve",
+            "retry_of": (o.response or {}).get("retry_of"),   # 장중 재시도로 생긴 행이면 원래 행 id (2026-09-09)
             "created_at": o.created_at.isoformat() if o.created_at else None}
 
 
@@ -776,11 +782,14 @@ def cancel_broker_order(pid: int, oid: int, user_id: int = Depends(current_user_
     return _order_out(row)
 
 
-def run_post_close_sync(session: Session, now: datetime | None = None) -> dict:
+def run_post_close_sync(session: Session, now: datetime | None = None, retry: bool = False,
+                        only_portfolio_ids: set[int] | None = None) -> dict:
     """장 마감 후 자동 동기화 (2026-09-05 지시 3항) — 워커 15:45 (17:10 재시도, 멱등).
 
     연결 계좌마다: ① 당일(2일치) 체결 가져오기 → 원장 재생으로 보유·수익률·통계 갱신,
     ② 예약주문 상태 확정(체결/일부/미체결/취소), ③ 연결된 매매일지 체결 가져오기. 계좌별 실패는 기록만 하고 계속.
+    retry=True(17:10): 신규 등록·상태 갱신·경고·오류가 없으면 로그만 남기고 텔레그램은 보내지 않는다 (2026-09-09 — 매일 같은 문장이 두 번 오던 잡음).
+    only_portfolio_ids: 이 포트들만(테스트·수동 재실행용).
     """
     from app.mjournal import import_journal_fills_for
     from app.models import ManualJournal, TradePortfolio
@@ -788,14 +797,17 @@ def run_post_close_sync(session: Session, now: datetime | None = None) -> dict:
     now = now or datetime.now(KST)
     today = now.date()
     out: dict = {"date": today.isoformat(), "portfolios": [], "journals": []}
-    for pf in session.scalars(select(TradePortfolio).where(TradePortfolio.broker_credential_id.is_not(None))).all():
+    q = select(TradePortfolio).where(TradePortfolio.broker_credential_id.is_not(None))
+    if only_portfolio_ids:
+        q = q.where(TradePortfolio.id.in_(list(only_portfolio_ids)))
+    for pf in session.scalars(q).all():
         cred = session.get(BrokerCredential, pf.broker_credential_id)
         if cred is None or cred.env != "prod":
             continue
         rec: dict = {"portfolio_id": pf.id, "name": pf.name}
         try:
             r = import_fills_for_portfolio(session, pf.id, cred, days=2, dry_run=False)
-            rec.update(fetched=r["fetched"], added=r["added"], skipped=r["skipped"])
+            rec.update(fetched=r["fetched"], added=r["added"], skipped=r["skipped"], today=r["today"], prev=r["prev"])
         except Exception as exc:  # noqa: BLE001
             session.rollback()
             rec["error"] = str(exc)[:200]
@@ -822,9 +834,10 @@ def run_post_close_sync(session: Session, now: datetime | None = None) -> dict:
             except Exception as exc:  # noqa: BLE001
                 session.rollback()
                 rec["cash_check_error"] = str(exc)[:200]
-        _log_post_close(session, pf, rec, now)   # 로그 페이지 (2026-09-06) — 결과 한 줄 + 오류
+        _log_post_close(session, pf, rec, now, retry=retry)   # 로그 페이지 (2026-09-06) — 결과 한 줄 + 오류
         out["portfolios"].append(rec)
-    for j in session.scalars(select(ManualJournal).where(ManualJournal.broker_credential_id.is_not(None))).all():
+    for j in ([] if only_portfolio_ids else
+              session.scalars(select(ManualJournal).where(ManualJournal.broker_credential_id.is_not(None))).all()):
         cred = session.get(BrokerCredential, j.broker_credential_id)
         if cred is None or cred.env != "prod":
             continue
@@ -840,14 +853,28 @@ def run_post_close_sync(session: Session, now: datetime | None = None) -> dict:
     return out
 
 
-def _log_post_close(session: Session, pf, rec: dict, now: datetime) -> None:
-    """동기화 결과를 활동 로그에 한 줄로. 예수금 대조 경고는 별도 한 줄(로그 페이지 '경고 이상' 필터에 잡히도록)."""
+def post_close_changed(rec: dict) -> bool:
+    """이 동기화가 무언가 바꿨거나 알릴 게 있나 — 신규 체결 등록·주문 상태 갱신·무인 정지·예수금 경고·오류."""
+    cc = rec.get("cash_check") or {}
+    return bool(rec.get("added") or rec.get("orders_changed") or rec.get("auto_exec_paused") or cc.get("warn")
+                or any(rec.get(k) for k in ("error", "orders_error", "cash_check_error")))
+
+
+def _log_post_close(session: Session, pf, rec: dict, now: datetime, retry: bool = False) -> None:
+    """동기화 결과를 활동 로그에 한 줄로. 예수금 대조 경고는 별도 한 줄(로그 페이지 '경고 이상' 필터에 잡히도록).
+    체결 건수는 **오늘분**으로 쓰고 조회 창(어제)의 기존 건은 따로 표기한다. retry(17:10)에 변경이 없으면 알림 없이 기록만."""
     from app.activity import log_event
 
     try:
         errs = [str(rec[k]) for k in ("error", "orders_error", "cash_check_error") if rec.get(k)]
         parts = []
-        if "fetched" in rec:
+        if rec.get("today") is not None:
+            t, p = rec["today"], rec.get("prev") or {}
+            s = f"오늘 체결 {t['fetched']}건 · 신규 {rec['added']}건 등록"
+            if p.get("fetched"):
+                s += f" · 어제분 {p['fetched']}건 " + ("이미 등록" if not p.get("added") else f"중 {p['added']}건 새로 등록")
+            parts.append(s)
+        elif "fetched" in rec:
             parts.append(f"체결 {rec['fetched']}건 조회 · 신규 {rec['added']}건 등록")
         if rec.get("orders_changed"):
             parts.append(f"주문 상태 {rec['orders_changed']}건 갱신")
@@ -856,12 +883,15 @@ def _log_post_close(session: Session, pf, rec: dict, now: datetime) -> None:
         cc = rec.get("cash_check")
         if cc:
             parts.append(f"예수금 차이 {int(cc['diff']):+,}원" + (" (경고)" if cc.get("warn") else ""))
-        text = f"장 마감 동기화 {now:%H:%M} — " + (" · ".join(parts) if parts else "변경 없음")
+        quiet = retry and not post_close_changed(rec)
+        text = f"장 마감 동기화 {now:%H:%M}{' 재시도' if retry else ''} — " + (" · ".join(parts) if parts else "변경 없음")
+        if quiet:
+            text += " · 변경 없음(알림 생략)"
         if errs:
             text += " · 오류: " + " / ".join(e[:120] for e in errs)
         lvl = "error" if errs else ("warn" if (cc and cc.get("warn")) or rec.get("auto_exec_paused") else "info")
         log_event(session, pf.user_id, "sync.post_close", text, level=lvl, portfolio_id=pf.id,
-                  data={k: v for k, v in rec.items() if k != "name"}, at=now)
+                  data={k: v for k, v in rec.items() if k != "name"}, at=now, notify=not quiet)
         if cc and cc.get("warn"):
             log_event(session, pf.user_id, "cash_check.warn",
                       f"예수금 대조 — 원장 {int(cc['ledger_cash']):,}원 vs 계좌 D+2 {int(cc['account_cash']):,}원, 차이 {int(cc['diff']):+,}원 (허용 {int(cc['tolerance']):,}원)",

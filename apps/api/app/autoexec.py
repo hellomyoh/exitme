@@ -15,6 +15,8 @@
 7. **자동 정지** — 발주 연속 실패 2회 또는 장 마감 대조의 위험한 불일치(계획 외 거래·초과 체결). 해제는 사용자.
 8. **감시** — 09:15 워치독이 실행 기록 없는 포트를 지연 실행(락으로 중복 없음) + 경고. beat→큐→워커 하트비트(Redis) 를 컨테이너 헬스체크가 본다.
 9. **감사 기록** — 줄마다 BrokerOrder(mode=auto) 최종 상태·사유, 포트 params.auto_exec.last_run 요약, 활동 로그·알림.
+10. **장중 재시도** (2026-09-09 지시) — 09:01 결과가 실패·생략인 줄만 사용자가 '재시도'로 같은 절차(시가·갭 → 잔고 대조 → 상한·매수가능 → 발주)를
+    다시 돌린다. 09:00~15:20 만, 이전 행은 기록으로 남고 줄마다 새 행(response.retry_of). 갭 생략·꺼진 방향·발주된 줄은 대상 외.
 """
 from __future__ import annotations
 
@@ -47,6 +49,9 @@ HEARTBEAT_TTL = 180
 RUNNING_KEY = "autoexec:running"                 # 09:01 실행 중 표시 — 시세·예상 시가 폴링이 이 동안 KIS 호출을 양보한다 (2026-09-09 유량 사고)
 RUNNING_TTL = 180
 PORTFOLIO_GAP_SEC = 1.0                          # 포트 사이 간격 — 계좌가 같은 앱키를 쓰면 연속 호출이 한 초에 몰린다
+RETRY_WINDOW = (time(9, 0), time(15, 20))        # 장중 재시도 허용 구간 (2026-09-09 지시 "API 실패 시 취소 대신 재시도") — 동시호가 전까지
+RETRYABLE = ("failed", "skipped")                # 재시도 대상 상태. skipped_gap(그날의 전략 판정)·발주됨·체결은 대상 외
+RETRY_LOCK_TTL = 60
 
 SIDE_KO = {"buy": "매수", "sell": "매도"}
 
@@ -273,6 +278,13 @@ def auto_exec_state(pf: TradePortfolio, cred: BrokerCredential | None, allowed: 
             detail.append("09:15 감시가 지연 실행")
         if last.get("reason"):
             detail.append(str(last["reason"]))
+        rt = last.get("retry")
+        if rt:
+            rparts = [f"발주 {rt.get('submitted', 0)}건"]
+            for k, ko in (("skipped_gap", "갭 취소 생략"), ("skipped", "생략"), ("failed", "실패"), ("clipped", "축소")):
+                if rt.get(k):
+                    rparts.append(f"{ko} {rt[k]}건")
+            detail.append(f"재시도 {str(rt.get('at') or '')[11:16]} — " + " · ".join(rparts))
         return {"code": "ran", "label": label, "detail": " · ".join(detail) or None, "run": last}
     if ed is None:
         return {"code": "waiting", "label": f"무인 {who} 대기", "detail": None}
@@ -292,9 +304,13 @@ def auto_exec_view(session: Session, pf: TradePortfolio, exec_day: date | None =
     allowed = account_auto_exec(cred)
     st = pf_auto_state(pf)
     ed = exec_day or _default_exec_day(session, pf, now.date())
+    last = st.get("last_run") or {}
+    # 재시도 대상 줄 수 — 실행 기록이 있는 실행일에서, 실패·생략(갭 제외)이고 방향이 켜진 줄 (화면의 '재시도' 버튼 표시 기준)
+    retryable = (len(retryable_rows(session, pf, ed, allowed)) if last.get("date") == ed.isoformat() and not st["paused"]
+                 and (st.get("skip") or {}).get("date") != ed.isoformat() else 0)
     return {"allowed": allowed,
             "account": {"id": cred.id, "label": cred.label, "env": cred.env} if cred else None,
-            **st, "exec_day": ed.isoformat(),
+            **st, "exec_day": ed.isoformat(), "retryable": retryable,
             "state": auto_exec_state(pf, cred, allowed, st, ed, now)}
 
 
@@ -675,6 +691,21 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, today: date, now: d
         else:
             keep.append(r)
     client = client_factory(cred)
+    res = _place_lines(session, pf, client, keep, plan, allowed, state, rec, now, sleep_fn, code_200, code_lev, who="09:01")
+    rec["clipped"] = res["clipped"]
+    _finish(pf, rec, today, now, trigger, "ran", open=res["open"], gap_hit=res["gap_hit"], clipped=res["clipped"])
+    _set_pf_auto_state(pf, fail_streak=res["streak"])
+    if res["streak"] >= FAIL_STREAK_PAUSE:
+        pause_portfolio(pf, f"발주 연속 실패 {res['streak']}회 — 마지막 오류: {res['last_fail']}", now)
+
+
+def _place_lines(session: Session, pf: TradePortfolio, client, keep: list[BrokerOrder], plan: dict, allowed: dict, state: dict,
+                 rec: dict, now: datetime, sleep_fn, code_200: str, code_lev: str, who: str = "09:01") -> dict:
+    """③ 시가·갭 → ④ 잔고 대조·매도 한도 → ⑤ 상한·매수가능 → 발주. 09:01 실행과 장중 재시도가 **같은 절차**를 쓴다 (ADR-009 §2, 통제 10).
+
+    keep: 발주 후보 행(status 는 'skipped' 로 시작, 여기서 submitted/skipped/skipped_gap/failed 로 확정). rec 의 건수를 누적한다.
+    who: 정지 사유에 붙는 주체("09:01" / "재시도 10:12"). 반환 {open, gap_hit, clipped, streak, last_fail}.
+    """
     # ③ 시가 확인 → 갭 취소 (정확값)
     open_px = _read_open(client, code_200, sleep_fn=sleep_fn) if keep else None
     gap_exact = plan.get("gap_cancel_exact") or plan.get("gap_cancel_below")
@@ -704,7 +735,7 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, today: date, now: d
                 detail = ", ".join(f"{c} 원장 {l:,}주 ≠ 계좌 {a:,}주" for c, l, a in diffs)
                 _skip(keep, "skipped", f"사전 대조 불일치 — {detail}", rec, "skipped")
                 keep = []
-                pause_portfolio(pf, f"09:01 사전 대조 불일치 — {detail}. 체결 가져오기 또는 기록 수정으로 원장을 계좌에 맞춘 뒤 다시 켜세요", now)
+                pause_portfolio(pf, f"{who} 사전 대조 불일치 — {detail}. 체결 가져오기 또는 기록 수정으로 원장을 계좌에 맞춘 뒤 다시 켜세요", now)
             for r in [r for r in keep if r.side == "sell"]:
                 if r.qty > held.get(r.code, 0):
                     r.message = f"잔고 부족 — 매도 {r.qty}주 > 보유 {held.get(r.code, 0)}주"
@@ -775,11 +806,124 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, today: date, now: d
             rec["failed"] += 1
             streak += 1
             logger.warning("auto-exec failed pid=%s %s: %s", pf.id, r.line_key, exc)
-    rec["clipped"] = clipped
-    _finish(pf, rec, today, now, trigger, "ran", open=open_px, gap_hit=gap_hit, clipped=clipped)
-    _set_pf_auto_state(pf, fail_streak=streak)
-    if streak >= FAIL_STREAK_PAUSE:
-        pause_portfolio(pf, f"발주 연속 실패 {streak}회 — 마지막 오류: {last_fail}", now)
+    return {"open": open_px, "gap_hit": gap_hit, "clipped": clipped, "streak": streak, "last_fail": last_fail}
+
+
+# ── 장중 재시도 (2026-09-09 지시 "API 실패 시 취소 대신 재시도") ─────────────────────
+
+def retryable_rows(session: Session, pf: TradePortfolio, plan_date: date, allowed: dict) -> list[BrokerOrder]:
+    """재시도 대상 — 이 실행일 줄(line_key)별 **최신** 무인 행이 실패(failed)·생략(skipped)이고 그 방향이 지금 켜져 있는 줄.
+    갭 취소 생략(skipped_gap)은 그날의 전략 판정이라 제외. 꺼진 방향은 제외(켜면 대상이 된다 — '꺼짐 — 수동 처리' 행 포함)."""
+    rows = session.scalars(select(BrokerOrder).where(BrokerOrder.portfolio_id == pf.id, BrokerOrder.plan_date == plan_date,
+                                                     BrokerOrder.mode == "auto").order_by(BrokerOrder.id)).all()
+    latest: dict[str, BrokerOrder] = {}
+    for r in rows:
+        latest[r.line_key] = r
+    return [r for r in latest.values() if r.status in RETRYABLE and allowed.get(r.side, False)]
+
+
+def _acquire_retry_lock(pf_id: int) -> bool:
+    """재시도 중복 클릭 방지 — Redis SET NX(60초). Redis 가 없으면 True."""
+    try:
+        import redis as sync_redis
+
+        from app.config import get_settings
+
+        r = sync_redis.from_url(get_settings().redis_url, decode_responses=True, socket_connect_timeout=1)
+        return bool(r.set(f"autoexec:retry:{pf_id}", "1", nx=True, ex=RETRY_LOCK_TTL))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _default_plan_view(session: Session, pf: TradePortfolio, now: datetime) -> dict:
+    """재시도용 주문표 — 동결된 스냅샷을 그대로(force_freeze 없음). 갭 기준·총자산(상한 환산)만 쓴다."""
+    from app.signals import _portfolio_orders
+
+    return _portfolio_orders(session, pf.id, pf.user_id, force_freeze=False, now=now)
+
+
+def retry_auto_exec(session: Session, pf: TradePortfolio, now: datetime | None = None, client_factory=None,
+                    sleep_fn=_time.sleep, plan_fn=None) -> dict:
+    """오늘 09:01 결과가 실패·생략인 줄만 같은 절차로 다시 발주한다 (통제 10). 이전 행은 기록으로 남고 줄마다 새 행이 생긴다.
+
+    막는 조건(409): 국내 아님 · 계좌 없음 · 플래그 모두 꺼짐 · 정지 · 오늘 무인 취소 · 오늘 실행 기록 없음 · 장중(09:00~15:20) 밖 ·
+    대상 줄 없음 · 주문표 실행일 ≠ 오늘 · 이미 재시도 진행 중. 반환: last_run.retry 에 기록되는 요약 + items(새 행).
+    """
+    from app.activity import log_event
+
+    now = now or datetime.now(KST)
+    today = now.date()
+    if pf.market != "KR":
+        raise HTTPException(status_code=409, detail="국내 포트만 무인 재시도가 가능합니다")
+    cred = session.get(BrokerCredential, pf.broker_credential_id) if pf.broker_credential_id else None
+    if cred is None:
+        raise HTTPException(status_code=409, detail="연결된 증권사 계좌가 없습니다")
+    allowed = account_auto_exec(cred)
+    if not (allowed["buy"] or allowed["sell"]):
+        raise HTTPException(status_code=409, detail="무인 매수·매도가 모두 꺼져 있습니다 — 설정 › 무인 실행에서 켠 뒤 재시도하세요")
+    state = pf_auto_state(pf)
+    if state["paused"]:
+        raise HTTPException(status_code=409, detail=f"정지 상태 — 먼저 '다시 켜기'를 누르세요 ({state['paused_reason'] or ''})")
+    if (state.get("skip") or {}).get("date") == today.isoformat():
+        raise HTTPException(status_code=409, detail="오늘은 무인 취소(수동) 상태입니다")
+    last = state.get("last_run") or {}
+    if last.get("date") != today.isoformat():
+        raise HTTPException(status_code=409, detail="오늘 09:01 실행 기록이 없습니다 — 재시도할 결과가 없습니다")
+    if not (RETRY_WINDOW[0] <= now.time() <= RETRY_WINDOW[1]):
+        raise HTTPException(status_code=409, detail="재시도는 장중(09:00~15:20)에만 가능합니다")
+    rows = retryable_rows(session, pf, today, allowed)
+    if not rows:
+        raise HTTPException(status_code=409, detail="재시도할 줄이 없습니다 — 실패·생략된 줄이 없거나 그 방향이 꺼져 있습니다")
+    plan = (plan_fn or _default_plan_view)(session, pf, now)
+    if str(plan.get("exec_day")) != today.isoformat():
+        raise HTTPException(status_code=409, detail=f"주문표 실행일 {plan.get('exec_day')} 이 오늘과 다릅니다")
+    if not _acquire_retry_lock(pf.id):
+        raise HTTPException(status_code=409, detail="재시도가 이미 진행 중입니다 — 잠시 뒤 새로고침하세요")
+    code_200, code_lev = _resolve_codes(session, pf)
+    rec: dict = {"portfolio_id": pf.id, "name": pf.name, "exec_day": today.isoformat(), "submitted": 0, "skipped_gap": 0,
+                 "skipped": 0, "failed": 0, "note": "retry"}
+    new: list[BrokerOrder] = []
+    for old in rows:
+        plan_qty = int((old.response or {}).get("plan_qty") or old.qty)   # 축소 전 계획 수량으로 되돌려 다시 판정
+        r = BrokerOrder(portfolio_id=pf.id, broker_credential_id=cred.id, plan_date=today, line_key=old.line_key, code=old.code,
+                        instrument=old.instrument, kind=old.kind, side=old.side, otype=old.otype, qty=plan_qty, price=old.price,
+                        mode="auto", status="skipped",
+                        response={"plan_qty": plan_qty, "retry_of": old.id, "retry_at": now.isoformat(timespec="seconds")})
+        session.add(r)
+        new.append(r)
+    session.flush()
+    set_running(True)
+    try:
+        client = (client_factory or _client)(cred)
+        res = _place_lines(session, pf, client, new, plan, allowed, state, rec, now, sleep_fn, code_200, code_lev, who=f"재시도 {now:%H:%M}")
+    finally:
+        set_running(False)
+    retry = {"at": now.isoformat(timespec="seconds"), "n": len(new), "open": res["open"], "gap_hit": res["gap_hit"], "clipped": res["clipped"],
+             **{k: rec[k] for k in ("submitted", "skipped_gap", "skipped", "failed")}}
+    _set_pf_auto_state(pf, last_run={**last, "retry": retry}, fail_streak=res["streak"])
+    if res["streak"] >= FAIL_STREAK_PAUSE:
+        pause_portfolio(pf, f"재시도 발주 연속 실패 {res['streak']}회 — 마지막 오류: {res['last_fail']}", now)
+    parts = [f"발주 {rec['submitted']}건"]
+    for k, ko in (("skipped_gap", "갭 취소 생략"), ("skipped", "생략"), ("failed", "실패")):
+        if rec[k]:
+            parts.append(f"{ko} {rec[k]}건")
+    if res["clipped"]:
+        parts.append(f"축소 {res['clipped']}건")
+    log_event(session, pf.user_id, "autoexec.retry", f"무인 재시도 {now:%H:%M} — 대상 {len(new)}줄: " + " · ".join(parts),
+              level="error" if rec["failed"] else ("warn" if rec["skipped"] or rec["skipped_gap"] else "info"),
+              portfolio_id=pf.id, data={k: v for k, v in rec.items() if k != "name"} | {"retry": retry}, at=now)
+    return {**retry, "items": [_order_out(r) for r in new]}
+
+
+@router.post("/portfolio/{pid}/auto-exec/retry")
+def retry_portfolio_auto_exec(pid: int, user_id: int = Depends(current_user_id),
+                              session: Session = Depends(get_session)) -> dict:
+    """장중 재시도 — '무인' 열 헤더의 `재시도`. 실패·생략 줄만 09:01 과 같은 절차로 다시 발주하고 결과를 돌려준다."""
+    pf = _owned(session, pid, user_id)
+    now = datetime.now(KST)
+    res = retry_auto_exec(session, pf, now=now)
+    session.commit()
+    return {**auto_exec_view(session, pf, now.date(), now), "retry": res}
 
 
 # ── 장 마감 후 상태 확정 (run_post_close_sync 에서 호출) ─────────────────────────────

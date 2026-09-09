@@ -157,14 +157,15 @@ function PortfolioPage() {
   // 예약주문 (2026-09-05 지시) — 장 마감 후 주문표에서 버튼으로 접수, 줄별 등록/체결 상태 표시
   type BrokerOrderRow = { id: number | null; plan_date: string; line_key: string; code: string; instrument: string; kind: string; side: string;
     otype: string; qty: number; price: number | null; rsvn_ord_seq: string | null; order_no: string | null; filled_qty: number;
-    status: string; status_ko: string; message: string | null; mode?: string };
+    status: string; status_ko: string; message: string | null; mode?: string; retry_of?: number | null };
   // 무인 매매 상태 (ADR-009, 2026-09-08) — 연결 계좌 플래그 + 포트 정지·사용자 취소 + 마지막 09:01 실행 요약 + 상태 한 줄(state)
   type AutoRun = { date: string; at: string; trigger?: string; note?: string | null; reason?: string | null; exec_day?: string | null;
-    open?: number | null; gap_hit?: boolean; submitted: number; skipped_gap: number; skipped: number; failed: number; clipped?: number };
+    open?: number | null; gap_hit?: boolean; submitted: number; skipped_gap: number; skipped: number; failed: number; clipped?: number;
+    retry?: { at: string; n: number; submitted: number; skipped_gap: number; skipped: number; failed: number; clipped?: number; open?: number | null } | null };
   type AutoState = { code: "off" | "paused" | "skipped_user" | "waiting" | "running" | "ran" | "missed"; label: string; detail: string | null; run?: AutoRun };
   type AutoExec = { allowed: { buy: boolean; sell: boolean; daily_buy_cap_pct: number }; account?: { id: number; label: string; env: string } | null;
     paused: boolean; paused_reason: string | null; paused_at: string | null; fail_streak: number; last_run: AutoRun | null;
-    skip?: { date: string; at: string; cancelled?: number } | null; exec_day: string; state: AutoState };
+    skip?: { date: string; at: string; cancelled?: number } | null; exec_day: string; retryable?: number; state: AutoState };
   type BrokerOrders = { window: { open: boolean; reason: string }; items: BrokerOrderRow[]; auto_exec?: AutoExec };
   const [bo, setBo] = useState<BrokerOrders | null>(null);
   const [boBusy, setBoBusy] = useState(false);
@@ -195,7 +196,13 @@ function PortfolioPage() {
   // 상태 칩(제목 오른쪽)·'무인' 열 헤더(취소/되돌리기) 공용 (2026-09-09 지시 "붉은 박스 삭제, 취소 버튼은 무인 탭으로")
   const aeState = ae?.state;
   const aeBeforeFreeze = !!signal?.exec_day && Date.now() < new Date(`${signal.exec_day}T09:00:00+09:00`).getTime();
-  const aeCanSkip = !!ae && aeOn && !ae.paused && aeState?.code !== "skipped_user" && aeState?.code !== "off";
+  // 실행 뒤에는 살아 있는 무인 주문이 있을 때만 '취소', 실패·생략 줄이 있으면 장중(09:00~15:20) '재시도' (2026-09-09 지시 "실패했는데 취소 대신 재시도")
+  const aeLive = (bo?.items ?? []).filter((i) => i.mode === "auto" && ["submitted", "partial"].includes(i.status) && i.plan_date === signal?.exec_day).length;
+  const aeCanSkip = !!ae && aeOn && !ae.paused && aeState?.code !== "skipped_user" && aeState?.code !== "off" && (aeState?.code !== "ran" || aeLive > 0);
+  const aeKst = new Date(Date.now() + 9 * 3600e3);
+  const aeKstMin = aeKst.getUTCHours() * 60 + aeKst.getUTCMinutes();
+  const aeIntraday = signal?.exec_day === aeKst.toISOString().slice(0, 10) && aeKstMin >= 9 * 60 && aeKstMin <= 15 * 60 + 20;
+  const aeCanRetry = !!ae && aeOn && !ae.paused && aeState?.code === "ran" && (ae.retryable ?? 0) > 0 && aeIntraday;
   const aeGo = (signal?.orders ?? []).filter((o) => (o.side === "buy" ? !!ae?.allowed.buy : !!ae?.allowed.sell)).length;
   const aeManual = (signal?.orders?.length ?? 0) - aeGo;
   const aeIcon: Record<string, string> = { off: "○", paused: "⛔", skipped_user: "✋", waiting: "🤖", running: "⏳", ran: "✅", missed: "⚠️" };
@@ -205,7 +212,7 @@ function PortfolioPage() {
     switch (aeState.code) {
       case "waiting": return "09:01 발주 예정";
       case "running": return "09:01 실행 중";
-      case "ran": return r && r.note === "ran" ? `발주 ${r.submitted}건${r.skipped_gap ? ` · 갭 생략 ${r.skipped_gap}` : ""}${r.skipped ? ` · 생략 ${r.skipped}` : ""}${r.failed ? ` · 실패 ${r.failed}` : ""}` : aeState.label;
+      case "ran": return r && r.note === "ran" ? `발주 ${r.submitted}건${r.skipped_gap ? ` · 갭 생략 ${r.skipped_gap}` : ""}${r.skipped ? ` · 생략 ${r.skipped}` : ""}${r.failed ? ` · 실패 ${r.failed}` : ""}${r.retry ? ` · 재시도 발주 ${r.retry.submitted}${r.retry.failed ? ` 실패 ${r.retry.failed}` : ""}` : ""}` : aeState.label;
       case "paused": return `정지 — ${(ae.paused_reason ?? "").slice(0, 40)}`;
       case "missed": return "09:01 기록 없음";
       case "skipped_user": return "무인 취소(수동)";
@@ -235,6 +242,20 @@ function PortfolioPage() {
     setBoBusy(false);
     if (!r.ok) { setBoMsg(j.detail ?? `취소 실패 (${r.status})`); return; }
     setBoMsg(`${signal.exec_day} 무인을 취소했습니다${(j.cancelled ?? 0) > 0 ? ` · 살아 있는 주문 ${j.cancelled}건 취소` : ""}${(j.failed ?? 0) > 0 ? ` · 취소 실패 ${j.failed}건 — 표의 메시지를 확인하세요` : ""}`);
+    void load(pid);
+  }
+  // 장중 재시도 (2026-09-09 지시) — 09:01 결과가 실패·생략인 줄만 같은 절차로 다시 발주. 이전 행은 기록으로 남고 줄마다 새 행
+  async function retryAutoExec() {
+    if (!sum || !ae) return;
+    const n = ae.retryable ?? 0;
+    if (!window.confirm(`실패·생략된 ${n}줄을 다시 발주합니다.\n\n09:01 과 같은 절차(시가·갭 확인 → 잔고 대조 → 상한·주문가능 수량 → 발주)로 다시 넣습니다. 갭 취소로 생략된 줄과 이미 발주·체결된 줄은 대상이 아닙니다.\n\n계속할까요?`)) return;
+    setBoBusy(true); setBoMsg("");
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/auto-exec/retry`, { method: "POST" });
+    const j = (await r.json().catch(() => ({}))) as { retry?: { n: number; submitted: number; skipped: number; skipped_gap: number; failed: number }; detail?: string };
+    setBoBusy(false);
+    if (!r.ok) { setBoMsg(j.detail ?? `재시도 실패 (${r.status})`); return; }
+    const t = j.retry;
+    setBoMsg(t ? `재시도 ${t.n}줄 — 발주 ${t.submitted}건${t.skipped_gap ? ` · 갭 생략 ${t.skipped_gap}` : ""}${t.skipped ? ` · 생략 ${t.skipped}` : ""}${t.failed ? ` · 실패 ${t.failed} — 표의 메시지를 확인하세요` : ""}` : "재시도했습니다");
     void load(pid);
   }
   async function unskipAutoExec() {
@@ -1035,11 +1056,13 @@ function PortfolioPage() {
                       {ae && aeState && (
                         <Tip tip={<span><b className="text-ink">{aeState.label}</b>{aeState.detail && <><br />{aeState.detail}</>}{ae.account && <><br />계좌 {ae.account.label}</>}
                           {(aeState.code === "waiting" || aeState.code === "running") && <><br />09:01 발주 예정 {aeGo}줄{aeManual > 0 ? ` · 수동 ${aeManual}줄` : ""}</>}
-                          <br />취소: 09:00 전이면 오늘 발주를 건너뛰고(되돌리기 가능), 09:01 후면 살아 있는 무인 주문을 취소합니다. 다음 실행일 자동 복귀.</span>}>
+                          {aeCanSkip && <><br />취소: 09:00 전이면 오늘 발주를 건너뛰고(되돌리기 가능), 09:01 후면 살아 있는 무인 주문을 취소합니다. 다음 실행일 자동 복귀.</>}
+                          {aeState.code === "ran" && (ae.retryable ?? 0) > 0 && <><br />재시도: 실패·생략 {ae.retryable}줄을 장중(09:00~15:20) 같은 절차로 다시 발주합니다. 갭 생략·발주된 줄은 대상 외.</>}</span>}>
                           <span className="cursor-help text-faint">ⓘ</span>
                         </Tip>
                       )}
                       {aeCanSkip && <button className="text-[12px] font-normal text-down hover:underline disabled:opacity-50" disabled={boBusy} onClick={() => void skipAutoExec()}>취소</button>}
+                      {aeCanRetry && <button className="text-[12px] font-normal text-accent hover:underline disabled:opacity-50" disabled={boBusy} onClick={() => void retryAutoExec()}>재시도</button>}
                       {aeState?.code === "skipped_user" && aeBeforeFreeze && <button className="text-[12px] font-normal text-accent hover:underline disabled:opacity-50" disabled={boBusy} onClick={() => void unskipAutoExec()}>되돌리기</button>}
                     </span>
                   </th>
@@ -1085,7 +1108,8 @@ function PortfolioPage() {
                               : <span className="text-faint" title={`설정 › 무인 실행에서 무인 ${o.side === "buy" ? "매수" : "매도"}가 꺼져 있어 직접 주문해야 합니다`}>수동</span>;
                           }
                           const clip = b.message && /→\s*[\d,]+주/.test(b.message) ? " · 축소" : "";
-                          if (b.status === "submitted") return <span className="font-semibold text-ok" title={b.message ?? ""}>🤖 발주됨 #{b.order_no}{clip}</span>;
+                          const rt = b.retry_of ? " · 재시도" : "";
+                          if (b.status === "submitted") return <span className="font-semibold text-ok" title={b.message ?? ""}>🤖 발주됨 #{b.order_no}{clip}{rt}</span>;
                           if (b.status === "filled") return <span className="font-semibold text-ok" title={b.message ?? ""}>✓ 체결 {b.filled_qty.toLocaleString()}주</span>;
                           if (b.status === "partial") return <span className="font-semibold text-warn" title={b.message ?? ""}>◐ 일부 체결 {b.filled_qty}/{b.qty}</span>;
                           if (b.status === "unfilled") return <span className="text-faint" title={b.message ?? ""}>○ 미체결</span>;
