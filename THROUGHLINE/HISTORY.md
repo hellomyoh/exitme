@@ -696,3 +696,10 @@
 - 작업 내용: `portfolios.prev_close_before` · `portfolio_summary` 에 `unrealized_total`(= `unrealized_pnl`, 호환 유지), `day_change`·`day_change_pct`(평가 종가일 하루 손익, Σqty×prev_close+현금 대비)·`day_change_asof`, `positions[].prev_close/day_change/day_change_pct`. 챗봇 `portfolio_summary` 결과에 `fields_note`(누적 vs 하루 뜻). 문서 feature-portfolio §8. VERSION 0.15.2.
 - 테스트 결과: 신규 `test_portfolios::test_summary_separates_cumulative_unrealized_from_day_change`(누적 17,497,632 · 하루 1,106,640 · % 분모 · positions 필드 · 챗봇 fields_note). 관련 5파일 53 passed, 전체 `pytest -q tests/` **267 passed**.
 - Git commit: feat: split cumulative unrealized from day change in the portfolio summary
+
+## [2026-09-09] fix | 실시간 그래프가 비어 보이는 문제 (사용자 지적 "이건 왜 자꾸 안 나오는거야")
+
+- 원인: `LiveChart` 가 주문선(lines JSON)·터치 상태가 바뀔 때마다 차트를 지우고 다시 만들었는데, 데이터를 넣는 효과는 `pts` 변화에만 반응했다. 페이지 로드 직후 주문 상태(bo)가 늦게 도착해 lines 의 `status` 가 바뀌면 차트가 재생성되고 다음 10초 틱이 올 때까지 빈 차트(축 눈금도 없음)로 남는다. 장 마감 뒤에는 틱이 없어 계속 빈 화면 — 스크린샷(15:59 마지막 표본, 거리 패널은 정상)과 일치.
+- 작업 내용: 차트 생성은 code 당 한 번(`[code, name]`), 생성 직후 이미 받은 데이터를 즉시 반영. 주문선은 별도 효과에서 `removePriceLine` → `createPriceLine` 으로 제자리 갱신(터치 시 실선·✓ 라벨 포함). 마커·축척 provider 는 그대로. 문서 feature-portfolio §5. VERSION 0.15.4.
+- 테스트 결과: `tsc --noEmit` 무오류(웹만 변경). 화면 확인은 배포 후 — 주문표 아래 카드에 축 눈금과 선이 바로 보여야 정상.
+- Git commit: fix: keep the live chart instance across order-line updates so it never renders empty
