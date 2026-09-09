@@ -3,7 +3,7 @@
  *  그리드 매수·익절·초기 진입·갭 기준을 점선 가격선으로, 옆에 줄별 현재가 대비 거리(%)를 틱마다 갱신한다.
  *  KIS 호출은 추가하지 않는다 — 기존 10초 폴링이 쌓은 값만 읽는다. */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createChart, createSeriesMarkers, IChartApi, ISeriesApi, ISeriesMarkersPluginApi, LineSeries, LineStyle, type SeriesMarker, type Time, UTCTimestamp } from "lightweight-charts";
+import { createChart, createSeriesMarkers, IChartApi, type IPriceLine, ISeriesApi, ISeriesMarkersPluginApi, LineSeries, LineStyle, type SeriesMarker, type Time, UTCTimestamp } from "lightweight-charts";
 import { apiFetch } from "../lib/api";
 
 export type OrderLine = { kind: string; label: string; side: "buy" | "sell" | "gap"; price: number; status?: string };
@@ -25,6 +25,9 @@ export default function LiveChart({ code, name, lines, fpx }: { code: string; na
   const [scale, setScale] = useState<ScaleMode>("nearest");
   const scaleRef = useRef<{ mode: ScaleMode; lines: OrderLine[]; last: number | null }>({ mode: "nearest", lines, last: null });
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const priceLinesRef = useRef<IPriceLine[]>([]);
+  const ptsRef = useRef<Pt[]>([]);
+  ptsRef.current = pts;
   // 터치 = 체결: 10초 표본이 매수선 이하 / 매도선 이상이면 그 선은 체결된 것으로 본다(확정은 15:45 동기화). 첫 터치 시각을 기억
   const touched = useMemo(() => {
     const out: Record<string, number> = {};
@@ -85,7 +88,8 @@ export default function LiveChart({ code, name, lines, fpx }: { code: string; na
     return () => { try { ws?.close(); } catch { /* noop */ } if (timer) clearInterval(timer); };
   }, [code]);
 
-  // 차트 생성 (한 번) + 가격선
+  // 차트 생성 — code 당 한 번. 주문선·터치는 아래 효과가 제자리에서 갱신한다 (재생성하면 데이터 효과가 다시 돌지 않아 다음 틱까지 빈 차트 —
+  // 2026-09-09 지적 "차트가 자꾸 안 나온다": 주문 상태(bo)가 늦게 도착해 lines JSON 이 바뀌는 순간 재생성 → 장 마감 뒤엔 틱이 없어 계속 빈 화면)
   useEffect(() => {
     if (!boxRef.current) return;
     const chart = createChart(boxRef.current, {
@@ -116,15 +120,30 @@ export default function LiveChart({ code, name, lines, fpx }: { code: string; na
         return { priceRange: { minValue: lo - pad, maxValue: hi + pad }, margins: r.margins };
       },
     });
-    for (const ln of lines) {
-      const hit = touched[`${ln.kind}:${ln.price}`] != null;
-      series.createPriceLine({ price: ln.price, color: COLOR[ln.side], lineWidth: hit ? 2 : 1, lineStyle: hit ? LineStyle.Solid : LineStyle.Dashed,
-        axisLabelVisible: true, title: hit ? `${ln.label} ✓체결` : ln.label });
-    }
     markersRef.current = createSeriesMarkers(series, []);
     chartRef.current = chart; seriesRef.current = series;
-    return () => { try { chart.remove(); } catch { /* noop */ } chartRef.current = null; seriesRef.current = null; };
-  // 선(주문표)·터치 상태가 바뀌면 다시 그린다
+    priceLinesRef.current = [];
+    // 이미 받은 데이터가 있으면 즉시 반영 (code 변경으로 재생성된 경우)
+    const cur = ptsRef.current;
+    if (cur.length) {
+      series.setData(cur.map((p) => ({ time: p.t as UTCTimestamp, value: p.p })));
+      const to = cur[cur.length - 1].t + 60;
+      chart.timeScale().setVisibleRange({ from: (to - 3600) as UTCTimestamp, to: to as UTCTimestamp });
+    }
+    return () => { try { chart.remove(); } catch { /* noop */ } chartRef.current = null; seriesRef.current = null; markersRef.current = null; priceLinesRef.current = []; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, name]);
+
+  // 주문선(점선) — 바뀌면 기존 선을 지우고 다시 그린다. 차트는 그대로라 데이터·축·마커가 유지된다
+  useEffect(() => {
+    const s = seriesRef.current;
+    if (!s) return;
+    for (const pl of priceLinesRef.current) { try { s.removePriceLine(pl); } catch { /* noop */ } }
+    priceLinesRef.current = lines.map((ln) => {
+      const hit = touched[`${ln.kind}:${ln.price}`] != null;
+      return s.createPriceLine({ price: ln.price, color: COLOR[ln.side], lineWidth: hit ? 2 : 1, lineStyle: hit ? LineStyle.Solid : LineStyle.Dashed,
+        axisLabelVisible: true, title: hit ? `${ln.label} ✓체결` : ln.label });
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code, JSON.stringify(lines), touchedKey]);
 

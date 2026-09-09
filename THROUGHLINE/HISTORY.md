@@ -705,3 +705,9 @@
 - 추록(같은 날, 사용자 제안 "이동평균선 참고 진입 + 아주 소량", "20·60일은 예시 — 다양하게"): 플래너 연구용 옵션 `boot_price_ref`(ma{n}/ma{n}min)·`boot_ma_filter`(n) 추가(기본값 현행 동일, 설정 미노출) → 스윕 stage 6, MA 5·10·20·60·120·200 × 지정가/필터 + 소량 f.10/.05/.02·N20/30 27종. 결과: 모든 MA 변형이 체결률(38~60% vs 75%)·t50(7~10 vs 5일)·첫 매입가(+0.02~+0.33% vs 0.00%)에서 뒤지고 MA120·200 은 Δ 평균 −0.10%p 유의. 소량은 효과·위험이 비례 축소될 뿐(f.02 ≈ 없음). **채택 안 함**, 문서 §5. 전체 267 passed. VERSION 0.15.3(플래너 코드 변경, 기본 동작 불변).
 - 추록 2(같은 날, 사용자 지시 "시가로 들어가는 전략 시뮬레이션"): 연구용 `boot_otype="market"`·`boot_market_slippage` — 플래너는 price None 시장가 boot(수량 종가 환산), 엔진(`backtest.py` ②)은 K200 시장가 boot 를 시가(+가산율)로 체결·갭 필터 적용·그리드 회계 로트. stage 7: 체결률 99%·t50 4일(N5 면 3일)로 가장 빠르나 Δ 중앙 −0.10%(현행 −0.05%)·평균 +0.07%(현행 +0.03%)·최악 −3.45%(현행 −2.98%), 0.1% 가산 시 평균 우위 소멸·최악 −3.65%. 시가+N5+bear0.25 는 종가 N5 bear0.25 와 꼬리 비슷·진입 2일 빠름·중앙/우세/매입가는 종가가 우위. **기본값 변경 근거 없음**, 문서 §7. `test_bootstrap_entry` 시장가 변형 테스트 추가.
 - Git commit: docs: boot entry-price position study — 10-year cold-start sweep on the real planner · research: MA-reference boot options + stage 6 · research: market-open boot option + stage 7
+## [2026-09-09] fix | 실시간 그래프가 비어 보이는 문제 (사용자 지적 "이건 왜 자꾸 안 나오는거야")
+
+- 원인: `LiveChart` 가 주문선(lines JSON)·터치 상태가 바뀔 때마다 차트를 지우고 다시 만들었는데, 데이터를 넣는 효과는 `pts` 변화에만 반응했다. 페이지 로드 직후 주문 상태(bo)가 늦게 도착해 lines 의 `status` 가 바뀌면 차트가 재생성되고 다음 10초 틱이 올 때까지 빈 차트(축 눈금도 없음)로 남는다. 장 마감 뒤에는 틱이 없어 계속 빈 화면 — 스크린샷(15:59 마지막 표본, 거리 패널은 정상)과 일치.
+- 작업 내용: 차트 생성은 code 당 한 번(`[code, name]`), 생성 직후 이미 받은 데이터를 즉시 반영. 주문선은 별도 효과에서 `removePriceLine` → `createPriceLine` 으로 제자리 갱신(터치 시 실선·✓ 라벨 포함). 마커·축척 provider 는 그대로. 문서 feature-portfolio §5. VERSION 0.15.4.
+- 테스트 결과: `tsc --noEmit` 무오류(웹만 변경). 화면 확인은 배포 후 — 주문표 아래 카드에 축 눈금과 선이 바로 보여야 정상.
+- Git commit: fix: keep the live chart instance across order-line updates so it never renders empty
