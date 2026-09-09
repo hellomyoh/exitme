@@ -118,3 +118,7 @@ KIS/pykrx 우선순위, 검증 규칙, 시딩 체크포인트, 큐 분리를 확
 ### 후순위 검토 사항
 
 - KIS 호출 한도 실측 후 폴링 주기 확정(Phase 1), 분봉 수집 범위(v1은 관심 종목 한정 검토)
+
+## 장중 현재가 시계열 (2026-09-09)
+
+- `poll_quotes`(10초)가 마지막 시세 캐시·채널 push 에 더해 Redis 리스트 `quotes:series:{code}:{date}` 에 `[epoch초, 가격]` 을 누적한다(≤3,000점, TTL 24h). `GET /quotes/series` 가 읽고, 비어 있으면 KIS 1분봉(`fetch_minutes_day`)으로 그날치를 1회 채운다(`quotes:backfill:{code}:{date}` 10분 잠금). 소비자: 실전매매 '실시간 현재가 vs 주문선' 카드(feature-portfolio §5).
