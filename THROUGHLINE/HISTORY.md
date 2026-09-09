@@ -649,3 +649,10 @@
 - 원인: `Tip` 툴팁이 `position:absolute` 라 표를 감싼 `overflow-x-auto` 컨테이너(CSS 규칙상 세로 overflow 도 auto 로 바뀜) 안의 '무인' 열 헤더 ⓘ 에서 위로 뜨는 툴팁이 잘려 보이지 않았다. 제목 줄의 ⓘ(컨테이너 밖)는 정상이라 차이가 났다.
 - 작업 내용: `Tip` 을 뷰포트 기준 `fixed` 로 — hover/focus 순간 트리거 사각형으로 위치(위/아래·좌우 여백) 계산. 모든 Tip 에 적용. VERSION 0.14.3.
 - Git commit: fix: render Tip tooltips as fixed so they are not clipped inside scroll containers
+
+## [2026-09-09] feat | 무인 재시도 — 09:01 실패·생략 줄을 장중에 다시 발주 (사용자 지시 "API 실패 시 취소 대신 재시도")
+
+- 배경: J-한투-ISA 계좌처럼 09:01 발주가 KIS 오류로 실패하면 그날은 HTS 로 직접 넣는 것 외에 방법이 없었고, 실패 뒤에도 '취소' 만 보이는데 취소할 주문이 없어 쓸모가 없었다.
+- 작업 내용: `autoexec.py` — 발주 절차(③ 시가·갭 → ④ 잔고 대조·매도 한도 → ⑤ 상한·매수가능 → 발주)를 `_place_lines` 로 분리해 09:01 실행과 재시도가 **같은 코드**를 쓴다(통제 10). `retryable_rows`(실행일 줄별 최신 무인 행이 failed/skipped 이고 방향이 켜진 줄 — skipped_gap 은 그날의 전략 판정이라 제외, 꺼진 방향은 켜면 대상) · `retry_auto_exec` + `POST /portfolio/{pid}/auto-exec/retry`(장중 09:00~15:20 만 · 정지/오늘 취소/기록 없음/대상 없음/실행일 불일치/중복 클릭(Redis 60초 잠금) 409 · 축소 전 계획 수량으로 새 행 `response.retry_of` · 매도 먼저 · `last_run.retry` 요약 · 로그·알림 `autoexec.retry` · 연속 실패 정지 규칙 동일 · 실행 중 플래그로 폴러 양보) · view `retryable` · 상태 detail "재시도 HH:MM — 발주 n건 …" · 주문 행 `retry_of`. 웹 `portfolio/page.tsx`: '무인' 열 헤더 — 실행 뒤 `취소`는 살아 있는 무인 주문이 있을 때만, `재시도`는 완료·대상 줄·장중일 때(확인창 → 결과 한 줄), ⓘ 설명 조건부, 칩 "· 재시도 발주 n", 발주됨 옆 "· 재시도". 문서: ADR-009 §4·영향, feature-portfolio §5/§8/§9/§12, user-guide, auto-execution 운영 5-1. VERSION 0.14.4.
+- 테스트 결과: `tests/test_autoexec.py::test_intraday_retry_replaces_failed_and_skipped_lines` 신규(실패 익절 + 주문가능 부족 생략 → 15:30 409 → 10:30 재시도 2줄 발주·이전 행 유지·retry_of·retryable 0·detail·로그 → 대상 없음 409·엔드포인트 409 / 갭 생략 제외·매도 켜면 대상 1 → 발주 / 정지 409). `test_autoexec`·`test_account_autoexec`·`test_autoexec_review`·`test_notify` **20 passed**(첫 실행에서 `test_deposit_fallback…` 1회 실패 → 단독·재실행 2회 모두 통과, 코드 변경 전에도 단독 통과 — 순서 의존 플레이크로 기록). 전체 `pytest -q tests/` **256 passed + 1 실패**(`test_ltm_api::test_legacy_us_ravg_pairs_rejected_and_ltm_job_runs` — 401≠422, 무인과 무관한 인증 플레이크, 단독 재실행 2 passed). `tsc --noEmit` 무오류. 화면 확인은 배포 후(로컬 web 컨테이너 결함).
+- Git commit: feat: intraday retry of failed/skipped unattended lines through the shared placement pipeline

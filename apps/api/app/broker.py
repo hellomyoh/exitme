@@ -555,6 +555,7 @@ def _order_out(o: BrokerOrder) -> dict:
             "qty": o.qty, "price": o.price, "rsvn_ord_seq": o.rsvn_ord_seq, "order_no": o.order_no,
             "filled_qty": o.filled_qty, "status": o.status, "status_ko": STATUS_KO.get(o.status, o.status),
             "message": o.message, "mode": getattr(o, "mode", "reserve") or "reserve",
+            "retry_of": (o.response or {}).get("retry_of"),   # 장중 재시도로 생긴 행이면 원래 행 id (2026-09-09)
             "created_at": o.created_at.isoformat() if o.created_at else None}
 
 

@@ -50,7 +50,7 @@ CATEGORIES: list[tuple[str, str, str, bool]] = [
 DEFAULT_EVENTS = {k: d for k, _l, _d, d in CATEGORIES}
 # 활동 로그 이벤트 종류 → 카테고리. 없는 종류(줄 단위 사전 갭 취소 등)는 보내지 않는다 — 요약 한 건이 대신한다
 KIND_TO_CATEGORY = {
-    "autoexec.run": "autoexec", "autoexec.error": "autoexec",
+    "autoexec.run": "autoexec", "autoexec.error": "autoexec", "autoexec.retry": "autoexec",   # 장중 재시도 (2026-09-09)
     "autoexec.paused": "paused",
     "autoexec.skip": "orders", "autoexec.cancel": "orders",   # 사용자 취소(수동 전환)·설정 해제로 취소 (ADR-009)
     "sync.post_close": "post_close", "sync.error": "post_close", "sync.reserved_failed": "post_close",

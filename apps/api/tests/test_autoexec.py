@@ -350,3 +350,91 @@ def test_boot_line_is_gap_filtered_and_placed_first():
     fake2 = FakeKis(open_px=100000, deposit=9_000_000, holdings={}, psbl_cash=9_000_000)
     rec2, _ = _run(fake2, aid2, today, [LINES[0], boot], gap_exact=97500.0)
     assert rec2["submitted"] == 2 and fake2.placed == [("069500", "buy", 2, 100500), ("069500", "buy", 5, 99000)]
+
+
+def test_intraday_retry_replaces_failed_and_skipped_lines(monkeypatch):
+    """장중 재시도 (2026-09-09 지시 "API 실패 시 취소 대신 재시도"): 09:01 결과가 실패·생략인 줄만 새 행으로 같은 절차로 다시 발주.
+    갭 생략·꺼진 방향(켜면 대상)·발주된 줄은 대상 외. 장중 밖·정지·대상 없음은 409. 이전 행은 기록으로 남는다."""
+    from fastapi import HTTPException
+
+    import app.autoexec as ae
+    from app.models import TradePortfolio
+
+    c, h = _client()
+    today = datetime.now(KST).date()
+    pid, aid = _setup_portfolio(c, h, today, deposit_krw=9_000_000)
+    c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True, "sell": True}, headers=h)
+    c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 10, "price": 100000,
+                               "executed_at": (today - timedelta(days=2)).isoformat() + "T15:30:00+09:00"}, headers=h)   # 원장 = 계좌
+    monkeypatch.setattr(ae, "_latest_close", lambda s, code: 20_000)
+    # 09:01 — 첫 발주(익절 매도)가 KIS 오류로 실패, 레버리지·grid1 발주, grid2 는 주문가능현금 부족(65,000 < 98,000)으로 생략
+    fake = FakeKis(open_px=100000, deposit=9_000_000, holdings={"069500": 10}, fail_orders=1, psbl_cash=560_000)
+    rec, _ = _run(fake, aid, today, LINES)
+    assert rec["submitted"] == 2 and rec["failed"] == 1 and rec["skipped"] == 1
+    assert fake.placed == [("122630", "buy", 4, None), ("069500", "buy", 5, 99000)]
+    st, view = _orders(c, h, pid, today)
+    assert st["tp"]["status"] == "failed" and st["grid2"]["status"] == "skipped" and "주문가능 수량 부족" in st["grid2"]["message"]
+    assert view["state"]["code"] == "ran" and view["retryable"] == 2 and view["paused"] is False
+
+    def retry(at, fk=fake):
+        with SessionLocal() as s:
+            pf = s.get(TradePortfolio, pid)
+            out = ae.retry_auto_exec(s, pf, now=datetime.combine(today, time(*at), tzinfo=KST), client_factory=lambda cred: fk,
+                                     sleep_fn=lambda _s: None, plan_fn=_plan(LINES, today))
+            s.commit()
+        return out
+
+    # 장중 밖(15:30) → 409
+    with pytest.raises(HTTPException) as ei:
+        retry((15, 30))
+    assert ei.value.status_code == 409 and "장중" in ei.value.detail
+    # 10:30 재시도 — 사용자가 입금해 주문가능현금 2,000,000. 실패한 익절 매도 → 생략된 grid2 순(매도 먼저), 새 행 2개, 이전 행 유지
+    fake.psbl_cash = 2_000_000
+    res = retry((10, 30))
+    assert res["n"] == 2 and res["submitted"] == 2 and res["failed"] == 0 and res["skipped"] == 0
+    assert fake.placed[2:] == [("069500", "sell", 2, 103000), ("069500", "buy", 3, 98000)]
+    items = c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]
+    tp_rows = [i for i in items if i["kind"] == "tp"]
+    assert [r["status"] for r in tp_rows] == ["failed", "submitted"] and tp_rows[1]["retry_of"] == tp_rows[0]["id"] and tp_rows[0]["retry_of"] is None
+    st, view = _orders(c, h, pid, today)
+    assert st["tp"]["status"] == "submitted" and st["tp"]["order_no"] == "N0003" and st["grid2"]["status"] == "submitted"
+    assert st["grid1"]["order_no"] == "N0002"                                          # 발주된 줄은 건드리지 않는다
+    assert view["retryable"] == 0 and view["last_run"]["retry"]["submitted"] == 2 and view["last_run"]["failed"] == 1   # 09:01 요약은 그대로
+    assert view["state"]["code"] == "ran" and "재시도 10:30 — 발주 2건" in view["state"]["detail"]
+    ev = [i for i in c.get("/logs?type=event", headers=h).json()["items"] if i["kind"] == "autoexec.retry"]
+    assert ev and "대상 2줄" in ev[0]["text"] and "발주 2건" in ev[0]["text"] and ev[0]["level"] == "info"
+    # 더 이상 대상 없음 → 409, 엔드포인트도 409(시각과 무관)
+    with pytest.raises(HTTPException) as ei2:
+        retry((10, 35))
+    assert ei2.value.status_code == 409 and "재시도할 줄이 없습니다" in ei2.value.detail
+    assert c.post(f"/portfolio/{pid}/auto-exec/retry", headers=h).status_code == 409
+
+    # 갭 생략은 대상 외, 꺼진 방향은 켜면 대상 — 매수만 켠 계좌, 갭 발생: grid1·2 skipped_gap, 익절은 '꺼짐 — 수동 처리'
+    c2, h2 = _client()
+    pid2, aid2 = _setup_portfolio(c2, h2, today, deposit_krw=9_000_000)
+    c2.put(f"/settings/auto-exec/accounts/{aid2}", json={"buy": True}, headers=h2)
+    c2.post("/positions", json={"portfolio_id": pid2, "kind": "buy", "code": "069500", "qty": 10, "price": 100000,
+                                "executed_at": (today - timedelta(days=2)).isoformat() + "T15:30:00+09:00"}, headers=h2)
+    fake2 = FakeKis(open_px=97000, deposit=9_000_000, holdings={"069500": 10}, psbl_cash=9_000_000)
+    rec2, _ = _run(fake2, aid2, today, LINES[:3], gap_exact=97500.0)
+    assert rec2["skipped_gap"] == 2 and rec2["skipped"] == 1 and fake2.placed == []
+    assert c2.get(f"/portfolio/{pid2}/auto-exec?date={today.isoformat()}", headers=h2).json()["retryable"] == 0
+    c2.put(f"/settings/auto-exec/accounts/{aid2}", json={"sell": True}, headers=h2)
+    assert c2.get(f"/portfolio/{pid2}/auto-exec?date={today.isoformat()}", headers=h2).json()["retryable"] == 1
+    with SessionLocal() as s:
+        pf2 = s.get(TradePortfolio, pid2)
+        res2 = ae.retry_auto_exec(s, pf2, now=datetime.combine(today, time(10, 0), tzinfo=KST), client_factory=lambda cred: fake2,
+                                  sleep_fn=lambda _s: None, plan_fn=_plan(LINES[:3], today, 97500.0))
+        s.commit()
+    assert res2["n"] == 1 and res2["submitted"] == 1 and res2["gap_hit"] is True and fake2.placed == [("069500", "sell", 2, 103000)]
+    st2, _ = _orders(c2, h2, pid2, today)
+    assert st2["grid1"]["status"] == "skipped_gap" and st2["tp"]["status"] == "submitted"
+    # 정지 상태 → 409
+    with SessionLocal() as s:
+        pf2 = s.get(TradePortfolio, pid2)
+        ae.pause_portfolio(pf2, "테스트 정지")
+        s.commit()
+        with pytest.raises(HTTPException) as ei3:
+            ae.retry_auto_exec(s, pf2, now=datetime.combine(today, time(10, 5), tzinfo=KST), client_factory=lambda cred: fake2,
+                               sleep_fn=lambda _s: None, plan_fn=_plan(LINES[:3], today, 97500.0))
+    assert ei3.value.status_code == 409 and "정지" in ei3.value.detail
