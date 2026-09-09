@@ -250,7 +250,10 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
             boot_qty = int(boot_f * (target_200 - value_200) // boot_price) if boot_price > 0 else 0
             if boot_qty > 0 and boot_qty * boot_price <= cash_left:
                 cash_left -= boot_qty * boot_price
-                boot_order = Order(K200, "buy", "limit", boot_qty, boot_price, "boot")
+                if params.boot_otype == "market":   # 연구용: 다음날 시가 시장가 (수량은 종가 기준 환산, 실행기는 price None = 시장가)
+                    boot_order = Order(K200, "buy", "market", boot_qty, None, "boot")
+                else:
+                    boot_order = Order(K200, "buy", "limit", boot_qty, boot_price, "boot")
             else:
                 boot_f = 0.0
     if boot_order is not None:

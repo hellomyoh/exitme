@@ -5,7 +5,7 @@
 용법(api 컨테이너 안, 개발 DB 의 10년 일봉 사용 — 읽기만):
     docker compose exec -T api python scripts/boot_delta_sweep.py <stage> [step] [offset] [stage별 인자]
     stage 1 = δ 스윕(f.15 N10 bear.5) · 2 = f×N (인자 δ) · 3 = bear 배수 (인자 δ f N) · 4 = 후보 연도/레짐 분해 (인자 "δ,f,N,bear;…")
-    · 5 = 최종 후보 7종 요약표 · 6 = 이동평균(5~200일) 참조·소량 변형 27종(사용자 제안 검토, 인자로 라벨 부분 일치 필터).   step 5 = 시작 365개(5거래일 간격), step 50 = 준독립 37개.
+    · 5 = 최종 후보 7종 요약표 · 6 = 이동평균(5~200일) 참조·소량 변형 27종 · 7 = 시가 시장가 진입 변형(사용자 지시).   step 5 = 시작 365개(5거래일 간격), step 50 = 준독립 37개.
 결과·결론: THROUGHLINE/docs/boot-entry-price-study-20260909.md
 """
 import sys as _sys, os as _os
@@ -189,6 +189,27 @@ elif STAGE == "6":
         fp = f"{e['first_px']:+.2%}" if e['first_px'] is not None else "-"
         c2 = f"{e['cost20']:+.2%}" if e['cost20'] is not None else "-"
         print(f"{e['label']:<24} {fr:>5} {e['nofill5']:>6} {e['t50']!s:>4} {e['t90']!s:>5} {e['d_med']:>+8.3%} {e['d_mean']:>+8.3%} [{e['ci_lo']:+.2%},{e['ci_hi']:+.2%}] {e['d_win']:>3}/{e['n']:<3} {e['p_sign']:>5.2f} {e['d_p10']:>+7.2%} {e['d_min']:>+7.2%} {fp:>9} {c2:>9}")
+elif STAGE == "7":
+    # 사용자 지시(2026-09-09): 초기 진입을 전날 종가 지정가 대신 '다음날 시가 시장가'로
+    B = {"boot_frac": 0.15, "boot_days": 10, "boot_bear_mult": 0.5, "boot_delta": 0.0}
+    M = {**B, "boot_otype": "market"}
+    cands = [("현행 종가 지정가 δ0", B), ("종가 위 지정가 δ−.5(시가 근사)", {**B, "boot_delta": -0.5}),
+             ("시가 시장가 f.15 N10", M), ("시가 시장가 +0.1% 슬리피지", {**M, "boot_market_slippage": 0.001}),
+             ("시가 시장가 f.10", {**M, "boot_frac": 0.10}), ("시가 시장가 f.05", {**M, "boot_frac": 0.05}),
+             ("시가 시장가 N5", {**M, "boot_days": 5}), ("시가 시장가 N5 bear.25", {**M, "boot_days": 5, "boot_bear_mult": 0.25}),
+             ("시가 시장가 bear0", {**M, "boot_bear_mult": 0.0}), ("시가 시장가 f.25 N5", {**M, "boot_frac": 0.25, "boot_days": 5}),
+             ("종가 지정가 N5 bear.25", {**B, "boot_days": 5, "boot_bear_mult": 0.25})]
+    if len(sys.argv) > 4:
+        keys = sys.argv[4].split(";"); cands = [c for c in cands if any(k in c[0] for k in keys)]
+    for lab, cfg in cands:
+        e = evaluate(cfg, lab); results.append(e); print(fmt(e), flush=True)
+    print("\n=== 요약표 ===")
+    print(f"{'설정':<26} {'체결률':>5} {'5일미체결':>6} {'t50':>4} {'t90':>5} {'Δ중앙':>8} {'Δ평균':>8} {'95%CI':>16} {'우세':>8} {'p':>5} {'p10':>7} {'최악':>7} {'K200첫매입가':>9} {'20일평균매입가':>9} {'MDD':>6}")
+    for e in results:
+        fr = f"{e['fill_rate']:.0%}" if e['fill_rate'] is not None else "-"
+        fp = f"{e['first_px']:+.2%}" if e['first_px'] is not None else "-"
+        c2 = f"{e['cost20']:+.2%}" if e['cost20'] is not None else "-"
+        print(f"{e['label']:<26} {fr:>5} {e['nofill5']:>6} {e['t50']!s:>4} {e['t90']!s:>5} {e['d_med']:>+8.3%} {e['d_mean']:>+8.3%} [{e['ci_lo']:+.2%},{e['ci_hi']:+.2%}] {e['d_win']:>3}/{e['n']:<3} {e['p_sign']:>5.2f} {e['d_p10']:>+7.2%} {e['d_min']:>+7.2%} {fp:>9} {c2:>9} {e['mdd_med']:>6.1%}")
 elif STAGE == "4":
     cands = [(-0.25, 0.15, 10, 0.5), (0.0, 0.15, 10, 0.5), (0.25, 0.15, 10, 0.5), (0.5, 0.15, 10, 0.5)]
     if len(sys.argv) > 4:

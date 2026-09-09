@@ -116,3 +116,35 @@ def test_engine_no_bootstrap_when_started_with_holdings():
     r = run_backtest(b200, blev, 50_000_000, Params(), collect_plans=True,
                      initial_lots=[{"leg": "K200", "qty": 300, "price": int(b200[0]["close"])}])
     assert not any(o.kind == "boot" for p in r.plans for o in p.orders)
+
+
+def test_bootstrap_market_open_variant_is_research_only():
+    """연구용 boot_otype='market' (2026-09-09 사용자 지시 "시가 진입 시뮬레이션"): 플래너는 price None 시장가 boot, 수량은 종가 기준.
+    엔진은 다음날 시가(+슬리피지)로 체결해 K200 로트(그리드 회계)를 만들고, 갭 필터 날은 시장가 boot 도 생략. 기본값(limit)은 종전과 동일."""
+    from app.strategy.backtest import run_backtest
+    from tests.test_strategy_backtest import make_bars
+
+    m = mk_market()
+    pm = replace(P, boot_otype="market")
+    p = plan(I, m, mk_lev(), Regime.NEUTRAL, pf_with(100_000_000), pm, days_since_start=0)
+    b = _boot(p)[0]
+    assert b.otype == "market" and b.price is None and b.instrument == K200
+    lim = _boot(plan(I, m, mk_lev(), Regime.NEUTRAL, pf_with(100_000_000), P, days_since_start=0))[0]
+    assert b.qty == lim.qty                                     # 수량은 종가 환산으로 지정가 변형과 같다
+    b200, blev = make_bars(n=600), make_bars(n=600, ratio=0.3)
+    on = run_backtest(b200, blev, 100_000_000, pm, collect_plans=True)
+    boots = [f for f in on.fills if f.kind == "boot"]
+    assert boots and all(f.instrument == "K200" and f.side == "buy" for f in boots)
+    dates = [x["date"] for x in b200]
+    for f in boots[:3]:                                          # 체결가 = 그날 시가 (슬리피지 0)
+        assert f.price == round(float(b200[dates.index(f.date)]["open"]))
+    slip = run_backtest(b200, blev, 100_000_000, replace(pm, boot_market_slippage=0.001), collect_plans=True)
+    f0, f1 = boots[0], [f for f in slip.fills if f.kind == "boot"][0]
+    assert f1.date == f0.date and f1.price == round(float(b200[dates.index(f0.date)]["open"]) * 1.001)
+    # 갭 필터: 시가가 기준 이하인 날은 시장가 boot 도 없다 — 계획에 boot 가 있고 gap_hit 인 날에 boot 체결이 없는지
+    for i, pl in enumerate(on.plans[:-1]):
+        if any(o.kind == "boot" for o in pl.orders) and pl.gap_cancel_exact is not None and float(b200[i + 1]["open"]) <= pl.gap_cancel_exact:
+            assert not any(f.kind == "boot" and f.date == dates[i + 1] for f in on.fills)
+    # 기본값(limit)은 종전 결과와 동일
+    base = run_backtest(b200, blev, 100_000_000, Params(), collect_plans=True)
+    assert [p_.orders for p_ in base.plans] == [p_.orders for p_ in run_backtest(b200, blev, 100_000_000, replace(Params(), boot_otype="limit"), collect_plans=True).plans]
