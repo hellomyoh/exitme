@@ -680,3 +680,12 @@
 - 문서: NOTES 사고 기록, operator-guide 배치·상태 파일, ADR-009 §5 지연 상한, feature-portfolio §5, feature-chatbot, user-guide 챗봇. VERSION 0.15.0(마이너 — 챗봇 평가 조회 신설).
 - 테스트 결과: 신규 `test_worker_config`(deadline 3600·.dockerignore·/var/lib/celery·retry kwargs), `test_autoexec::test_late_run_limit_blocks_catch_up_execution`(11:00 도착 → late·발주 없음·오류 로그, already-ran, late_limit=None 이면 발주), `test_notify::test_daily_status_sent_once_per_day`, `test_chat_ops::test_trading_journal_overview_includes_valuation_and_day_change`(종가 11,000/전일 10,000 → 평가 110,000·평가손익 20,000·하루 변동 +10,000/+10%·totals). 관련 8파일 59 passed, 전체 `pytest -q tests/` **264 passed**. 로컬 이미지 재빌드 후 스케줄러 재생성: `db -> /var/lib/celery/celerybeat-schedule`, 기동 직후 크론 즉시 전송 없음, `.dockerignore` 이미지 포함 확인.
 - Git commit: fix: keep the beat schedule file out of the image, cap cron catch-up and late 09:01 runs, send daily status once; chatbot journal valuation with day change
+
+## [2026-09-09] fix | 반쪽 스냅샷 — 거래 등록 뒤 flush 없이 당일 스냅샷 재계산 (사용자 보고 "챗봇 계산과 대시보드 수익률이 다르다")
+
+- 분석: 서버 복호화 조회로 09-08 M-신한-ETF 스냅샷이 주식 636주(매도 후)·현금은 21:42 등록한 매도 30주×114,000 대금 3,420,000원 누락(매도 전) 상태임을 확인. 대시보드 전일 대비 5,746,150 = 가격 변동 2,326,150(챗봇과 일치) + 3,420,000. 원인은 `autoflush=False` 세션에서 flush 없이 `compute_user_snapshot` 호출 — 로컬 격리 DB 재현으로 입금(cash 0)·매수(stock 0)·매도(대금 누락) 모두 한 거래씩 늦게 반영됨을 확인(NOTES "autoflush=False 세션").
+- 작업 내용: `portfolios.register_transaction`·거래 삭제·`cashcheck` 보정 등록에 재계산 직전 `session.flush()`. `app/services/snapshot_repair.py` — `--date`(필수) `--user` `--apply`(기본 dry-run): `signals._state_before` 로 그 날짜까지 체결분 FIFO 로트·현금 재생, 그 날짜 이하 마지막 종가로 평가해 국내 포트 스냅샷·사용자 총액(journal·other 유지) 갱신. 문서: feature-dashboard §5, operator-guide, NOTES. VERSION 0.15.1.
+- 서버 조치(배포 뒤): `python -m app.services.snapshot_repair --date 2026-09-08` 로 M-신한-ETF cash 57,688,404 → 61,108,404, 총액 343,048,473 → 346,468,473 확인 후 `--apply`.
+- 별건으로 남김(사용자 결정 대기): 매매일지 등록이 전체·전일 수익률에 수익으로 잡히는 문제, 시세 없는 종목의 취득가 평가.
+- 테스트 결과: 신규 `tests/test_snapshot_consistency.py` 2건 — 입금·매수·매도·삭제 직후 당일 스냅샷 = 원장(종전 반쪽값 주석), 보정 도구 dry-run 무저장·apply 후 stock/cash/총액·journal 유지·대시보드 전일 대비에서 매도 대금 제거. 관련 4파일 46 passed, 전체 `pytest -q tests/` **266 passed**. CLI dry-run 스모크(격리 DB) 통과.
+- Git commit: fix: flush before same-day snapshot recomputation; add as-of snapshot repair tool

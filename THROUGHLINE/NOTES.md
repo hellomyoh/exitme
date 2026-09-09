@@ -94,3 +94,10 @@
 - 조치(0.15.0): `apps/api/.dockerignore`(`celerybeat-schedule*` 등) · beat 를 `-s /var/lib/celery/celerybeat-schedule` 로(코드 밖, Dockerfile mkdir) · `beat_cron_starting_deadline=3600` · 09:01/09:15 실행 `LATE_RUN_LIMIT` 09:30(넘으면 'late' 기록만) · 일일 현황 하루 1회(`notify.daily_status_sent`) · deploy.sh 가 빌드 전 `apps/api/celerybeat-schedule*` 삭제.
 - 확인 명령: `docker run --rm --entrypoint sh stocklab-api -c 'ls -la /srv/app/celerybeat-schedule*'` → 없어야 정상. 로컬 dev 는 바인드 마운트라 `apps/api/celerybeat-schedule` 이 계속 생기지만 `-s` 로 읽지 않는다(지워도 무해).
 - 일반 원칙: 프로세스 상태 파일(shelve·pid·캐시)은 빌드 컨텍스트에 두지 않는다. 컨테이너 재시작(`restart`)은 파일시스템을 유지하고 재생성(`up --build`)은 버린다 — 따라잡기 동작은 그 차이에 좌우된다.
+
+## autoflush=False 세션 — 계산 전 flush (2026-09-09 사고: 반쪽 스냅샷)
+
+- 증상: 대시보드 전일 대비 +5,746,150원, 챗봇(오늘 보유 × 가격 변동) +2,326,150원. 차이 3,420,000원 = 전날 21:42 등록한 매도 30주 × 114,000원 대금. 서버 복호화 조회로 09-08 M-신한-ETF 스냅샷이 주식 636주(매도 후)·현금은 매도 대금 누락(매도 전)인 반쪽 상태였다.
+- 원인: `SessionLocal(autoflush=False)`. 거래 등록은 매도 시 기존 로트 객체 수량을 메모리에서 줄이고 새 거래 행을 `add` 한 뒤 flush 없이 `compute_user_snapshot` 을 호출한다. 로트 조회는 identity map 의 변경된 객체를 돌려주지만 거래 행 조회에는 아직 INSERT 되지 않은 새 거래가 없다 → 주식은 매도 후, 현금은 매도 전. 입금·매수도 한 거래씩 늦게 반영된다(로컬 재현: 입금 직후 cash 0, 매수 직후 stock 0). 대시보드를 다시 열면 커밋 데이터로 고쳐지지만, 그날 열지 않으면 반쪽 값이 남고 다음 날 전일 대비·추이에 거래 금액이 손익처럼 나타난다.
+- 조치(0.15.1): 등록·삭제·예수금 보정 경로에 `session.flush()` 후 재계산 · `app/services/snapshot_repair.py`(as-of 원장 재계산, dry-run 기본)로 저장된 날짜 보정 · `tests/test_snapshot_consistency.py`.
+- 원칙: autoflush 가 꺼진 세션에서 "방금 add/변경한 것을 다시 조회해 계산"하는 코드는 반드시 그 앞에 flush. 특히 계산 결과를 **저장**하는 경로(스냅샷·요약 캐시)에서 치명적이다.
