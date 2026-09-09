@@ -606,3 +606,43 @@ def test_portfolio_tab_color():
     client.patch(f"/portfolios/{pid}", json={"name": "이름만"}, headers=h)
     item2 = next(x for x in client.get("/portfolios", headers=h).json()["items"] if x["id"] == pid)
     assert item2["name"] == "이름만" and item2["color"] == "#059669"
+
+
+def test_summary_separates_cumulative_unrealized_from_day_change():
+    """누적 평가손익(unrealized_total)과 하루 손익(day_change) 분리 (2026-09-09 사용자 결정 — 챗봇이 누적을 '오늘 평가손익'으로 표기한 혼동).
+    종가 09-08 110,660 → 09-09 112,400, 636주 평단 84,888: 누적 +17,497,632 · 하루 +1,106,640 · 하루 % = 1,106,640 ÷ (636×110,660 + 현금)."""
+    import uuid as _uuid
+    from datetime import timedelta
+
+    from fastapi.testclient import TestClient
+
+    from app.chat import _run_tool
+    from app.dashboard import kst_today
+    from app.db import SessionLocal
+    from app.main import app
+    from app.models import TradePortfolio
+    from app.services.ingest import get_or_create_instrument, upsert_daily_bars
+
+    today = kst_today()
+    code = "U" + _uuid.uuid4().hex[:5].upper()
+    with SessionLocal() as s:
+        inst = get_or_create_instrument(s, code, f"분리{code}", "KOSPI", type_="ETF")
+        upsert_daily_bars(s, inst.id, [{"trade_date": today - timedelta(days=1), "open": 110660, "high": 110660, "low": 110660, "close": 110660, "volume": 1},
+                                       {"trade_date": today, "open": 112400, "high": 112400, "low": 112400, "close": 112400, "volume": 1}], source="kis")
+        s.commit()
+    c = TestClient(app, base_url="https://testserver")
+    tok = c.post("/auth/register", json={"email": f"dc{_uuid.uuid4().hex[:8]}@x.dev", "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    pid = c.post("/portfolios", json={"name": "분리", "market": "KR", "code_200": "102110"}, headers=h).json()["id"]
+    c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 636 * 84_888 + 61_108_404, "executed_at": (today - timedelta(days=9)).isoformat() + "T10:00:00+09:00"}, headers=h)
+    c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": code, "qty": 636, "price": 84_888, "executed_at": (today - timedelta(days=8)).isoformat() + "T10:00:00+09:00"}, headers=h)
+    s_ = c.get(f"/portfolio/summary?portfolio_id={pid}", headers=h).json()
+    assert s_["unrealized_pnl"] == s_["unrealized_total"] == 636 * (112_400 - 84_888) == 17_497_632
+    assert s_["day_change"] == 636 * (112_400 - 110_660) == 1_106_640 and s_["day_change_asof"] == today.isoformat()
+    assert abs(s_["day_change_pct"] - 1_106_640 / (636 * 110_660 + 61_108_404)) < 1e-12
+    p = s_["positions"][0]
+    assert p["unrealized"] == 17_497_632 and p["prev_close"] == 110_660 and p["day_change"] == 1_106_640 and abs(p["day_change_pct"] - 1_740 / 110_660) < 1e-12
+    with SessionLocal() as s:
+        uid = s.get(TradePortfolio, pid).user_id
+    tool = _run_tool("portfolio_summary", {"portfolio_id": pid}, uid)
+    assert tool["day_change"] == 1_106_640 and "누적" in tool["fields_note"] and "하루" in tool["fields_note"]

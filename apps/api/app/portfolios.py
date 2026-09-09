@@ -85,6 +85,15 @@ def latest_close(session: Session, instrument_id: int) -> tuple[float, date] | N
     return row.close_raw * float(row.adj_factor), row.trade_date
 
 
+def prev_close_before(session: Session, instrument_id: int, before: date) -> float | None:
+    """before(미포함) 이전 마지막 종가 — 요약의 '하루 변동'(day_change) 기준. 평가에 쓴 종가 바로 전 거래일 종가."""
+    row = session.execute(
+        select(OhlcvDaily).where(OhlcvDaily.instrument_id == instrument_id, OhlcvDaily.trade_date < before)
+        .order_by(OhlcvDaily.trade_date.desc()).limit(1)
+    ).scalars().first()
+    return row.close_raw * float(row.adj_factor) if row is not None else None
+
+
 def _owned_portfolio(session: Session, pid: int, user_id: int) -> TradePortfolio:
     p = session.get(TradePortfolio, pid)
     if p is None or p.user_id != user_id:
@@ -529,6 +538,9 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
         as_of = max(as_of, px_date) if (as_of and px_date) else (px_date or as_of)
         value = qty * price
         total_value += value
+        # 하루 변동 — 평가에 쓴 종가(px_date) 바로 전 거래일 종가 대비 (2026-09-09 사용자 결정: 누적 unrealized 와 오늘 day_change 를 필드로 분리)
+        prev_px = prev_close_before(session, inst_id, px_date) if px_date else None
+        day_chg = round(qty * (price - prev_px)) if prev_px else None
         ret = (price - avg) / avg if avg else 0.0
         first_buy = min(l.opened_at for l in ls)
         held_days = max((now - first_buy).days, 0)
@@ -574,7 +586,10 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
         positions.append({
             "code": inst.code, "name": inst.name, "qty": qty, "avg_price": round(avg),
             "price": round(price), "value": round(value),
-            "return": ret, "unrealized": round(value - invested),
+            "return": ret, "unrealized": round(value - invested),          # 누적 평가손익 (매수 이후)
+            "prev_close": round(prev_px) if prev_px else None,             # 전 거래일 종가
+            "day_change": day_chg,                                         # 오늘(평가 종가일) 하루 손익 = qty × (price − prev_close)
+            "day_change_pct": ((price - prev_px) / prev_px) if prev_px else None,
             "held_days": held_days, "annualized": annualized,
             "best_return": best, "worst_return": worst,
             "target_price": meta.target_price if meta else None,
@@ -605,6 +620,10 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
     invested_cost = round(sum(l.qty_open * l.price for l in lots))
     unrealized_total = round(sum(p["unrealized"] for p in positions))
     net_pnl = unrealized_total + realized_total - (round(est_cost) if include_costs else 0)
+    # 하루 변동 합계 — 전 거래일 평가액(Σ qty×prev_close + 현금) 대비. 가격 있는 종목만 (2026-09-09)
+    day_change_total = sum(p["day_change"] or 0 for p in positions)
+    day_prev_equity = sum(p["qty"] * p["prev_close"] for p in positions if p["prev_close"]) + cash
+    priced_for_day = [p for p in positions if p["prev_close"]]
 
     return {
         "portfolio": {"id": pf.id, "name": pf.name, "kind": pf.kind, "backtest_id": pf.backtest_id,
@@ -613,6 +632,12 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
         "cash": cash, "stock_value": round(total_value), "total_equity": round(total_equity),
         "realized_pnl": realized_total,
         "unrealized_pnl": unrealized_total,
+        # 이름 분리 (2026-09-09 사용자 결정) — 챗봇이 누적 평가손익을 '오늘 평가손익'으로 표기한 혼동 방지.
+        #   unrealized_total = 매수 이후 누적 평가손익(= unrealized_pnl, 호환 유지) · day_change = 평가 종가일 하루 손익(전 거래일 종가 대비)
+        "unrealized_total": unrealized_total,
+        "day_change": day_change_total if priced_for_day else None,
+        "day_change_pct": (day_change_total / day_prev_equity) if priced_for_day and day_prev_equity > 0 else None,
+        "day_change_asof": as_of.isoformat() if (as_of and priced_for_day) else None,
         "estimated_costs": round(est_cost) if include_costs else 0,
         "principal": principal, "invested_cost": invested_cost,
         "net_pnl": net_pnl,

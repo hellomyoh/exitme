@@ -689,3 +689,10 @@
 - 별건으로 남김(사용자 결정 대기): 매매일지 등록이 전체·전일 수익률에 수익으로 잡히는 문제, 시세 없는 종목의 취득가 평가.
 - 테스트 결과: 신규 `tests/test_snapshot_consistency.py` 2건 — 입금·매수·매도·삭제 직후 당일 스냅샷 = 원장(종전 반쪽값 주석), 보정 도구 dry-run 무저장·apply 후 stock/cash/총액·journal 유지·대시보드 전일 대비에서 매도 대금 제거. 관련 4파일 46 passed, 전체 `pytest -q tests/` **266 passed**. CLI dry-run 스모크(격리 DB) 통과.
 - Git commit: fix: flush before same-day snapshot recomputation; add as-of snapshot repair tool
+
+## [2026-09-09] feat | 실전매매 요약 — 누적 평가손익(unrealized_total)과 하루 손익(day_change) 필드 분리 (사용자 결정)
+
+- 배경: 챗봇이 실전매매 누적 평가손익(+17,497,632 / +6,638,000)을 "오늘 평가손익" 열에 적었다. 검증 결과 값은 매수 이후 누적이었고(평단 84,888·95,805 로 역산 일치) 오늘 손익은 +1,106,640 / +696,000. 같은 검증에서 "어제 수익률" −0.1111%/−0.0869% 는 도구값(−0.0547%/−0.1743%)과 달라 모델 자체 계산 오류로 판정 — 도구 표 확장·프롬프트 규칙 제안은 사용자가 기각(특정 질문에서만 동작), 필드 분리만 채택.
+- 작업 내용: `portfolios.prev_close_before` · `portfolio_summary` 에 `unrealized_total`(= `unrealized_pnl`, 호환 유지), `day_change`·`day_change_pct`(평가 종가일 하루 손익, Σqty×prev_close+현금 대비)·`day_change_asof`, `positions[].prev_close/day_change/day_change_pct`. 챗봇 `portfolio_summary` 결과에 `fields_note`(누적 vs 하루 뜻). 문서 feature-portfolio §8. VERSION 0.15.2.
+- 테스트 결과: 신규 `test_portfolios::test_summary_separates_cumulative_unrealized_from_day_change`(누적 17,497,632 · 하루 1,106,640 · % 분모 · positions 필드 · 챗봇 fields_note). 관련 5파일 53 passed, 전체 `pytest -q tests/` **267 passed**.
+- Git commit: feat: split cumulative unrealized from day change in the portfolio summary

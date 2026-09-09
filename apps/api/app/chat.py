@@ -222,8 +222,13 @@ def _run_tool(name: str, args: dict, user_id: int, is_admin: bool = False) -> di
                 return list_portfolios(user_id=user_id, session=session)
             if name == "portfolio_summary":
                 from app.portfolios import portfolio_summary
-                return portfolio_summary(portfolio_id=args.get("portfolio_id"),
-                                         include_costs=True, user_id=user_id, session=session)
+                out = portfolio_summary(portfolio_id=args.get("portfolio_id"),
+                                        include_costs=True, user_id=user_id, session=session)
+                # 필드 뜻 (2026-09-09): 누적 vs 오늘을 이름으로 구분 — 챗봇이 누적 평가손익을 '오늘 평가손익'으로 적은 혼동 방지
+                out["fields_note"] = ("unrealized_total(=unrealized_pnl) 과 positions[].unrealized 은 매수 이후 **누적** 평가손익. "
+                                      "day_change/day_change_pct 와 positions[].day_change 는 평가 종가일(day_change_asof) **하루** 손익(전 거래일 종가 prev_close 대비). "
+                                      "realized_pnl 은 매도 실현 누적, net_pnl 은 실현+평가−비용.")
+                return out
             if name == "portfolio_journal":
                 from app.portfolios import portfolio_journal
                 out = portfolio_journal(portfolio_id=args.get("portfolio_id"),
