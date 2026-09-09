@@ -696,3 +696,10 @@
 - 작업 내용: `portfolios.prev_close_before` · `portfolio_summary` 에 `unrealized_total`(= `unrealized_pnl`, 호환 유지), `day_change`·`day_change_pct`(평가 종가일 하루 손익, Σqty×prev_close+현금 대비)·`day_change_asof`, `positions[].prev_close/day_change/day_change_pct`. 챗봇 `portfolio_summary` 결과에 `fields_note`(누적 vs 하루 뜻). 문서 feature-portfolio §8. VERSION 0.15.2.
 - 테스트 결과: 신규 `test_portfolios::test_summary_separates_cumulative_unrealized_from_day_change`(누적 17,497,632 · 하루 1,106,640 · % 분모 · positions 필드 · 챗봇 fields_note). 관련 5파일 53 passed, 전체 `pytest -q tests/` **267 passed**.
 - Git commit: feat: split cumulative unrealized from day change in the portfolio summary
+
+## [2026-09-09] docs | 초기 진입가 위치(boot_delta) 10년 스윕 검증 (사용자 지시 "전일 종가 근거 부족 — 변수 반복 계산으로 최적값·결론")
+
+- 방법: 실전 플래너와 같은 엔진(`run_backtest`)으로 콜드 스타트 250일 창을 2018-03~2025-08 시작 365개(5거래일 간격) + 준독립 37개×2위상에서 δ·f·N·bear 스윕. 지표에 진입가 품질(K200 첫 매입가·20일 평균 매입가 vs 시작일 종가)·부트 체결률·부호검정·부트스트랩 CI 추가. 스크립트 `apps/api/scripts/boot_delta_sweep.py`(stage 1~5).
+- 결과: δ ∈ [−0.5, 1.0] 어느 값도 250일 수익을 유의하게 바꾸지 않음(CI 모두 0 포함, 표본 위상별 부호 반전). δ 는 체결률(92→25%)·속도·꼬리를 맞바꾸는 변수. 종가(δ0)는 체결률 75%·5일 내 미체결 0·첫 매입가 = 시작일 종가·꼬리 중간. 그리드만 기다리는 기준은 44% 창이 5일 내 미체결이고 20일 평균 매입가가 +0.22% 더 비쌈. 측정 가능한 개선은 N10→5·bear 0.5→0.25(p10 −1.06→−0.50%, 최악 −2.98→−1.98%, 우세 162→172, 세 표본 동일 방향). bear0 은 유일하게 평균 유의(+0.09%)지만 하락장 시작에 매매가 없어 기각.
+- 결론: `boot_delta` 0 유지 권고, `boot_days` 5·`boot_bear_mult` 0.25 는 선택적 조정(설정 변수, 코드 변경 없음). 문서 `docs/boot-entry-price-study-20260909.md`. 코드 변경 없음(버전 유지 0.15.2).
+- Git commit: docs: boot entry-price position study — 10-year cold-start sweep on the real planner
