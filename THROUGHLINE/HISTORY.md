@@ -639,6 +639,7 @@
 ## [2026-09-09] fix | 텔레그램 알림 — 실패를 화면에 드러내기 (사용자 보고 "메시지가 안 온다", 토큰 실측)
 
 - 분석: 개발 환경(사내망)에서는 텔레그램 API 가 TLS 단계에서 차단(Connection reset)돼 토큰 검증·전송 테스트가 불가능했다(NOTES). 앱 로직상 조용히 안 보내는 경우 3가지 — ① 설정 미완(켬·토큰·채팅 ID 중 하나 빠짐 = `ready` false) ② 항목 미체크(주문·체결 등록은 기본 꺼짐) ③ 전송 실패(매매 로그 `notify.failed` 로만 남고 설정 화면엔 표시 없음). 운영 서버가 같은 망이면 ③ 이 매일 남는다.
+- 운영 확정(사용자 서버 조회): 서버는 텔레그램 접속 정상·토큰 유효, `user_settings.notify` 에 events·채팅 ID·토큰은 있으나 **`enabled` 키가 없음** → `maybe_notify` 가 조용히 False. 즉 ①(설정 미완: 알림 보내기 꺼짐). 조치: 연결 확인 성공 시 `enabled=true` 자동 설정(응답 `enabled_now`), 설정 화면에 "봇은 연결됐지만 알림 보내기가 꺼져 있어 …" 경고 + '지금 켜기' 버튼.
 - 작업 내용: `notify.py` — 마지막 전송 성공/실패(시각·사유)를 `user_settings.notify.last` 에 기록(자동 발송·연결 확인 모두), `GET /settings/notify` 의 `last`; `_humanize` 에 연결·TLS·시간 초과 사유("텔레그램 서버에 연결할 수 없습니다 — 서버 네트워크 차단 …"). 설정 › 알림 상단에 "✓ 마지막 전송 성공 시각" / "⚠️ 마지막 전송 실패 시각 — 사유" 줄. VERSION 0.14.2.
 - 테스트 결과: `test_notify` 갱신(실패 뒤 `last.error`·`sent_at`, 연결 오류 문구) 통과 — `test_notify`·`test_activity` 8 passed, 18 warnings, `tsc --noEmit` 무오류.
 - Git commit: fix: surface the last Telegram send result and humanize network errors

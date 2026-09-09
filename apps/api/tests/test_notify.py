@@ -189,3 +189,16 @@ def test_daily_status_text_and_send(monkeypatch):
     c.put("/settings/notify", json={"events": {"daily_status": False}}, headers=h)
     with SessionLocal() as s:
         assert nt.send_daily_status(s, uid, kst_today()) is False
+
+
+def test_connection_check_turns_notifications_on(monkeypatch):
+    """운영 사례(2026-09-09): 토큰·채팅 ID·항목은 있는데 enabled 키가 없어 한 통도 안 감 → 연결 확인 성공 시 켠다."""
+    c, h = _client()
+    c.put("/settings/notify", json={"bot_token": TOKEN, "chat_id": "8580122820", "events": {"autoexec": True}}, headers=h)
+    g = c.get("/settings/notify", headers=h).json()
+    assert g["enabled"] is False and g["ready"] is False and g["chat_id"] == "8580122820"
+    sent = _capture(monkeypatch)
+    r = c.post("/settings/notify/test", headers=h).json()
+    assert r["ok"] is True and r["enabled_now"] is True and len(sent) == 1
+    g2 = c.get("/settings/notify", headers=h).json()
+    assert g2["enabled"] is True and g2["ready"] is True and g2["last"]["sent_at"]

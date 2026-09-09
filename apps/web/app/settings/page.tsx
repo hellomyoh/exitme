@@ -633,10 +633,10 @@ function NotifySettings() {
   async function test() {
     setBusy(true); setMsg("연결 확인 중…");
     const r = await apiFetch("/settings/notify/test", { method: "POST" });
-    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; chat_id?: string; chat_title?: string | null; detail?: string };
+    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; chat_id?: string; chat_title?: string | null; detail?: string; enabled_now?: boolean };
     setBusy(false);
     if (!r.ok) { setMsg(j.detail ?? `연결 확인 실패 (${r.status})`); return; }
-    setMsg(`✅ 테스트 메시지를 보냈습니다 — 채팅 ${j.chat_title ? `${j.chat_title} ` : ""}(${j.chat_id})`);
+    setMsg(`✅ 테스트 메시지를 보냈습니다 — 채팅 ${j.chat_title ? `${j.chat_title} ` : ""}(${j.chat_id})${j.enabled_now ? " · 알림 보내기를 켰습니다" : ""}`);
     void load();
   }
   function toggleEvent(k: string, v: boolean) {
@@ -653,6 +653,13 @@ function NotifySettings() {
             {cfg.ready ? "알림 켜짐" : cfg.has_token && cfg.chat_id ? "연결됨 · 알림 꺼짐" : "미연결"}</span>}>
           텔레그램 봇 연결 <span className="normal-case text-faint">· 매매 결과·현황을 텔레그램으로 받습니다</span>
         </CardTitle>
+        {/* 연결은 됐는데 '알림 보내기'가 꺼진 상태 — 한 통도 가지 않으면서 로그도 없는 유일한 경우라 크게 보인다 (2026-09-09 운영 사례) */}
+        {cfg.has_token && cfg.chat_id && !cfg.enabled && (
+          <p className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-[13px] text-warn">
+            <span>⚠️ 봇은 연결됐지만 <b>알림 보내기가 꺼져 있어</b> 아무 메시지도 가지 않습니다.</span>
+            <button className="btn !py-1" disabled={busy} onClick={() => void save({ enabled: true }, "알림을 켰습니다")}>지금 켜기</button>
+          </p>
+        )}
         {/* 마지막 전송 결과 — "안 오는데 왜?" 를 여기서 바로 (2026-09-09). 실패 사유는 서버가 사람 말로 바꿔 준다(네트워크 차단·토큰 401 등) */}
         {cfg.last && (cfg.last.sent_at || cfg.last.error) && (
           <p className={`mb-3 rounded-md px-3 py-2 text-[12.5px] ${cfg.last.error ? "border border-down/40 bg-down/5 text-down" : "bg-inset text-muted"}`}>

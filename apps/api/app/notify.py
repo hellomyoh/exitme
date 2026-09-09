@@ -175,8 +175,14 @@ def test_notify(user_id: int = Depends(current_user_id), session: Session = Depe
         session.commit()
         raise HTTPException(status_code=502, detail=f"테스트 메시지 실패 — {_humanize(exc)}")
     _record_last(row, True)
+    # 연결 확인까지 했는데 '알림 보내기'가 꺼져 있어 한 통도 안 가던 사례(2026-09-09 운영: enabled 키 자체가 없었음) — 성공 시 켠다
+    cfg = dict(row.notify or {})
+    enabled_now = not cfg.get("enabled")
+    if enabled_now:
+        cfg["enabled"] = True
+        row.notify = cfg
     session.commit()
-    return {"ok": True, "chat_id": chat_id, "chat_title": title}
+    return {"ok": True, "chat_id": chat_id, "chat_title": title, "enabled_now": enabled_now}
 
 
 def _pick_chat(updates: list[dict]) -> dict | None:
