@@ -438,3 +438,33 @@ def test_intraday_retry_replaces_failed_and_skipped_lines(monkeypatch):
             ae.retry_auto_exec(s, pf2, now=datetime.combine(today, time(10, 5), tzinfo=KST), client_factory=lambda cred: fake2,
                                sleep_fn=lambda _s: None, plan_fn=_plan(LINES[:3], today, 97500.0))
     assert ei3.value.status_code == 409 and "정지" in ei3.value.detail
+
+
+def test_late_run_limit_blocks_catch_up_execution():
+    """지연 상한 (2026-09-09 사고: 낡은 beat 상태 파일로 배포마다 지난 크론 재실행) — 09:30 을 넘겨 도착한 09:01/09:15 실행은
+    발주하지 않고 'late' 로 기록·오류 로그. 오늘 이미 돈 포트는 already-ran. 상한을 끄면(None) 종전처럼 돈다."""
+    import app.autoexec as ae
+
+    assert ae.LATE_RUN_LIMIT == time(9, 30)
+    c, h = _client()
+    today = datetime.now(KST).date()
+    pid, aid = _setup_portfolio(c, h, today, deposit_krw=9_000_000)
+    c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True}, headers=h)
+    fake = FakeKis(open_px=100000, deposit=9_000_000, holdings={}, psbl_cash=9_000_000)
+    rec, _ = _run(fake, aid, today, LINES[:2], at=(11, 0))
+    assert rec["note"] == "late" and "지연 상한 09:30 초과" in rec["reason"] and fake.placed == []
+    st, view = _orders(c, h, pid, today)
+    assert st == {} and view["state"]["code"] == "ran" and view["state"]["label"] == "발주 안 함 — 09:30 지연 상한 초과" and view["retryable"] == 0
+    ev = [i for i in c.get("/logs?type=event", headers=h).json()["items"] if i["kind"] == "autoexec.run"]
+    assert ev and ev[0]["level"] == "error" and "지연 상한" in ev[0]["text"]
+    rec2, _ = _run(fake, aid, today, LINES[:2], at=(11, 5), trigger="watchdog")
+    assert rec2["error"] == "already-ran" and fake.placed == []
+    # 상한 없음(테스트·수동 재실행) — 다른 포트에서 11:00 에도 발주
+    c2, h2 = _client()
+    pid2, aid2 = _setup_portfolio(c2, h2, today, deposit_krw=9_000_000)
+    c2.put(f"/settings/auto-exec/accounts/{aid2}", json={"buy": True}, headers=h2)
+    fake2 = FakeKis(open_px=100000, deposit=9_000_000, holdings={}, psbl_cash=9_000_000)
+    with SessionLocal() as s:
+        out = ae.run_auto_execution(s, now=datetime.combine(today, time(11, 0), tzinfo=KST), client_factory=lambda cred: fake2,
+                                    sleep_fn=lambda _s: None, plan_fn=_plan(LINES[:2], today), only_credential_ids={aid2}, late_limit=None)
+    assert out["portfolios"][0]["submitted"] == 2 and len(fake2.placed) == 2

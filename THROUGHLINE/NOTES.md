@@ -86,3 +86,11 @@
 
 - 개발 Mac(사내망)과 그 위 컨테이너에서 `api.telegram.org`·`core.telegram.org`·`t.me` 모두 **TCP 연결은 되나 TLS ClientHello 직후 Connection reset** (curl exit 35, requests `SSLEOFError UNEXPECTED_EOF_WHILE_READING`, verify=False 도 동일, google.com 은 정상) — 인증서 문제가 아니라 네트워크(DPI) 차단이다. 이 환경에서는 봇 토큰 검증·전송 테스트가 불가능하고, 운영 서버가 같은 망이면 알림도 같은 이유로 실패한다. 앱은 실패를 `notify.failed`(매매 로그 "알림 전송 실패")와 설정 › 알림의 "마지막 전송 실패" 줄로 드러낸다(0.14.2).
 - 서버 쪽 확인 명령: `docker compose exec api python -c "import requests;print(requests.get('https://api.telegram.org/bot<토큰>/getMe',timeout=8).text)"` — `{"ok":true,...}` 면 망·토큰 정상, SSL/Connection 오류면 차단.
+
+## Celery beat 상태 파일 이미지 혼입 — 배포마다 지난 크론 재실행 (2026-09-09 사고)
+
+- 증상: 배포(`up -d --build`) 직후 텔레그램 일일 현황이 다시 오고 일봉 수집이 다시 돌았다. 서버 로그: `beat: Starting...` 바로 다음 줄에 `Sending due task daily-ingest`·`daily-snapshot`.
+- 원인: beat 는 작업 디렉터리에 `celerybeat-schedule`(shelve, 항목별 last_run_at)을 쓴다. 서버가 초기에 dev override(바인드 마운트)로 돌던 시기에 이 파일이 `~/exitme/apps/api/` 에 생겼고(gitignore 라 pull 에도 남음), Dockerfile 이 `COPY . .` 이고 `.dockerignore` 가 없어 **배포마다 이미지에 복사**됐다. 새 컨테이너의 beat 가 낡은 last_run_at 을 읽고 "지난 크론"으로 판정해 기동 즉시 실행(Celery 5.4 `crontab.is_due` — `beat_cron_starting_deadline` 미설정이면 기한 없이 따라잡기). 즉시 실행된 두 항목이 정확히 9월 5일 이전부터 있던 항목(daily-ingest·daily-snapshot)이라 파일 시점이 그 이전임을 알 수 있었다. 무인 실행 항목은 파일에 없어 발주는 유발되지 않았지만, 서버에서 바인드 마운트로 한 번이라도 다시 돌면 배포마다 09:01 발주가 되살아날 수 있는 구조였다.
+- 조치(0.15.0): `apps/api/.dockerignore`(`celerybeat-schedule*` 등) · beat 를 `-s /var/lib/celery/celerybeat-schedule` 로(코드 밖, Dockerfile mkdir) · `beat_cron_starting_deadline=3600` · 09:01/09:15 실행 `LATE_RUN_LIMIT` 09:30(넘으면 'late' 기록만) · 일일 현황 하루 1회(`notify.daily_status_sent`) · deploy.sh 가 빌드 전 `apps/api/celerybeat-schedule*` 삭제.
+- 확인 명령: `docker run --rm --entrypoint sh stocklab-api -c 'ls -la /srv/app/celerybeat-schedule*'` → 없어야 정상. 로컬 dev 는 바인드 마운트라 `apps/api/celerybeat-schedule` 이 계속 생기지만 `-s` 로 읽지 않는다(지워도 무해).
+- 일반 원칙: 프로세스 상태 파일(shelve·pid·캐시)은 빌드 컨텍스트에 두지 않는다. 컨테이너 재시작(`restart`)은 파일시스템을 유지하고 재생성(`up --build`)은 버린다 — 따라잡기 동작은 그 차이에 좌우된다.

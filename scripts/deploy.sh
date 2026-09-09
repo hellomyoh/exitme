@@ -198,6 +198,13 @@ if [[ -n "$PREV_VER" && $FORCE -eq 0 ]]; then
   esac
 fi
 
+# 1-2) 빌드 컨텍스트 정리 (2026-09-09 사고) — 예전 바인드 마운트 시절 apps/api 에 남은 celerybeat-schedule 이 COPY 로 이미지에 들어가
+#      새 컨테이너의 beat 가 지난 크론을 배포마다 재실행했다. .dockerignore 로도 막지만 저장소 사본도 지운다(멱등).
+if compgen -G "apps/api/celerybeat-schedule*" >/dev/null; then
+  log "apps/api/celerybeat-schedule* 삭제 (beat 상태 파일은 컨테이너 /var/lib/celery 에만 둔다)"
+  rm -f apps/api/celerybeat-schedule*
+fi
+
 # 2) 이미지 재빌드 + 기동 (변경된 서비스만 재생성)
 if [[ $BUILD -eq 1 ]]; then
   log "docker compose up -d --build (api/worker/scheduler/web 재빌드)"

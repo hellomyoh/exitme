@@ -27,6 +27,9 @@ celery_app.conf.update(
     },
     task_acks_late=True,
     timezone="Asia/Seoul",
+    # 지난 크론 따라잡기 상한 (2026-09-09 사고): beat 가 멈춘 사이 지나간 크론은 1시간 안이면 기동 즉시 실행(짧은 재시작·배포에 걸친 배치 보전),
+    # 그 이상이면 건너뛴다 — 낡은 상태 파일이나 긴 중단 뒤에 하루치 배치가 한꺼번에 도는 일을 막는다. 09:01 무인 실행은 별도로 09:30 상한(autoexec.LATE_RUN_LIMIT)
+    beat_cron_starting_deadline=3600,
     beat_schedule={
         # 장 마감 후 일봉 수집 — KST 16:05 (feature-market-data §6: 20분 내 완료 목표)
         "daily-ingest": {

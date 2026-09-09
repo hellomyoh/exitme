@@ -139,3 +139,46 @@ def test_trading_journal_tool_overview_search_detail_and_scope(monkeypatch):
         uid2 = s.get(ManualJournal, jid_other).user_id
     assert [j["name"] for j in _run_tool("trading_journal", {}, uid2)["journals"]] == ["남의일지"]
     assert "error" in _run_tool("trading_journal", {"journal_id": jid}, uid2)
+
+
+def test_trading_journal_overview_includes_valuation_and_day_change(monkeypatch):
+    """챗봇 매매일지 요약에 현재가 평가 + 전일 대비 (2026-09-09 사용자 지적 "수량과 현재가를 참고해 계산을 못 한다") —
+    DB 종가로 평가액·평가손익·평가수익률, 전일 종가 대비 하루 변동, 일지 합계 totals."""
+    import uuid as _uuid
+
+    import app.mjournal as mj
+    from app.chat import _run_tool
+    from app.dashboard import kst_today
+    from app.models import ManualJournal
+    from app.services.ingest import get_or_create_instrument, upsert_daily_bars
+
+    class _NoKis:
+        def fetch_daily(self, code, a, b, org_price=True):
+            return []
+
+    monkeypatch.setattr(mj, "_kis_for_bars", lambda session, j: _NoKis())
+    mj._PRICE_CACHE.clear()
+    mj._CLOSE_MISS.clear()
+    today = kst_today()
+    code = "T" + _uuid.uuid4().hex[:5].upper()
+    with SessionLocal() as s:
+        inst = get_or_create_instrument(s, code, f"테스트종목{code}", "KOSPI", type_="STOCK")
+        upsert_daily_bars(s, inst.id, [{"trade_date": today - timedelta(days=1), "open": 10_000, "high": 10_000, "low": 10_000, "close": 10_000, "volume": 1},
+                                       {"trade_date": today, "open": 11_000, "high": 11_000, "low": 11_000, "close": 11_000, "volume": 1}], source="kis")
+        s.commit()
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "평가일지", "symbol": f"테스트종목{code}", "fee_rate": 0.0, "tax_rate": 0.0}, headers=h).json()["id"]
+    assert c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 10, "price": 9_000, "trade_date": (today - timedelta(days=5)).isoformat(),
+                                                    "code": code}, headers=h).status_code == 201
+    with SessionLocal() as s:
+        uid = s.get(ManualJournal, jid).user_id
+    out = _run_tool("trading_journal", {}, uid)
+    j = out["journals"][0]
+    hd = j["holdings"][0]
+    assert hd["qty"] == 10 and hd["price"] == 11_000 and hd["price_source"] == "종가" and hd["eval"] == 110_000 and hd["unrealized"] == 20_000
+    assert abs(hd["unrealized_pct"] - 20_000 / 90_000) < 1e-9 and hd["prev_close"] == 10_000 and hd["day_change"] == 10_000 and abs(hd["day_change_pct"] - 0.1) < 1e-9
+    sm = j["summary"]
+    assert sm["eval_total"] == 110_000 and sm["unrealized_total"] == 20_000 and sm["priced"] is True and sm["unpriced"] == []
+    assert sm["prev_eval"] == 100_000 and sm["day_change"] == 10_000 and abs(sm["day_change_pct"] - 0.1) < 1e-9 and sm["day_change_asof"] == today.isoformat()
+    assert out["totals"]["eval_total"] == 110_000 and out["totals"]["day_change"] == 10_000 and abs(out["totals"]["day_change_pct"] - 0.1) < 1e-9
+    assert "day_change_pct" in out["note"] and "unrealized_pct" in out["note"]

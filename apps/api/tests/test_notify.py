@@ -225,3 +225,31 @@ def test_daily_status_change_excludes_cash_flows():
         s.commit()
         text = nt.daily_status_text(s, uid, today)
     assert "총자산 4,000,000원" in text and "(전일 대비 +0원, +0.00% · 입출금 +1,000,000원 제외)" in text
+
+
+def test_daily_status_sent_once_per_day(monkeypatch):
+    """일일 현황은 하루 1회 (2026-09-09: 스케줄러 따라잡기로 16:40 배치가 재실행돼 중복 발송) — 같은 날 재호출은 생략, 다음 날은 다시 보낸다."""
+    import app.notify as nt
+    from app.dashboard import compute_user_snapshot, kst_today
+    from app.models import AssetSnapshot
+
+    c, h = _client()
+    pid = c.post("/portfolios", json={"name": "하루한번", "market": "KR", "code_200": "069500"}, headers=h).json()["id"]
+    uid = _uid(pid)
+    today = kst_today()
+    c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 2_000_000,
+                               "executed_at": (today - timedelta(days=1)).isoformat() + "T15:30:00+09:00"}, headers=h)
+    c.put("/settings/notify", json={"bot_token": TOKEN, "chat_id": "9", "enabled": True}, headers=h)
+    sent = _capture(monkeypatch)
+    with SessionLocal() as s:
+        compute_user_snapshot(s, uid, today)
+        s.commit()
+        assert nt.send_daily_status(s, uid, today) is True
+        s.commit()
+        assert nt.send_daily_status(s, uid, today) is False      # 같은 날 재실행 → 생략
+        assert nt.send_daily_status(s, uid, today) is False
+        s.add(AssetSnapshot(user_id=uid, snap_date=today + timedelta(days=1), total=2_000_000, stock=0, cash=2_000_000, other=0))
+        s.commit()
+        assert nt.send_daily_status(s, uid, today + timedelta(days=1)) is True   # 다음 날은 다시
+    assert len(sent) == 2 and all("일일 현황" in x[2] for x in sent)
+    assert c.get("/settings/notify", headers=h).json()["enabled"] is True

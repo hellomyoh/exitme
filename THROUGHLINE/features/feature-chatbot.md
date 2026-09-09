@@ -19,7 +19,7 @@ web ChatBot ── POST /chat {messages[≤40]} ──▶ api chat.py
 - **도구는 전부 읽기 전용 + user_id 스코프** (쓰기 도구 금지 — LLM 이 원장·설정을 변경할 수 없음):
   list_portfolios · portfolio_summary · portfolio_journal(실전매매 포트의 일자별 계획 vs 체결) · order_sheet(실주문표 디스패치와 동일:
   US→TF, KR→RAVG) · list_backtests · algorithm_params · price_history · trading_journal(수동 매매일지 — 인자 없음 = 전체 요약 + 최근 기록,
-  `q` 종목명·코드·일지 이름 검색, `days` 최근 N일, `journal_id` 상세; `mjournal.journals_overview`/`filter_journal_rows`, 2026-09-09 복구 —
+  `q` 종목명·코드·일지 이름 검색, `days` 최근 N일, `journal_id` 상세; 요약에 현재가 평가(`enrich_valuation`)와 전일 종가 대비 하루 변동(`add_day_change`: holdings[].prev_close/day_change, summary.day_change_pct, totals) 포함 — "어제와 오늘 비교"·평가수익률 질문에 답한다; `mjournal.journals_overview`/`filter_journal_rows`, 2026-09-09 복구 —
   PR #86 이 화면 합산 뷰와 함께 이 함수를 지운 뒤 도구가 ImportError 로 실패했었다) · auto_exec_status · recent_logs. 기존 엔드포인트 함수 재사용.
 - **오류 격리**: 도구 실패는 `{"error":…}` 로 모델에 전달(대화 지속), 업스트림 실패는 SSE error
   이벤트로 사용자에게 표시. 도구 루프 상한 6회.
