@@ -628,3 +628,10 @@
 - 작업 내용: `quotes.py` `append_sample/read_series/backfill_from_minutes` + `GET /quotes/series`(인증, 오늘·빈 시계열이면 1분봉 1회 백필·10분 잠금) · `worker.poll_quotes` 누적 한 줄 · 웹 `components/livechart.tsx`(lightweight-charts 라인 + 점선 가격선: 그리드/초기 진입 빨강·익절 파랑·갭 기준 회색, KST 시각축, 최근 60분 따라가기/하루 전체, 상태 배지 실시간/폴링, 줄별 거리 % 패널·가장 가까운 선 강조, WS 실패 시 15초 폴링) · 실전매매 주문표 아래 카드(국내·주문표 있을 때). 문서: feature-portfolio §5/§8, feature-market-data, user-guide. VERSION 0.14.0(마이너 — 새 화면).
 - 테스트 결과: `tests/test_quotes_series.py` 3건(누적·정렬·상한 / 백필 1회 잠금 / 엔드포인트 인증·오늘 조회) 통과, 전체 `pytest -q tests/` **254 passed + 1 flake**(`test_ws_quotes::test_cached_quote_sent_on_subscribe` — 공유 Redis 타이밍, NOTES 기록 항목, 단독 실행 통과), `tsc --noEmit` 무오류. 로컬 워커 재시작 뒤 `quotes:series:102110:2026-09-09` 에 10초 점이 쌓이는 것 확인. 화면 확인은 배포 후(로컬 web 컨테이너 결함).
 - Git commit: feat: live price vs order-line chart on the order sheet (Redis series from the 10s poller, WS stream, distance panel)
+
+## [2026-09-09] fix | 실시간 그래프 — 주문선이 축척 밖이라 보이지 않던 것 + 터치 = 체결 표시 (사용자 지적)
+
+- 원인: lightweight-charts 자동 축척이 현재가 범위(±0.3%)만 잡아 점선(익절 +3.4%, 그리드 −4.5% …)이 화면 밖에 있었다.
+- 작업 내용: `autoscaleInfoProvider` 로 축 범위에 주문선 포함 — 기본 '가까운 주문선'(현재가 위 첫 매도선·아래 첫 매수선), '모든 주문선', '가격만' 토글. 터치 판정(표본 ≤ 매수선 / ≥ 매도선) → 첫 터치 시각 ● 마커(`createSeriesMarkers`), 선 실선 `✓체결`, 거리 패널 `✓ 터치 — 체결 (시각)`; 09:01 발주 행 상태가 filled/partial 이면 `체결 확인`. 각주에 "10초 표본 사이 체결은 놓칠 수 있어 확정은 15:45". VERSION 0.14.1.
+- 테스트 결과: `tsc --noEmit` 무오류(웹만). 화면 확인은 배포 후.
+- Git commit: fix: live chart includes order lines in the price scale; touch = fill markers and panel state
