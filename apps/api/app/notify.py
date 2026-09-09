@@ -75,7 +75,24 @@ def user_notify(session: Session, user_id: int) -> dict:
     token = (row.telegram_bot_token if row else None) or ""
     return {"enabled": bool(cfg.get("enabled", False)), "has_token": bool(token),
             "token_masked": _mask(token) if token else "", "chat_id": (row.telegram_chat_id if row else None) or "",
-            "events": events, "ready": bool(cfg.get("enabled", False) and token and (row.telegram_chat_id if row else ""))}
+            "events": events, "ready": bool(cfg.get("enabled", False) and token and (row.telegram_chat_id if row else "")),
+            # 마지막 전송 성공/실패 — "안 오는데 왜?" 를 설정 화면에서 바로 보게 (2026-09-09)
+            "last": dict(cfg.get("last") or {})}
+
+
+def _record_last(row: UserSettings, ok: bool, err: str | None = None) -> None:
+    """row.notify.last 에 마지막 전송 결과 기록 (commit 은 호출자). JSONB 변경 감지 — 재할당."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone(timedelta(hours=9))).isoformat(timespec="seconds")
+    cfg = dict(row.notify or {})
+    last = dict(cfg.get("last") or {})
+    if ok:
+        last.update({"sent_at": now, "error": None, "error_at": None})
+    else:
+        last.update({"error": (err or "")[:200], "error_at": now})
+    cfg["last"] = last
+    row.notify = cfg
 
 
 def _mask(s: str) -> str:
@@ -142,6 +159,8 @@ def test_notify(user_id: int = Depends(current_user_id), session: Session = Depe
         try:
             updates = _http_get_updates(token)
         except Exception as exc:  # noqa: BLE001
+            _record_last(row, False, _humanize(exc))
+            session.commit()
             raise HTTPException(status_code=502, detail=f"텔레그램 조회 실패 — {_humanize(exc)}")
         chat = _pick_chat(updates)
         if chat is None:
@@ -152,7 +171,11 @@ def test_notify(user_id: int = Depends(current_user_id), session: Session = Depe
     try:
         _http_send(token, chat_id, "✅ ExitMe 텔레그램 연결 확인 — 설정에서 체크한 항목의 알림이 이 채팅으로 옵니다.")
     except Exception as exc:  # noqa: BLE001
+        _record_last(row, False, _humanize(exc))
+        session.commit()
         raise HTTPException(status_code=502, detail=f"테스트 메시지 실패 — {_humanize(exc)}")
+    _record_last(row, True)
+    session.commit()
     return {"ok": True, "chat_id": chat_id, "chat_title": title}
 
 
@@ -174,6 +197,10 @@ def _humanize(exc: Exception) -> str:
         return "채팅을 찾을 수 없습니다 — 채팅 ID 를 비우고 봇에게 메시지를 보낸 뒤 다시 연결 확인"
     if "403" in s:
         return "봇이 차단되었거나 채팅에 없습니다 (403)"
+    if any(k in s for k in ("SSL", "EOF", "Connection reset", "ConnectionError", "Max retries", "NameResolution", "NewConnectionError")):
+        return "텔레그램 서버(api.telegram.org)에 연결할 수 없습니다 — 서버 네트워크에서 차단(방화벽·사내망)된 경우가 대부분입니다. 서버에서 접속 확인 필요"
+    if "timed out" in s.lower() or "Timeout" in s:
+        return "텔레그램 응답 시간 초과(8초) — 서버 네트워크 확인"
     return s[:160]
 
 
@@ -213,9 +240,11 @@ def maybe_notify(session: Session, user_id: int, category: str | None, text: str
     head = f"{LEVEL_EMOJI.get(level, 'ℹ️')} [ExitMe{' · ' + portfolio_name if portfolio_name else ''}] "
     try:
         _http_send(row.telegram_bot_token, row.telegram_chat_id, head + text)
+        _record_last(row, True)
         return True
     except Exception as exc:  # noqa: BLE001 — 알림 장애가 본 작업을 막지 않게
         logger.warning("telegram notify failed user=%s cat=%s: %s", user_id, category, exc)
+        _record_last(row, False, _humanize(exc))
         try:
             from app.activity import log_event
 

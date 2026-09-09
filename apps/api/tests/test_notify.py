@@ -110,6 +110,11 @@ def test_event_hook_filters_by_category_and_logs_failures(monkeypatch):
         s.commit()
     ev = [i for i in c.get("/logs?type=event&level=warn", headers=h).json()["items"] if i["kind"] == "notify.failed"]
     assert len(ev) == 1 and "올바르지 않습니다" in ev[0]["text"]
+    # 설정 화면용 마지막 결과 — 성공 시각은 남고 실패 사유·시각이 붙는다 (2026-09-09)
+    last = c.get("/settings/notify", headers=h).json()["last"]
+    assert last["sent_at"] and "올바르지 않습니다" in last["error"] and last["error_at"]
+    # 연결 오류는 사람 말로
+    assert "연결할 수 없습니다" in nt._humanize(RuntimeError("HTTPSConnectionPool(host='api.telegram.org', port=443): Max retries exceeded (Caused by SSLError(SSLEOFError(8, 'EOF occurred')))"))
 
 
 def test_trade_register_and_delete_notify(monkeypatch):

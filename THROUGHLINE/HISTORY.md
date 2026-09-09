@@ -635,3 +635,10 @@
 - 작업 내용: `autoscaleInfoProvider` 로 축 범위에 주문선 포함 — 기본 '가까운 주문선'(현재가 위 첫 매도선·아래 첫 매수선), '모든 주문선', '가격만' 토글. 터치 판정(표본 ≤ 매수선 / ≥ 매도선) → 첫 터치 시각 ● 마커(`createSeriesMarkers`), 선 실선 `✓체결`, 거리 패널 `✓ 터치 — 체결 (시각)`; 09:01 발주 행 상태가 filled/partial 이면 `체결 확인`. 각주에 "10초 표본 사이 체결은 놓칠 수 있어 확정은 15:45". VERSION 0.14.1.
 - 테스트 결과: `tsc --noEmit` 무오류(웹만). 화면 확인은 배포 후.
 - Git commit: fix: live chart includes order lines in the price scale; touch = fill markers and panel state
+
+## [2026-09-09] fix | 텔레그램 알림 — 실패를 화면에 드러내기 (사용자 보고 "메시지가 안 온다", 토큰 실측)
+
+- 분석: 개발 환경(사내망)에서는 텔레그램 API 가 TLS 단계에서 차단(Connection reset)돼 토큰 검증·전송 테스트가 불가능했다(NOTES). 앱 로직상 조용히 안 보내는 경우 3가지 — ① 설정 미완(켬·토큰·채팅 ID 중 하나 빠짐 = `ready` false) ② 항목 미체크(주문·체결 등록은 기본 꺼짐) ③ 전송 실패(매매 로그 `notify.failed` 로만 남고 설정 화면엔 표시 없음). 운영 서버가 같은 망이면 ③ 이 매일 남는다.
+- 작업 내용: `notify.py` — 마지막 전송 성공/실패(시각·사유)를 `user_settings.notify.last` 에 기록(자동 발송·연결 확인 모두), `GET /settings/notify` 의 `last`; `_humanize` 에 연결·TLS·시간 초과 사유("텔레그램 서버에 연결할 수 없습니다 — 서버 네트워크 차단 …"). 설정 › 알림 상단에 "✓ 마지막 전송 성공 시각" / "⚠️ 마지막 전송 실패 시각 — 사유" 줄. VERSION 0.14.2.
+- 테스트 결과: `test_notify` 갱신(실패 뒤 `last.error`·`sent_at`, 연결 오류 문구) 통과 — `test_notify`·`test_activity` 8 passed, 18 warnings, `tsc --noEmit` 무오류.
+- Git commit: fix: surface the last Telegram send result and humanize network errors

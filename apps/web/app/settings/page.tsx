@@ -602,6 +602,7 @@ function AutoExecSettings() {
  *  발송 지점은 서버의 활동 로그(무인 실행·자동 승인·사전 갭 취소·정지·동기화·예수금 대조·주문), 거래 등록, 16:40 일일 현황. */
 type NotifyCfg = {
   enabled: boolean; has_token: boolean; token_masked: string; chat_id: string; ready: boolean; events: Record<string, boolean>;
+  last?: { sent_at?: string | null; error?: string | null; error_at?: string | null };
   categories: { key: string; label: string; desc: string; default: boolean }[];
 };
 function NotifySettings() {
@@ -652,6 +653,14 @@ function NotifySettings() {
             {cfg.ready ? "알림 켜짐" : cfg.has_token && cfg.chat_id ? "연결됨 · 알림 꺼짐" : "미연결"}</span>}>
           텔레그램 봇 연결 <span className="normal-case text-faint">· 매매 결과·현황을 텔레그램으로 받습니다</span>
         </CardTitle>
+        {/* 마지막 전송 결과 — "안 오는데 왜?" 를 여기서 바로 (2026-09-09). 실패 사유는 서버가 사람 말로 바꿔 준다(네트워크 차단·토큰 401 등) */}
+        {cfg.last && (cfg.last.sent_at || cfg.last.error) && (
+          <p className={`mb-3 rounded-md px-3 py-2 text-[12.5px] ${cfg.last.error ? "border border-down/40 bg-down/5 text-down" : "bg-inset text-muted"}`}>
+            {cfg.last.error
+              ? <>⚠️ 마지막 전송 실패 {cfg.last.error_at?.slice(5, 16).replace("T", " ")} — {cfg.last.error}{cfg.last.sent_at ? <span className="text-faint"> · 마지막 성공 {cfg.last.sent_at.slice(5, 16).replace("T", " ")}</span> : null}</>
+              : <>✓ 마지막 전송 성공 {cfg.last.sent_at?.slice(5, 16).replace("T", " ")}</>}
+          </p>
+        )}
         <ol className="mb-3 grid gap-1 text-[13px] leading-relaxed text-muted">
           <li>① 텔레그램에서 <b className="text-ink">@BotFather</b> 에게 <code>/newbot</code> 을 보내 봇을 만들고 토큰(예: <code>123456789:AAH…</code>)을 복사합니다.</li>
           <li>② 아래에 토큰을 붙여넣고 저장합니다. 토큰은 암호화되어 저장되고 화면에는 마스킹으로만 보입니다.</li>
