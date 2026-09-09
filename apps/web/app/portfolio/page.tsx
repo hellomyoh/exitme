@@ -1089,11 +1089,11 @@ function PortfolioPage() {
                           if (b.status === "partial") return <span className="font-semibold text-warn" title={b.message ?? ""}>◐ 일부 체결 {b.filled_qty}/{b.qty}</span>;
                           if (b.status === "unfilled") return <span className="text-faint" title={b.message ?? ""}>○ 미체결</span>;
                           if (b.status === "skipped_gap") return <span className="text-warn" title={b.message ?? ""}>⤫ 갭 취소 생략</span>;
-                          if (b.status === "skipped") return <span className="text-faint" title={b.message ?? ""}>생략{b.message ? ` — ${b.message.slice(0, 28)}` : ""}</span>;
+                          if (b.status === "skipped") return <span className="text-faint" title={b.message ?? ""}>생략{b.message ? ` — ${b.message.slice(0, 60)}${b.message.length > 60 ? "…" : ""}` : ""}</span>;
                           if (b.status === "cancelled") return <span className="text-faint" title={b.message ?? ""}>취소됨</span>;
                           if (b.status === "reserved") return <span className="text-muted" title={b.message ?? ""}>예약(구) #{b.rsvn_ord_seq}</span>;
                           if (b.status === "approved") return <span className="text-muted" title={b.message ?? ""}>승인(구)</span>;
-                          return <span className="text-down" title={b.message ?? ""}>✗ {b.status_ko}{b.message ? ` — ${b.message.slice(0, 40)}` : ""}</span>;
+                          return <span className="text-down" title={b.message ?? ""}>✗ {b.status_ko}{b.message ? ` — ${b.message.slice(0, 80)}${b.message.length > 80 ? "…" : ""}` : ""}</span>;
                         })()}
                       </td>
                     )}

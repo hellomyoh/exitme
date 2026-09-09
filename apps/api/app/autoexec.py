@@ -44,6 +44,9 @@ DAILY_BUY_CAP_PCT_DEFAULT = 0.0       # 하루 매수 총액 상한 — 총자�
 LIVE_AUTO = ("submitted", "partial")  # 증권사에 살아 있는 무인 주문
 HEARTBEAT_KEY = "autoexec:pipeline:heartbeat"   # beat → ingest 큐 → 워커 경로가 살아 있음을 60초마다 기록 (TTL 180초)
 HEARTBEAT_TTL = 180
+RUNNING_KEY = "autoexec:running"                 # 09:01 실행 중 표시 — 시세·예상 시가 폴링이 이 동안 KIS 호출을 양보한다 (2026-09-09 유량 사고)
+RUNNING_TTL = 180
+PORTFOLIO_GAP_SEC = 1.0                          # 포트 사이 간격 — 계좌가 같은 앱키를 쓰면 연속 호출이 한 초에 몰린다
 
 SIDE_KO = {"buy": "매수", "sell": "매도"}
 
@@ -416,6 +419,34 @@ def _acquire_day_lock(pf_id: int, today: date) -> bool:
         return True
 
 
+def set_running(on: bool) -> None:
+    """실행 중 플래그 (Redis). 폴링 태스크가 `is_running()` 으로 확인해 09:01 전후 KIS 호출을 건너뛴다."""
+    try:
+        import redis as sync_redis
+
+        from app.config import get_settings
+
+        r = sync_redis.from_url(get_settings().redis_url, decode_responses=True, socket_connect_timeout=1)
+        if on:
+            r.set(RUNNING_KEY, datetime.now(KST).isoformat(timespec="seconds"), ex=RUNNING_TTL)
+        else:
+            r.delete(RUNNING_KEY)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def is_running() -> bool:
+    try:
+        import redis as sync_redis
+
+        from app.config import get_settings
+
+        r = sync_redis.from_url(get_settings().redis_url, decode_responses=True, socket_connect_timeout=1)
+        return bool(r.get(RUNNING_KEY))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def touch_heartbeat() -> bool:
     """beat → 큐 → 워커 경로 하트비트 (60초 주기 태스크가 호출). 컨테이너 헬스체크가 TTL 안의 키를 확인한다."""
     try:
@@ -485,10 +516,15 @@ def run_auto_execution(session: Session, now: datetime | None = None, client_fac
     q = select(TradePortfolio).where(TradePortfolio.market == "KR")
     if only_credential_ids:
         q = q.where(TradePortfolio.broker_credential_id.in_(list(only_credential_ids)))
+    set_running(True)
+    first = True
     for pf in session.scalars(q.order_by(TradePortfolio.id)).all():
         rec: dict = {"portfolio_id": pf.id, "name": pf.name, "exec_day": None, "submitted": 0, "skipped_gap": 0,
                      "skipped": 0, "failed": 0, "note": None}
         try:
+            if not first:
+                sleep_fn(PORTFOLIO_GAP_SEC)   # 같은 앱키의 연속 호출이 한 초에 몰리지 않게 (2026-09-09)
+            first = False
             _execute_portfolio(session, pf, today, now, client_factory, sleep_fn, plan_fn, rec, trigger)
             if rec.get("error") not in ("already-ran", "locked"):
                 _log_run(session, pf, rec, now, trigger)
@@ -507,6 +543,7 @@ def run_auto_execution(session: Session, now: datetime | None = None, client_fac
             except Exception:  # noqa: BLE001
                 session.rollback()
         out["portfolios"].append(rec)
+    set_running(False)
     return out
 
 
