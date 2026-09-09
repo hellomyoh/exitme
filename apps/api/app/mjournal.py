@@ -170,6 +170,55 @@ def _compute(j: ManualJournal, entries: list[ManualJournalEntry]) -> dict:
     }
 
 
+def filter_journal_rows(rows: list[dict], q: str | None = None, days: int | None = None) -> list[dict]:
+    """기록 검색 — q: 종목명·종목코드 부분 일치(공백·대소문자 무시), days: 최근 N일(매도 행은 매도일, 매수 행은 매수일 기준)."""
+    qn = _norm(q) if q else ""
+    since = (datetime.now(KST).date() - timedelta(days=int(days))).isoformat() if days else None
+    out = []
+    for r in rows:
+        d = r.get("sell_date") or r.get("buy_date")
+        if since and d and d < since:
+            continue
+        if qn and not (qn in _norm(r.get("symbol") or "") or qn in _norm(r.get("code") or "")):
+            continue
+        out.append(r)
+    return out
+
+
+def journals_overview(user_id: int, session: Session, q: str | None = None, days: int | None = None, limit: int = 50) -> dict:
+    """챗봇 도구 `trading_journal` 의 전체 요약 + 기록 검색 (읽기 전용, 사용자 스코프).
+
+    일지별 보유(종목·수량·평단·원가·실현손익)와 합계, 그리고 전 일지의 기록을 최신순으로(q·days 로 걸러) limit 건.
+    화면의 합산 뷰(/mjournals/overview)는 PR #86 에서 일지 간 분리 지시로 제거됐는데 챗봇 도구가 이 함수를 계속 import 해
+    ImportError 로 매매일지 조회가 통째로 실패했다(2026-09-09 사용자 보고). 화면과 무관한 챗봇 전용 조회로 복구한다.
+    """
+    qn = _norm(q) if q else ""
+    journals, entries_out = [], []
+    for j in session.scalars(select(ManualJournal).where(ManualJournal.user_id == user_id).order_by(ManualJournal.id)).all():
+        entries = session.scalars(select(ManualJournalEntry).where(ManualJournalEntry.journal_id == j.id)).all()
+        c = _compute(j, entries)
+        jmatch = bool(qn) and qn in _norm(j.name)   # 일지 이름 일치 → 그 일지 전체 기록. 종목은 행 단위로(기본 종목도 행 symbol 에 들어 있다)
+        rows = c["rows"] if jmatch else filter_journal_rows(c["rows"], q, None)
+        rows = filter_journal_rows(rows, None, days)
+        if qn and not jmatch and not rows:
+            continue   # 검색어와 무관한 일지는 생략
+        linked = _linked_out(session, j)
+        journals.append({"id": j.id, "name": j.name, "symbol": j.symbol, "broker": j.broker,
+                         "closed": j.closed_at is not None, "linked_account": linked["label"] if linked else None,
+                         "entries": len(entries),
+                         "holdings": [{k: h[k] for k in ("symbol", "qty", "avg_price", "cost", "realized")} for h in c["holdings"]],
+                         "summary": c["summary"]})
+        for r in rows:
+            entries_out.append({"journal_id": j.id, "journal": j.name, "date": r.get("sell_date") or r.get("buy_date"),
+                                "side": r["side"], "symbol": r["symbol"], "code": r.get("code"), "qty": r["qty"], "price": r["price"],
+                                "amount": r["amount"], "realized": r["realized"], "return_pct": r["return_pct"],
+                                "hold_days": r["hold_days"], "reason": r["reason"], "source": r["source"]})
+    entries_out.sort(key=lambda x: (x["date"] or "", x["journal_id"]), reverse=True)
+    return {"journals": journals, "entries": entries_out[:max(1, int(limit))], "entries_total": len(entries_out),
+            "q": q, "days": days,
+            "note": "매매일지 = 왼쪽 메뉴 '매매일지'의 수동 주식 기록(전략 무관). 실전매매 포트의 일자별 계획·체결은 portfolio_journal."}
+
+
 @router.get("/mjournals/{jid}")
 def get_journal(jid: int, user_id: int = Depends(current_user_id),
                 session: Session = Depends(get_session)) -> dict:

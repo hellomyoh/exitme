@@ -198,3 +198,47 @@ def test_post_close_sync_records_cash_check(monkeypatch):
     assert bk["cash_check"]["diff"] == -20_000
     assert c.get(f"/portfolio/summary?portfolio_id={pid}", headers=h).json()["cash"] == 1_000_000   # 원장 불변
     assert c.get(f"/portfolio/{pid}/auto-exec", headers=h).json()["paused"] is False                 # 정지 없음
+
+
+@db
+def test_post_close_message_counts_today_and_quiet_retry(monkeypatch):
+    """장 마감 동기화 문구 (2026-09-09 사용자 지적 "오늘 체결이 없는데 체결 1건 조회") — 조회 창(어제~오늘)의 어제 건은 '어제분 n건'으로 구분하고
+    오늘분만 '오늘 체결'. 17:10 재시도(retry=True)는 신규 등록·상태 갱신·경고·오류가 없으면 로그만 남기고 알림은 보내지 않는다."""
+    import app.broker as br
+    import app.notify as nt
+    from app.services.kis_client import Execution
+
+    yesterday = datetime.now(KST).date() - timedelta(days=1)
+
+    class FakeExec(FakeBal):
+        def fetch_executions(self, start, end, only_filled=True):
+            return [Execution(order_no="0001", trade_date=yesterday, code="069500", side="buy", filled_qty=1, avg_price=10_000,
+                              order_qty=1, remain_qty=0, name="KODEX 200")]
+
+    c, h = _client()
+    a = _acct(c, h)
+    pid = c.post("/portfolios", json={"name": "문구", "market": "KR", "code_200": "069500", "credential_id": a["id"]}, headers=h).json()["id"]
+    c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 1_000_000,
+                               "executed_at": (yesterday - timedelta(days=1)).isoformat() + "T15:30:00+09:00"}, headers=h)
+    monkeypatch.setattr(br, "_client", lambda cred: FakeExec(990_000, 990_000, {"069500": (1, 10_000)}))   # 체결 뒤 원장 현금 990,000 = 계좌
+    sent_all: list[tuple] = []
+    monkeypatch.setattr(nt, "notify_event", lambda s, uid, kind, text, level, pf_id: sent_all.append((kind, text, pf_id)) or True)
+    sent = lambda: [(k, t) for k, t, p in sent_all if p == pid]   # noqa: E731 — 동기화는 DB 의 모든 연결 포트를 돌므로 이 포트만
+    # 15:45 본 실행 — 어제 체결 1건이 처음 등록된다(어제 동기화가 없었던 상황) → 알림
+    with SessionLocal() as s:
+        rec = next(r for r in br.run_post_close_sync(s, now=datetime.now(KST), only_portfolio_ids={pid})["portfolios"] if r["portfolio_id"] == pid)
+    assert rec["today"] == {"fetched": 0, "added": 0} and rec["prev"] == {"fetched": 1, "added": 1} and rec["added"] == 1
+    assert [k for k, _t in sent()] == ["sync.post_close"] and "오늘 체결 0건 · 신규 1건 등록 · 어제분 1건 중 1건 새로 등록" in sent()[0][1]
+    # 17:10 재시도 — 같은 건이 '이미 등록'이라 변경 없음 → 로그는 남고 알림은 없다
+    sent_all.clear()
+    with SessionLocal() as s:
+        rec2 = next(r for r in br.run_post_close_sync(s, now=datetime.now(KST), retry=True, only_portfolio_ids={pid})["portfolios"] if r["portfolio_id"] == pid)
+    assert rec2["added"] == 0 and rec2["prev"] == {"fetched": 1, "added": 0} and sent() == []
+    logs = [i for i in c.get(f"/logs?type=event&portfolio_id={pid}", headers=h).json()["items"] if i["kind"] == "sync.post_close"]
+    rt = next(i for i in logs if "재시도" in i["text"])   # 두 실행이 같은 초에 기록되면 정렬이 불안정 — 문구로 찾는다
+    assert len(logs) == 2 and "오늘 체결 0건 · 신규 0건 등록 · 어제분 1건 이미 등록" in rt["text"] and "변경 없음(알림 생략)" in rt["text"]
+    # 재시도라도 무언가 바뀌면(여기서는 예수금 경고) 알림을 보낸다
+    monkeypatch.setattr(br, "_client", lambda cred: FakeExec(900_000, 900_000, {"069500": (1, 10_000)}))
+    with SessionLocal() as s:
+        br.run_post_close_sync(s, now=datetime.now(KST), retry=True, only_portfolio_ids={pid})
+    assert any(k == "sync.post_close" for k, _t in sent())

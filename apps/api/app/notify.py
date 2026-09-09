@@ -298,8 +298,13 @@ def daily_status_text(session: Session, user_id: int, today: date) -> str | None
     total = int(snap.total or 0)
     line = f"📊 일일 현황 {today.isoformat()} — 총자산 {total:,}원"
     if prev is not None and int(prev.total or 0) > 0:
-        diff = total - int(prev.total)
-        line += f" (전일 대비 {diff:+,}원, {diff / int(prev.total) * 100:+.2f}%)"
+        # 대시보드와 같은 식 — 입출금은 자산 이동이라 빼고 본다 (단순 Dietz, dashboard.compute_user_snapshot; 2026-09-09 통일)
+        from app.dashboard import user_flows_between
+
+        flows = int(user_flows_between(session, user_id, prev.snap_date, today) or 0)
+        diff = total - int(prev.total) - flows
+        denom = int(prev.total) + flows
+        line += f" (전일 대비 {diff:+,}원" + (f", {diff / denom * 100:+.2f}%" if denom > 0 else "") + (f" · 입출금 {flows:+,}원 제외" if flows else "") + ")"
     line += f"\n주식 {int(snap.stock or 0):,}원 · 현금 {int(snap.cash or 0):,}원"
     if int(snap.other or 0):
         line += f" · 기타 {int(snap.other):,}원"

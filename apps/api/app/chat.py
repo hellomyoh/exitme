@@ -91,6 +91,8 @@ OPERATIONS_KNOWLEDGE = """## 운영 기능 지식 (2026-09-06~07 도입 — 화�
 - 예약주문·08:57 사전 갭 취소·16:45 자동 승인·전량 취소는 2026-09-08 에 폐지됐다(옛 로그에만 남음). 발주는 HTS 직접 또는 09:01 무인 실행뿐이다.
 - 예수금 대조: 15:45 동기화가 원장 현금과 계좌 D+2 예수금을 비교, 허용 오차(1만원 또는 총자산 0.1%) 초과면 주문표 위 경고. '차액을 입출금으로 등록'으로 맞춤(자동 수정 없음).
   새 실전매매 시작 시 '계좌에서 불러오기'로 D+2 예수금·전략 종목 보유를 미리 채울 수 있다.
+- 매매일지(왼쪽 메뉴 '매매일지'): 전략과 무관한 **수동 주식 기록** — 일지별 종목·매수/매도·사유, FIFO 실현손익, 증권사 체결 가져오기. 도구 trading_journal(인자 없음 = 전체 요약 + 최근 기록,
+  q = 종목명·코드·일지 이름 검색, days = 최근 N일, journal_id = 상세). 사용자가 "매매일지"라고만 하면 이 도구다. 실전매매 포트의 일자별 계획 vs 체결은 portfolio_journal(다른 것).
 - 매매 로그(왼쪽 메뉴 '매매 로그'): 거래 원장·주문 상태·실행/동기화 이벤트를 합쳐 최신순. '경고 이상만' 필터로 실패 확인. 도구 recent_logs 로 조회.
 - 텔레그램 알림: 설정 › 알림에서 봇 토큰(@BotFather)·채팅 ID(봇에 메시지를 보낸 뒤 '연결 확인'으로 자동) 저장, 보낼 항목 체크
   (무인 실행 결과·정지·장 마감 동기화·예수금 대조·주문 취소/설정·체결 등록·일일 현황).
@@ -145,7 +147,7 @@ TOOLS = [
     _tool("list_portfolios", "사용자의 실전매매 포트폴리오 목록(id·이름·시장)을 조회한다.", {}),
     _tool("portfolio_summary", "포트폴리오 자산 요약 — 총자산·현금·주식·실현/평가손익·TWR·보유 종목별 상세.",
           {"portfolio_id": {"type": "integer", "description": "생략 시 기본 포트"}}),
-    _tool("portfolio_journal", "일자별 매매 일지 — 그날의 주문표(계획)와 실제 체결, 일간 수익률.",
+    _tool("portfolio_journal", "실전매매 포트의 일자별 기록 — 그날의 주문표(계획)와 실제 체결, 일간 수익률. 수동 '매매일지'(메뉴)가 아니다 — 그건 trading_journal.",
           {"portfolio_id": {"type": "integer"}, "days": {"type": "integer", "description": "최근 N일 (기본 10)"}}),
     _tool("order_sheet", "다음 거래일 주문표 — 익절/그리드 지정가·수량과 계산 기준 상태. 포트 지정 시 그 계좌 기준.",
           {"portfolio_id": {"type": "integer", "description": "생략 시 모델 포트폴리오 신호"},
@@ -153,8 +155,12 @@ TOOLS = [
     _tool("list_backtests", "최근 백테스트(시뮬레이션) 목록과 KPI(총수익률·MDD·샤프 등).",
           {"limit": {"type": "integer", "description": "기본 10"}}),
     _tool("algorithm_params", "현재 알고리즘 변수 설정값(레지스트리) — 이름·현재값·기본값·범위·설명.", {}),
-    _tool("trading_journal", "수동 주식 매매일지 조회 — 인자 없으면 전체 요약(일지별 보유 종목·수량·원가, 누적 실현손익 추이), journal_id 지정 시 그 일지의 상세 기록(종목별 FIFO 실현손익·수익률·보유기간·비용).",
-          {"journal_id": {"type": "integer", "description": "생략 시 전체 요약"}}),
+    _tool("trading_journal", "수동 주식 매매일지(왼쪽 메뉴 '매매일지', 전략과 무관한 자유 기록) 조회·검색 — 인자 없으면 전체 요약(일지별 보유 종목·수량·평단·원가·실현손익)과 최근 기록. "
+          "q 로 종목명·종목코드·일지 이름 검색, days 로 최근 N일 기록, journal_id 로 그 일지의 상세(종목별 FIFO 실현손익·수익률·보유기간·비용). 사용자가 '매매일지'라고 하면 이 도구.",
+          {"journal_id": {"type": "integer", "description": "생략 시 전체 일지"},
+           "q": {"type": "string", "description": "종목명·종목코드·일지 이름 부분 일치 (예: 삼성전자, 005930)"},
+           "days": {"type": "integer", "description": "최근 N일 기록만"},
+           "limit": {"type": "integer", "description": "기록 최대 건수 (기본 50)"}}),
     _tool("price_history", "종목 일봉 시세(원주가) — 마지막 행이 최신 확정 종가. 장중 실시간 시세는 제공하지 않음(장 마감 후 배치로 당일 종가 적재). code 예: 102110(TIGER 200), 069500(KODEX 200), 122630(레버), QQQ.",
           {"code": {"type": "string"}, "days": {"type": "integer", "description": "기본 30"}}, ["code"]),
     # 운영 상태·로그 (2026-09-07, ADR-009 갱신) — 무인 실행·예수금 대조·알림 설정을 챗봇이 답할 수 있게
@@ -254,11 +260,16 @@ def _run_tool(name: str, args: dict, user_id: int, is_admin: bool = False) -> di
                 from app.settings import get_algo_settings
                 return get_algo_settings(user_id=user_id, session=session)
             if name == "trading_journal":
-                from app.mjournal import get_journal, journals_overview
-                jid = args.get("journal_id")
+                # 수동 매매일지 (2026-09-09 복구 — PR #86 이 journals_overview 를 지운 뒤 ImportError 로 조회 불가였다)
+                from app.mjournal import filter_journal_rows, get_journal, journals_overview
+                jid, q, days, limit = args.get("journal_id"), args.get("q"), args.get("days"), int(args.get("limit") or 50)
                 if jid:
-                    return get_journal(int(jid), user_id=user_id, session=session)
-                return journals_overview(user_id=user_id, session=session)
+                    out = get_journal(int(jid), user_id=user_id, session=session)
+                    out.pop("series", None)   # 차트용 시계열은 모델에 불필요
+                    rows = filter_journal_rows(out.get("rows") or [], q, days)
+                    out["rows_total"], out["rows"] = len(rows), rows[:limit]
+                    return out
+                return journals_overview(user_id=user_id, session=session, q=q, days=days, limit=limit)
             if name == "price_history":
                 from sqlalchemy import select
                 from app.models import Instrument, OhlcvDaily

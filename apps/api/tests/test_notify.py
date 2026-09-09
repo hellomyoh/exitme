@@ -202,3 +202,26 @@ def test_connection_check_turns_notifications_on(monkeypatch):
     assert r["ok"] is True and r["enabled_now"] is True and len(sent) == 1
     g2 = c.get("/settings/notify", headers=h).json()
     assert g2["enabled"] is True and g2["ready"] is True and g2["last"]["sent_at"]
+
+
+def test_daily_status_change_excludes_cash_flows():
+    """일일 현황 '전일 대비'는 대시보드와 같이 입출금을 뺀 순수 성과 (2026-09-09 통일) — 오늘 1,000,000 입금 → 전일 대비 +0원, 입출금 표기."""
+    import app.notify as nt
+    from app.dashboard import compute_user_snapshot, kst_today
+    from app.models import AssetSnapshot
+
+    c, h = _client()
+    pid = c.post("/portfolios", json={"name": "흐름포트", "market": "KR", "code_200": "069500"}, headers=h).json()["id"]
+    uid = _uid(pid)
+    today = kst_today()
+    c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 3_000_000,
+                               "executed_at": (today - timedelta(days=2)).isoformat() + "T15:30:00+09:00"}, headers=h)
+    c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 1_000_000,
+                               "executed_at": today.isoformat() + "T10:00:00+09:00"}, headers=h)
+    with SessionLocal() as s:
+        s.add(AssetSnapshot(user_id=uid, snap_date=today - timedelta(days=1), total=3_000_000, stock=0, cash=3_000_000, other=0))
+        s.commit()
+        compute_user_snapshot(s, uid, today)
+        s.commit()
+        text = nt.daily_status_text(s, uid, today)
+    assert "총자산 4,000,000원" in text and "(전일 대비 +0원, +0.00% · 입출금 +1,000,000원 제외)" in text

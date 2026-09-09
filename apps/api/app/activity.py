@@ -57,15 +57,17 @@ KIND_KO = {  # 이벤트 종류 표시명 (화면 배지)
 
 
 def log_event(session: Session, user_id: int, kind: str, text: str, *, level: str = "info",
-              portfolio_id: int | None = None, data: dict | None = None, at: datetime | None = None) -> ActivityLog:
-    """이벤트 한 줄 저장 (commit 은 호출자). 본문은 500자, 자료는 JSON 직렬화 가능한 값만."""
+              portfolio_id: int | None = None, data: dict | None = None, at: datetime | None = None,
+              notify: bool = True) -> ActivityLog:
+    """이벤트 한 줄 저장 (commit 은 호출자). 본문은 500자, 자료는 JSON 직렬화 가능한 값만.
+    notify=False 면 기록만 하고 텔레그램은 보내지 않는다(17:10 재시도의 '변경 없음' 등 잡음 방지, 2026-09-09)."""
     if level not in LEVELS:
         level = "info"
     row = ActivityLog(user_id=user_id, portfolio_id=portfolio_id, kind=kind, level=level,
                       text=(text or "")[:500], data=_jsonable(data or {}), at=at or datetime.now(KST))
     session.add(row)
     # 텔레그램 알림 (2026-09-07 지시) — 기록과 같은 원천에서 카테고리로 걸러 발송. 실패해도 예외 없음
-    if kind != "notify.failed":
+    if notify and kind != "notify.failed":
         try:
             from app.notify import notify_event
 

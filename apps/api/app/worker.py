@@ -52,6 +52,7 @@ celery_app.conf.update(
         "broker-post-close-sync-retry": {
             "task": "app.worker.broker_post_close_sync",
             "schedule": crontab(hour=17, minute=10, day_of_week="mon-fri"),
+            "kwargs": {"retry": True},   # 변경 없으면 알림 생략 (2026-09-09)
         },
         # 무인 매매 단일 실행 (ADR-009, 2026-09-08) — 09:01 에 주문표 계산·동결 → 시가 확인 → 갭 판정 → 잔고 → 상한 → 발주. 하루 1회
         "auto-exec-open": {
@@ -398,8 +399,9 @@ def refresh_trading_calendar(days: int = 120) -> dict:
 
 
 @celery_app.task(name="app.worker.broker_post_close_sync", max_retries=1, autoretry_for=(Exception,), retry_backoff=120)
-def broker_post_close_sync() -> dict:
-    """장 마감 후 증권사 동기화 — 연결 계좌마다 당일 체결 가져오기(원장·통계 갱신) + 예약주문 상태 확정 (2026-09-05 지시)."""
+def broker_post_close_sync(retry: bool = False) -> dict:
+    """장 마감 후 증권사 동기화 — 연결 계좌마다 당일 체결 가져오기(원장·통계 갱신) + 예약주문 상태 확정 (2026-09-05 지시).
+    retry=True 는 17:10 재실행 — 결과가 15:45 와 같으면(변경·오류 없음) 로그만 남기고 텔레그램은 보내지 않는다."""
     from app.broker import run_post_close_sync
     from app.db import SessionLocal
     from app.models import TradingCalendar
@@ -410,7 +412,7 @@ def broker_post_close_sync() -> dict:
         if cal is not None and not cal.is_open:
             logger.info("skip broker_post_close_sync: %s is a holiday", today)
             return {"skipped": "holiday", "date": today.isoformat()}
-        return run_post_close_sync(session)
+        return run_post_close_sync(session, retry=retry)
 
 
 @celery_app.task(name="app.worker.daily_asset_snapshot")
