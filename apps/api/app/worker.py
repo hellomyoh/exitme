@@ -171,6 +171,9 @@ def poll_quotes() -> dict:
     now = datetime.now(KST)
     if not (9 <= now.hour < 16):
         return {"skipped": "off-hours"}
+    from app.autoexec import is_running
+    if is_running():   # 09:01 무인 실행 중에는 같은 앱키의 유량을 양보한다 (2026-09-09 EGW00201 사고)
+        return {"skipped": "autoexec-running"}
     with SessionLocal() as session:
         cal = session.get(TradingCalendar, now.date())
         if cal is not None and not cal.is_open:
@@ -364,11 +367,15 @@ def poll_expected_open() -> dict:
     from app.models import TradingCalendar
     from app.preopen_watch import poll_expected_open as _poll
 
+    from app.autoexec import is_running
+
     today = datetime.now(KST).date()
     with SessionLocal() as session:
         cal = session.get(TradingCalendar, today)
         if cal is not None and not cal.is_open:
             return {"skipped": "holiday", "date": today.isoformat()}
+    if is_running():   # 09:01 실행기가 돌 때는 KIS 호출을 양보 — 시가는 실행기가 기록한다
+        return {"skipped": "autoexec-running", "date": today.isoformat()}
     return _poll()
 
 

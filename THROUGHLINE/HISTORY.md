@@ -613,3 +613,10 @@
 - 테스트 결과: `tests/test_preopen_watch.py` 2건(09:00 전 예상체결가·후 확정 시가·현재가 대체·0 미기록·표본 누적 / 갭 판정·기준 없음·관찰값 없음) 통과, `tsc --noEmit` 무오류. 화면 확인은 배포 후.
 - 같은 PR(사용자 승인 2026-09-09): **무인 상태 붉은 박스 삭제** → 제목 오른쪽 칩(상태·ON/OFF, 정지·기록 없음만 붉게, 상세는 롤오버) + '무인' 열 헤더에 `취소`/`되돌리기` 링크 + ⓘ. `다시 켜기`는 칩 안. 동작 변경 없음.
 - Git commit: feat: pre-open expected price watch (08:30–09:10) shown on the order sheet
+
+## [2026-09-09] fix | 09:01 KIS 유량 초과(EGW00201) — 앱키 공용 초당 제한·주문 재시도·폴링 양보 (사용자 보고 "두 계좌가 각기 다른 이유로 실패")
+
+- 분석: 두 실패 모두 EGW00201(초당 거래건수 초과). A 계좌는 잔고 조회가 15초 재시도 뒤에도 실패해 전 줄 생략, B 계좌는 그리드 3차 주문 POST 실패(POST 는 재시도 없음). 원인은 09:01 에 다른 프로세스(실행기·10초 시세 폴링·예상 시가 폴링)가 같은 앱키로 동시 호출하는데 스로틀이 인스턴스 단위였던 것 + 주문 POST 무재시도. 상세 NOTES.
+- 작업 내용: `KisClient._shared_throttle` — Redis 초당 카운터 `kis:rl:{env}:{앱키해시}:{초}` (실전 10/초, 모의 1/초, Redis 없으면 인스턴스 스로틀만) · `KisTradingClient._post` EGW00201 한정 1/2/4초 재시도(다른 오류 무재시도 유지) · 실행기 `autoexec:running` 플래그(180초) + 포트 사이 1초 간격 · `poll_quotes`·`poll_expected_open` 은 실행 중이면 건너뜀 · '무인' 열 사유 60/80자(전문 롤오버). VERSION 0.13.1.
+- 테스트 결과: `tests/test_kis_rate_limit.py` 2건(앱키·환경별 초당 한도·다음 초 대기·Redis 없음 통과 / 유량 초과 2회 뒤 성공·4회 실패·다른 오류 무재시도) + 전체 `pytest -q tests/` **252 passed, 238 warnings**, `tsc --noEmit` 무오류.
+- Git commit: fix: shared per-app-key KIS rate limit, retry orders on EGW00201 only, pollers yield during the 09:01 run

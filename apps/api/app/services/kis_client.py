@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -60,9 +61,15 @@ class KisError(RuntimeError):
     pass
 
 
-# 호출 간 최소 간격 — 실전 유량 한도(초당 20건)보다 보수적으로 초당 ~7건
+# 호출 간 최소 간격 — 실전 유량 한도(초당 20건)보다 보수적으로 초당 ~7건 (프로세스 안 인스턴스 단위)
 _MIN_INTERVAL = 0.15
 _RETRIES = 4
+# 앱키 단위 **공용** 유량 제한 (2026-09-09 사고: 09:01 에 실행기·시세 폴링·예상 시가 폴링이 다른 프로세스에서 같은 앱키로 동시에 호출해
+# EGW00201 "초당 거래건수 초과" — 잔고 조회 실패로 한 계좌 전부 생략, 다른 계좌는 세 번째 주문 접수 실패). 인스턴스 단위 스로틀은
+# 프로세스를 넘지 못하므로 Redis 카운터로 초당 건수를 앱키·환경별로 묶는다. 실전 20건/초 → 10, 모의 2건/초 → 1. Redis 가 없으면 인스턴스 스로틀만.
+_SHARED_LIMIT_PER_SEC = {"prod": 10, "vps": 1}
+_SHARED_WAIT_MAX = 6.0
+_ORDER_RETRIES = 3       # 주문 POST 는 유량 초과(EGW00201) 에만 재시도 — 그 경우 주문은 접수되지 않았으므로 중복 위험이 없다
 
 
 class KisClient:
@@ -78,6 +85,48 @@ class KisClient:
             if wait > 0:
                 time.sleep(wait)
             self._last_call = time.monotonic()
+        self._shared_throttle()
+
+    def _shared_redis(self):
+        """공용 유량 카운터용 Redis — 없으면 None(인스턴스 스로틀만). 첫 실패 뒤에는 다시 시도하지 않는다(호출마다 접속 지연 방지)."""
+        if getattr(self, "_shared_r", None) is not None:
+            return self._shared_r if self._shared_r is not False else None
+        try:
+            import redis as sync_redis
+
+            from app.config import get_settings
+
+            r = sync_redis.from_url(get_settings().redis_url, decode_responses=True, socket_connect_timeout=0.5)
+            r.ping()
+            self._shared_r = r
+        except Exception:  # noqa: BLE001
+            self._shared_r = False
+            return None
+        return self._shared_r
+
+    def _shared_throttle(self, now_fn=time.time, sleep_fn=time.sleep) -> int:
+        """앱키·환경별 초당 건수 제한 — 같은 초의 카운터가 한도를 넘으면 다음 초까지 기다린다. 반환: 기다린 횟수(테스트용)."""
+        r = self._shared_redis()
+        if r is None:
+            return 0
+        env = getattr(self.auth, "env", "prod")
+        limit = _SHARED_LIMIT_PER_SEC.get(env, _SHARED_LIMIT_PER_SEC["prod"])
+        digest = hashlib.sha256(str(getattr(self.auth, "app_key", "")).encode()).hexdigest()[:12]
+        waited = 0
+        deadline = now_fn() + _SHARED_WAIT_MAX
+        while True:
+            now = now_fn()
+            key = f"kis:rl:{env}:{digest}:{int(now)}"
+            try:
+                n = r.incr(key)
+                if n == 1:
+                    r.expire(key, 3)
+            except Exception:  # noqa: BLE001 — Redis 장애는 제한 없이 진행
+                return waited
+            if n <= limit or now >= deadline:
+                return waited
+            waited += 1
+            sleep_fn(max(0.05, 1.0 - (now - int(now)) + 0.02))
 
     def _get(self, path: str, tr_id: str, params: dict[str, str]) -> dict:
         # 유량 초과 시 KIS 가 500(EGW00201)을 반환 — 스로틀 + 지수 백오프 재시도 (NOTES.md)
@@ -436,20 +485,28 @@ class KisTradingClient(KisClient):
         return self.fetch_balance()["holdings"]
 
     # ── 예약주문 (2026-09-05 지시) — 접수 15:40~다음 영업일 07:30, 장 시작 시 자동 주문 ──
-    def _post(self, path: str, tr_id: str, body: dict[str, str]) -> dict:
-        """주문 계열 POST — 재시도하지 않는다(중복 접수 방지). rt_cd != "0" 은 KisError."""
-        self._throttle()
-        resp = self.session.post(self.auth.base_url + path,
-                                 headers=self.auth.headers(tr_id, self.session), json=body, timeout=10)
-        try:
-            data = resp.json()
-        except ValueError:
-            data = {}
-        if resp.status_code != 200 or str(data.get("rt_cd")) != "0":
+    def _post(self, path: str, tr_id: str, body: dict[str, str], sleep_fn=time.sleep) -> dict:
+        """주문 계열 POST — 원칙적으로 재시도하지 않는다(중복 접수 방지). 예외: 유량 초과(EGW00201)는 KIS 가 주문을 받기 전에 거절한 것이라
+        접수된 주문이 없으므로 1·2·4초 뒤 최대 3회 다시 보낸다 (2026-09-09 사고: 그리드 3차 접수 실패). rt_cd != "0" 은 KisError."""
+        for attempt in range(_ORDER_RETRIES + 1):
+            self._throttle()
+            resp = self.session.post(self.auth.base_url + path,
+                                     headers=self.auth.headers(tr_id, self.session), json=body, timeout=10)
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {}
+            if resp.status_code == 200 and str(data.get("rt_cd")) == "0":
+                return data
             code = str(data.get("msg_cd") or "").strip()
             msg = str(data.get("msg1") or resp.text[:120]).strip()
+            if code == "EGW00201" and attempt < _ORDER_RETRIES:
+                delay = 1.0 * (2 ** attempt)
+                logger.warning("KIS order %s rate-limited (EGW00201), retrying in %.0fs (%d/%d)", path, delay, attempt + 1, _ORDER_RETRIES)
+                sleep_fn(delay)
+                continue
             raise KisError(f"KIS error {code} {msg} (HTTP {resp.status_code})".replace("  ", " "))
-        return data
+        raise KisError("KIS order failed after retries")  # pragma: no cover — 루프가 항상 return/raise 로 끝난다
 
     def reserve_order(self, code: str, side: str, qty: int, price: int | None,
                       end_date: date | None = None) -> dict:
