@@ -79,6 +79,7 @@ B안(2026-09-02, "실행일 당일 등록은 당일 주문표 불변")의 목적
 
 - **파이프라인 하트비트** — beat 가 60초마다 `pipeline_heartbeat` 태스크를 보내고 워커가 Redis `autoexec:pipeline:heartbeat`(TTL 180초)를 갱신. scheduler·worker 컨테이너 헬스체크가 이 키를 확인한다 → beat 미발송·큐 미소비 모두 unhealthy 로 드러난다(종전 헬스체크는 모듈 import 만 확인)
 - **09:15 워치독** `auto_exec_watchdog` — 무인 대상 포트에 오늘 실행 기록이 없으면 경고 로그·알림을 남기고 **지연 실행**한다(락·마커로 중복 발주 없음). 지정가는 같은 가격이므로 14분 지연의 비용은 그 사이 체결 기회 상실에 그친다
+- **지연 상한 09:30** (2026-09-09 추가) — Celery beat 는 멈춘 사이 지나간 크론을 기동 즉시 보내므로(낡은 상태 파일이 이미지에 들어간 사고), 09:30 을 넘겨 도착한 09:01/09:15 실행은 발주하지 않고 `last_run.note="late"` 로 기록·오류 로그만 남긴다(`autoexec.LATE_RUN_LIMIT`, `run_auto_execution(late_limit=)`). beat 전체는 `beat_cron_starting_deadline=3600`
 
 ## 대안과 기각
 

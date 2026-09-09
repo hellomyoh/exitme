@@ -75,7 +75,9 @@ services:
     env_file: .env
     environment:
       - SERVICE_ROLE=scheduler
-    command: celery -A app.worker.celery_app beat --loglevel=INFO
+    # -s: 상태 파일을 코드 디렉터리 밖에 둔다 — 작업 디렉터리의 celerybeat-schedule(바인드 마운트·이미지 혼입)을 읽지 않게 (2026-09-09 사고).
+    #     컨테이너 파일시스템에 남으므로 restart 뒤 짧은 공백의 크론은 따라잡고, 1시간 넘게 지난 것은 beat_cron_starting_deadline 이 건너뛴다
+    command: celery -A app.worker.celery_app beat --loglevel=INFO -s /var/lib/celery/celerybeat-schedule
     healthcheck:
       # beat 가 실제로 태스크를 보내고 워커가 받았는지 — 하트비트 키(ADR-009 §5). 종전(모듈 import 만)은 2026-09-08 미실행을 잡지 못했다
       test: ["CMD", "python", "-c", "import redis,os,sys;r=redis.from_url(os.environ.get('REDIS_URL','redis://redis:6379/0'));sys.exit(0 if r.get('autoexec:pipeline:heartbeat') else 1)"]

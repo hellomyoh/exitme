@@ -323,8 +323,17 @@ def daily_status_text(session: Session, user_id: int, today: date) -> str | None
 
 
 def send_daily_status(session: Session, user_id: int, today: date | None = None) -> bool:
+    """일일 현황 발송 — 같은 날 두 번 보내지 않는다 (2026-09-09: 스케줄러 따라잡기로 16:40 스냅샷 배치가 재실행돼 중복 발송). 기록은 notify.daily_status_sent."""
     today = today or datetime.now(KST).date()
+    row = _row(session, user_id)
+    if row is not None and (row.notify or {}).get("daily_status_sent") == today.isoformat():
+        return False
     text = daily_status_text(session, user_id, today)
     if not text:
         return False
-    return maybe_notify(session, user_id, "daily_status", text)
+    ok = maybe_notify(session, user_id, "daily_status", text)
+    if ok and row is not None:
+        cfg = dict(row.notify or {})   # maybe_notify 가 last 를 갱신했으므로 다시 읽어 덧붙인다 (JSONB 재할당)
+        cfg["daily_status_sent"] = today.isoformat()
+        row.notify = cfg
+    return ok

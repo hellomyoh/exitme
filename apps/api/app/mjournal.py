@@ -185,38 +185,92 @@ def filter_journal_rows(rows: list[dict], q: str | None = None, days: int | None
     return out
 
 
+def _prev_close_map(session: Session, codes: set[str], before: date) -> dict[str, int]:
+    """before(미포함) 이전 마지막 종가 = '전일 종가'. 장중엔 현재가 vs 전일 종가, 장 마감 뒤엔 오늘 종가 vs 전일 종가가 하루 변동이 된다."""
+    from app.models import Instrument, OhlcvDaily
+
+    out: dict[str, int] = {}
+    for code in codes:
+        inst = session.scalar(select(Instrument).where(Instrument.code == code))
+        if inst is None:
+            continue
+        row = session.scalar(select(OhlcvDaily).where(OhlcvDaily.instrument_id == inst.id, OhlcvDaily.trade_date < before)
+                             .order_by(OhlcvDaily.trade_date.desc()).limit(1))
+        if row is not None:
+            out[code] = int(row.close_raw)
+    return out
+
+
+def add_day_change(session: Session, computed: dict, today: date) -> dict:
+    """평가된 보유(price 있음)에 전일 종가·하루 변동을 붙인다 — 챗봇의 '어제와 오늘 비교' (2026-09-09 사용자 지적 "수량과 현재가로 계산을 못 한다").
+    holdings[].prev_close/day_change/day_change_pct, summary.prev_eval/day_change/day_change_pct(전일 평가액 대비)."""
+    codes = {h["code"] for h in computed["holdings"] if h.get("code") and h.get("price") is not None}
+    prev = _prev_close_map(session, codes, today) if codes else {}
+    day_change = prev_eval = 0
+    for h in computed["holdings"]:
+        pc = prev.get(h.get("code") or "")
+        if h.get("price") is None or pc is None or pc <= 0:
+            h["prev_close"] = h["day_change"] = h["day_change_pct"] = None
+            continue
+        h["prev_close"] = pc
+        h["day_change"] = (int(h["price"]) - pc) * h["qty"]
+        h["day_change_pct"] = (int(h["price"]) - pc) / pc
+        day_change += h["day_change"]
+        prev_eval += pc * h["qty"]
+    s = computed["summary"]
+    s["prev_eval"], s["day_change"] = prev_eval, day_change
+    s["day_change_pct"] = (day_change / prev_eval) if prev_eval > 0 else None
+    s["day_change_asof"] = today.isoformat()
+    return computed
+
+
 def journals_overview(user_id: int, session: Session, q: str | None = None, days: int | None = None, limit: int = 50) -> dict:
     """챗봇 도구 `trading_journal` 의 전체 요약 + 기록 검색 (읽기 전용, 사용자 스코프).
 
-    일지별 보유(종목·수량·평단·원가·실현손익)와 합계, 그리고 전 일지의 기록을 최신순으로(q·days 로 걸러) limit 건.
+    일지별 보유(종목·수량·평단·원가·실현손익 + **현재가 평가액·평가손익·전일 대비 하루 변동**)와 합계, 그리고 전 일지의 기록을
+    최신순으로(q·days 로 걸러) limit 건. 평가는 화면과 같은 `enrich_valuation`(증권사 잔고 현재가 → DB 종가 → KIS 일봉 보충).
     화면의 합산 뷰(/mjournals/overview)는 PR #86 에서 일지 간 분리 지시로 제거됐는데 챗봇 도구가 이 함수를 계속 import 해
     ImportError 로 매매일지 조회가 통째로 실패했다(2026-09-09 사용자 보고). 화면과 무관한 챗봇 전용 조회로 복구한다.
     """
+    from app.dashboard import kst_today
+
+    today = kst_today()
     qn = _norm(q) if q else ""
     journals, entries_out = [], []
+    totals = {"eval_total": 0, "cost_priced": 0, "unrealized_total": 0, "realized": 0, "day_change": 0, "prev_eval": 0}
+    hold_keys = ("symbol", "code", "qty", "avg_price", "cost", "realized", "price", "price_source", "eval", "unrealized", "unrealized_pct",
+                 "prev_close", "day_change", "day_change_pct")
     for j in session.scalars(select(ManualJournal).where(ManualJournal.user_id == user_id).order_by(ManualJournal.id)).all():
         entries = session.scalars(select(ManualJournalEntry).where(ManualJournalEntry.journal_id == j.id)).all()
-        c = _compute(j, entries)
+        c = add_day_change(session, enrich_valuation(session, j, entries, _compute(j, entries)), today)
         jmatch = bool(qn) and qn in _norm(j.name)   # 일지 이름 일치 → 그 일지 전체 기록. 종목은 행 단위로(기본 종목도 행 symbol 에 들어 있다)
         rows = c["rows"] if jmatch else filter_journal_rows(c["rows"], q, None)
         rows = filter_journal_rows(rows, None, days)
         if qn and not jmatch and not rows:
             continue   # 검색어와 무관한 일지는 생략
         linked = _linked_out(session, j)
+        s = c["summary"]
+        for k in totals:
+            totals[k] += int(s.get(k) or 0)
         journals.append({"id": j.id, "name": j.name, "symbol": j.symbol, "broker": j.broker,
                          "closed": j.closed_at is not None, "linked_account": linked["label"] if linked else None,
                          "entries": len(entries),
-                         "holdings": [{k: h[k] for k in ("symbol", "qty", "avg_price", "cost", "realized")} for h in c["holdings"]],
-                         "summary": c["summary"]})
+                         "holdings": [{k: h.get(k) for k in hold_keys} for h in c["holdings"]],
+                         "summary": {k: v for k, v in s.items() if k not in ("price_notes", "account_rows", "mismatch")}})
         for r in rows:
             entries_out.append({"journal_id": j.id, "journal": j.name, "date": r.get("sell_date") or r.get("buy_date"),
                                 "side": r["side"], "symbol": r["symbol"], "code": r.get("code"), "qty": r["qty"], "price": r["price"],
                                 "amount": r["amount"], "realized": r["realized"], "return_pct": r["return_pct"],
                                 "hold_days": r["hold_days"], "reason": r["reason"], "source": r["source"]})
     entries_out.sort(key=lambda x: (x["date"] or "", x["journal_id"]), reverse=True)
+    totals["unrealized_pct"] = (totals["unrealized_total"] / totals["cost_priced"]) if totals["cost_priced"] > 0 else None
+    totals["day_change_pct"] = (totals["day_change"] / totals["prev_eval"]) if totals["prev_eval"] > 0 else None
     return {"journals": journals, "entries": entries_out[:max(1, int(limit))], "entries_total": len(entries_out),
-            "q": q, "days": days,
-            "note": "매매일지 = 왼쪽 메뉴 '매매일지'의 수동 주식 기록(전략 무관). 실전매매 포트의 일자별 계획·체결은 portfolio_journal."}
+            "totals": totals, "asof": today.isoformat(), "q": q, "days": days,
+            "note": ("매매일지 = 왼쪽 메뉴 '매매일지'의 수동 주식 기록(전략 무관). 실전매매 포트의 일자별 계획·체결은 portfolio_journal. "
+                     "수익률 세 가지: summary.return_pct = 실현(매도 기준, FIFO) · summary.unrealized_pct = 평가(보유 원가 대비 현재가, 가격 있는 종목만) · "
+                     "summary.day_change_pct = 전일 종가 대비 하루 변동(어제↔오늘 비교는 이 값). 현재가 출처는 holdings[].price_source(증권사 잔고=실시간, 종가=DB 일봉). "
+                     "가격이 없는 종목은 summary.unpriced 에 있으며 평가에서 빠진다.")}
 
 
 @router.get("/mjournals/{jid}")

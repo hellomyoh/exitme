@@ -40,6 +40,7 @@ KST = timezone(timedelta(hours=9))
 
 OPEN_TIME = time(9, 0)                # 동결·발주 기준 시각 (signals.FREEZE_TIME 과 같은 값)
 RUN_GRACE = time(9, 5)                # 이 시각까지 실행 기록이 없으면 '실행 중', 이후엔 '기록 없음' 경고
+LATE_RUN_LIMIT = time(9, 30)          # 지연 실행 상한 (2026-09-09 사고) — 스케줄러가 멈춘 뒤 따라잡기로 도착한 09:01/09:15 실행은 이 시각을 넘으면 발주하지 않는다
 FAIL_STREAK_PAUSE = 2                 # 발주 연속 실패 n회 → 자동 정지
 GRID_KINDS_PREFIX = "grid"            # 갭 취소 대상(그리드 매수) 종류 접두
 DAILY_BUY_CAP_PCT_DEFAULT = 0.0       # 하루 매수 총액 상한 — 총자산 대비 %. 기본 0 = 없음 (2026-09-08 사용자 결정 "참고용, 사용하지 않음" — 진입 속도 제한이며 안전장치가 아님, docs/cold-start-entry-study §6)
@@ -268,7 +269,8 @@ def auto_exec_state(pf: TradePortfolio, cred: BrokerCredential | None, allowed: 
             parts.append(f"축소 {last['clipped']}건")
         note = last.get("note")
         label = {"manual": "수동 모드 — 주문표만 동결", "no_orders": "발주 완료 — 오늘 주문 없음", "skipped_user": "무인 취소됨 — 수동 처리",
-                 "stale_plan": "발주 안 함 — 주문표 기준일 불일치", "paused": "정지 — 발주 안 함"}.get(note)
+                 "stale_plan": "발주 안 함 — 주문표 기준일 불일치", "paused": "정지 — 발주 안 함",
+                 "late": f"발주 안 함 — {LATE_RUN_LIMIT:%H:%M} 지연 상한 초과"}.get(note)
         if label is None:
             label = f"무인 {who} 완료 {str(last.get('at') or '')[11:16]} — " + " · ".join(parts)
         detail = []
@@ -518,10 +520,12 @@ def _default_plan(session: Session, pf: TradePortfolio, now: datetime) -> dict:
 
 def run_auto_execution(session: Session, now: datetime | None = None, client_factory=None,
                        sleep_fn=_time.sleep, plan_fn=None, only_credential_ids: set[int] | None = None,
-                       trigger: str = "beat") -> dict:
+                       trigger: str = "beat", late_limit: time | None = LATE_RUN_LIMIT) -> dict:
     """국내 포트마다 주문표 계산·동결 → (연결 계좌 플래그) → 시가 → 잔고 → 상한 → 발주. 포트별 실패는 기록만 하고 계속.
 
     only_credential_ids: 이 계좌들에 연결된 포트만(테스트·수동 재실행용). trigger: beat(09:01) | watchdog(09:15 지연 실행).
+    late_limit: 이 시각(KST)을 넘겨 도착한 실행은 발주하지 않고 'late' 로 기록한다 — Celery beat 는 멈춘 사이 지나간 크론을 기동 즉시 보내므로
+    (2026-09-09 사고: 낡은 상태 파일로 배포마다 지난 배치 재실행), 정오에 09:01 논리로 발주하는 일을 막는다. None = 상한 없음.
     """
     now = now or datetime.now(KST)
     today = now.date()
@@ -538,6 +542,18 @@ def run_auto_execution(session: Session, now: datetime | None = None, client_fac
         rec: dict = {"portfolio_id": pf.id, "name": pf.name, "exec_day": None, "submitted": 0, "skipped_gap": 0,
                      "skipped": 0, "failed": 0, "note": None}
         try:
+            if late_limit is not None and now.time() > late_limit:
+                # 지연 상한 초과 — 오늘 이미 돈 포트는 그대로, 아니면 발주 없이 기록·경고만 (사용자는 HTS 로 직접)
+                if ((pf_auto_state(pf).get("last_run") or {}).get("date") == today.isoformat()):
+                    rec["error"] = "already-ran"
+                else:
+                    rec["exec_day"] = today.isoformat()
+                    _finish(pf, rec, today, now, trigger, "late",
+                            f"{now:%H:%M} 도착 — 지연 상한 {late_limit:%H:%M} 초과(스케줄러 중단 뒤 따라잡기). 오늘 무인 발주 없음, 필요하면 직접 주문")
+                    _log_run(session, pf, rec, now, trigger)
+                session.commit()
+                out["portfolios"].append(rec)
+                continue
             if not first:
                 sleep_fn(PORTFOLIO_GAP_SEC)   # 같은 앱키의 연속 호출이 한 초에 몰리지 않게 (2026-09-09)
             first = False
@@ -581,11 +597,12 @@ def _log_run(session: Session, pf: TradePortfolio, rec: dict, now: datetime, tri
     if note == "manual":
         return
     late = " (09:01 배치 미실행 → 09:15 감시가 지연 실행)" if trigger == "watchdog" else ""
-    if note in ("stale_plan", "paused", "skipped_user", "no_orders"):
+    if note in ("stale_plan", "paused", "skipped_user", "no_orders", "late"):
         ko = {"stale_plan": f"발주 안 함 — {rec.get('reason') or '주문표 기준일 불일치'}", "paused": f"발주 안 함 — 정지 상태 ({rec.get('reason') or ''})",
-              "skipped_user": "발주 안 함 — 사용자가 이번 실행일 무인을 취소(수동)", "no_orders": "오늘 주문 없음"}[note]
+              "skipped_user": "발주 안 함 — 사용자가 이번 실행일 무인을 취소(수동)", "no_orders": "오늘 주문 없음",
+              "late": f"발주 안 함 — {rec.get('reason') or '지연 상한 초과'}"}[note]
         log_event(session, pf.user_id, "autoexec.run", f"무인 실행 {now:%H:%M}{late} — {ko}",
-                  level="error" if note == "stale_plan" else ("warn" if note in ("paused", "skipped_user") or late else "info"),
+                  level="error" if note in ("stale_plan", "late") else ("warn" if note in ("paused", "skipped_user") or late else "info"),
                   portfolio_id=pf.id, data={k: v for k, v in rec.items() if k != "name"}, at=now)
         return
     parts = [f"발주 {rec['submitted']}건"]
