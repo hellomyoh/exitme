@@ -1156,7 +1156,8 @@ function PortfolioPage() {
       {market === "KR" && signal?.status === "OK" && signal.code_200 && (signal.orders?.length ?? 0) > 0 && (() => {
         const lines: OrderLine[] = (signal.orders ?? [])
           .filter((o) => o.instrument === "K200" && o.otype === "limit" && o.price)
-          .map((o) => ({ kind: o.kind, label: ORDER_KIND_KO[o.kind] ?? o.kind, side: o.side === "buy" ? "buy" as const : "sell" as const, price: o.price as number }));
+          .map((o) => ({ kind: o.kind, label: ORDER_KIND_KO[o.kind] ?? o.kind, side: o.side === "buy" ? "buy" as const : "sell" as const, price: o.price as number,
+            status: boFor(o)?.status }));   // 09:01 발주 행 상태(filled/partial) → 패널에 '체결 확인' 
         if (signal.gap_cancel_below) lines.push({ kind: "gap", label: "갭 취소 기준", side: "gap", price: signal.gap_cancel_below });
         return (
           <Card className="mb-4">
