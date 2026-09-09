@@ -24,7 +24,7 @@ web ChatBot ── POST /chat {messages[≤40]} ──▶ api chat.py
 - **오류 격리**: 도구 실패는 `{"error":…}` 로 모델에 전달(대화 지속), 업스트림 실패는 SSE error
   이벤트로 사용자에게 표시. 도구 루프 상한 6회.
 - **프로바이더**: OpenRouter(OpenAI 호환 tool-calling). `.env` `OPENROUTER_API_KEY`(필수),
-  `OPENROUTER_MODEL`(기본 anthropic/claude-sonnet-4.5 — openrouter.ai/models 의 id 로 교체 가능).
+  `OPENROUTER_MODEL`(기본 openai/gpt-5.6-luna — 2026-09-09 사용자 지시로 anthropic/claude-sonnet-4.5 에서 교체, openrouter.ai/models 의 id 로 교체 가능; tool calling 지원 모델이어야 한다).
   키 미설정 시 503 + 안내 문구가 말풍선으로 표시된다. 키는 서버에만 있고 브라우저로 나가지 않는다.
 
 ## 2. UI

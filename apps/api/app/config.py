@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     # 매매 도우미 챗봇 — OpenRouter (2026-09-04). 키만 넣으면 동작, 모델은 openrouter.ai/models 의 id
     openrouter_api_key: str = ""
-    openrouter_model: str = "anthropic/claude-sonnet-4.5"
+    openrouter_model: str = "openai/gpt-5.6-luna"   # 2026-09-09 사용자 지시 — OpenRouter 목록 조회로 확인(tool calling 지원, 1.05M ctx). 종전 anthropic/claude-sonnet-4.5
 
     jwt_secret: str = "change-me"
     allow_open_registration: bool = False
