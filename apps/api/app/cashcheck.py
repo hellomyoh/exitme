@@ -185,6 +185,7 @@ def align_cash(pid: int, user_id: int = Depends(current_user_id),
     new_check = {**check, "ledger_cash": int(check["account_cash"]), "diff": 0, "warn": False,
                  "aligned_at": now.isoformat(timespec="minutes"), "aligned_amount": diff}
     _store(pf, new_check)
+    session.flush()   # 보정 거래 행을 DB 에 반영한 뒤 계산 — autoflush=False (2026-09-09, 등록 경로와 같은 결함)
     from app.dashboard import compute_user_snapshot, kst_today  # 당일 스냅샷 즉시 반영 (수동 등록 경로와 동일)
 
     compute_user_snapshot(session, user_id, kst_today())

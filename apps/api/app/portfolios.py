@@ -191,6 +191,9 @@ def register_transaction(body: TransactionIn, user_id: int = Depends(current_use
     except Exception:  # noqa: BLE001
         pass
     # 당일 스냅샷 즉시 재계산 — 열람 적재분이 방금 거래를 반영하지 못하는 유령값 방지 (검토 Q1, ADR-008)
+    # 세션이 autoflush=False 라 새 거래 행·새 로트가 아직 DB 에 없다. flush 없이 계산하면 "로트는 매도 후, 현금은 매도 전" 반쪽 스냅샷이
+    # 저장된다 (2026-09-08 M-신한-ETF: 매도 30주 대금 3,420,000원이 빠져 다음 날 '전일 대비'가 그만큼 부풀었다 — NOTES)
+    session.flush()
     from app.dashboard import compute_user_snapshot, kst_today
     compute_user_snapshot(session, user_id, kst_today())
     session.commit()
@@ -267,6 +270,7 @@ def delete_transaction(tx_id: int, user_id: int = Depends(current_user_id),
     session.delete(tx)
     session.flush()
     _rebuild_ledger(session, pf.id)
+    session.flush()   # 재생된 로트를 DB 에 반영한 뒤 계산 (autoflush=False, 2026-09-09)
     # 당일 스냅샷 즉시 재계산 (검토 Q1 — 삭제 전 열람으로 적재된 오늘 값의 유령화 방지)
     from app.dashboard import compute_user_snapshot, kst_today
     compute_user_snapshot(session, user_id, kst_today())
