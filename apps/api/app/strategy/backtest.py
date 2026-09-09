@@ -228,9 +228,28 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
                 pf.cash += ledger.sell(pf, od.instrument, od.qty, px, nxt, kinds=kinds)
                 fills.append(Fill(dates[nxt], od.instrument, "sell", od.kind, round(px), od.qty))
 
-            # ② 시장가 매수 (레버리지) — 슬리피지는 시장가성 '청산'에만 적용 (§5.2, 검증 B8)
+            gap_hit = (params.flags.f5_gap_filter and p.gap_cancel_exact is not None
+                       and o_ <= p.gap_cancel_exact)
+            # ② 시장가 매수 — 레버리지(시가), 연구용 K200 초기 진입 시장가(시가 × (1+boot_market_slippage), 갭 필터 적용, 로트는 그리드와 동일 회계).
+            #    슬리피지는 시장가성 '청산'에만 적용 (§5.2, 검증 B8)
             for od in p.orders:
                 if od.otype != "market" or od.side != "buy":
+                    continue
+                if od.instrument == K200:
+                    if gap_hit and od.kind == "boot":
+                        continue
+                    px = o_ * (1 + (params.boot_market_slippage if od.kind == "boot" else 0.0))
+                    cost = od.qty * px * (1 + params.commission)
+                    if cost > pf.cash or od.qty <= 0:
+                        continue
+                    pf.cash -= cost
+                    fills.append(Fill(dates[nxt], K200, "buy", od.kind, round(px), od.qty))
+                    if regime is Regime.BULL and params.flags.f1_no_tp_in_bull:
+                        pf.lots.append(Lot(K200, od.qty, int(round(px)), "core", None, nxt, fee_ps=px * params.commission))
+                    else:
+                        from app.strategy.params import round_tick
+                        pf.lots.append(Lot(K200, od.qty, int(round(px)), "grid", round_tick(px * (1 + prev_grid), params.tick, up=True), nxt,
+                                           fee_ps=px * params.commission))
                     continue
                 px = lo_
                 cost = od.qty * px * (1 + params.commission)
@@ -241,8 +260,6 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
                     fills.append(Fill(dates[nxt], LEV, "buy", od.kind, round(px), od.qty))
 
             # ③ 그리드 지정가 매수 — 갭 필터 우선 (§5.1)
-            gap_hit = (params.flags.f5_gap_filter and p.gap_cancel_exact is not None
-                       and o_ <= p.gap_cancel_exact)
             if not gap_hit:
                 for od in p.orders:
                     if od.otype != "limit" or od.side != "buy":

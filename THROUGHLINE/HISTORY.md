@@ -697,6 +697,14 @@
 - 테스트 결과: 신규 `test_portfolios::test_summary_separates_cumulative_unrealized_from_day_change`(누적 17,497,632 · 하루 1,106,640 · % 분모 · positions 필드 · 챗봇 fields_note). 관련 5파일 53 passed, 전체 `pytest -q tests/` **267 passed**.
 - Git commit: feat: split cumulative unrealized from day change in the portfolio summary
 
+## [2026-09-09] docs | 초기 진입가 위치(boot_delta) 10년 스윕 검증 (사용자 지시 "전일 종가 근거 부족 — 변수 반복 계산으로 최적값·결론")
+
+- 방법: 실전 플래너와 같은 엔진(`run_backtest`)으로 콜드 스타트 250일 창을 2018-03~2025-08 시작 365개(5거래일 간격) + 준독립 37개×2위상에서 δ·f·N·bear 스윕. 지표에 진입가 품질(K200 첫 매입가·20일 평균 매입가 vs 시작일 종가)·부트 체결률·부호검정·부트스트랩 CI 추가. 스크립트 `apps/api/scripts/boot_delta_sweep.py`(stage 1~5).
+- 결과: δ ∈ [−0.5, 1.0] 어느 값도 250일 수익을 유의하게 바꾸지 않음(CI 모두 0 포함, 표본 위상별 부호 반전). δ 는 체결률(92→25%)·속도·꼬리를 맞바꾸는 변수. 종가(δ0)는 체결률 75%·5일 내 미체결 0·첫 매입가 = 시작일 종가·꼬리 중간. 그리드만 기다리는 기준은 44% 창이 5일 내 미체결이고 20일 평균 매입가가 +0.22% 더 비쌈. 측정 가능한 개선은 N10→5·bear 0.5→0.25(p10 −1.06→−0.50%, 최악 −2.98→−1.98%, 우세 162→172, 세 표본 동일 방향). bear0 은 유일하게 평균 유의(+0.09%)지만 하락장 시작에 매매가 없어 기각.
+- 결론: `boot_delta` 0 유지 권고, `boot_days` 5·`boot_bear_mult` 0.25 는 선택적 조정(설정 변수, 코드 변경 없음). 문서 `docs/boot-entry-price-study-20260909.md`. 코드 변경 없음(버전 유지 0.15.2).
+- 추록(같은 날, 사용자 제안 "이동평균선 참고 진입 + 아주 소량", "20·60일은 예시 — 다양하게"): 플래너 연구용 옵션 `boot_price_ref`(ma{n}/ma{n}min)·`boot_ma_filter`(n) 추가(기본값 현행 동일, 설정 미노출) → 스윕 stage 6, MA 5·10·20·60·120·200 × 지정가/필터 + 소량 f.10/.05/.02·N20/30 27종. 결과: 모든 MA 변형이 체결률(38~60% vs 75%)·t50(7~10 vs 5일)·첫 매입가(+0.02~+0.33% vs 0.00%)에서 뒤지고 MA120·200 은 Δ 평균 −0.10%p 유의. 소량은 효과·위험이 비례 축소될 뿐(f.02 ≈ 없음). **채택 안 함**, 문서 §5. 전체 267 passed. VERSION 0.15.3(플래너 코드 변경, 기본 동작 불변).
+- 추록 2(같은 날, 사용자 지시 "시가로 들어가는 전략 시뮬레이션"): 연구용 `boot_otype="market"`·`boot_market_slippage` — 플래너는 price None 시장가 boot(수량 종가 환산), 엔진(`backtest.py` ②)은 K200 시장가 boot 를 시가(+가산율)로 체결·갭 필터 적용·그리드 회계 로트. stage 7: 체결률 99%·t50 4일(N5 면 3일)로 가장 빠르나 Δ 중앙 −0.10%(현행 −0.05%)·평균 +0.07%(현행 +0.03%)·최악 −3.45%(현행 −2.98%), 0.1% 가산 시 평균 우위 소멸·최악 −3.65%. 시가+N5+bear0.25 는 종가 N5 bear0.25 와 꼬리 비슷·진입 2일 빠름·중앙/우세/매입가는 종가가 우위. **기본값 변경 근거 없음**, 문서 §7. `test_bootstrap_entry` 시장가 변형 테스트 추가.
+- Git commit: docs: boot entry-price position study — 10-year cold-start sweep on the real planner · research: MA-reference boot options + stage 6 · research: market-open boot option + stage 7
 ## [2026-09-09] fix | 실시간 그래프가 비어 보이는 문제 (사용자 지적 "이건 왜 자꾸 안 나오는거야")
 
 - 원인: `LiveChart` 가 주문선(lines JSON)·터치 상태가 바뀔 때마다 차트를 지우고 다시 만들었는데, 데이터를 넣는 효과는 `pts` 변화에만 반응했다. 페이지 로드 직후 주문 상태(bo)가 늦게 도착해 lines 의 `status` 가 바뀌면 차트가 재생성되고 다음 10초 틱이 올 때까지 빈 차트(축 눈금도 없음)로 남는다. 장 마감 뒤에는 틱이 없어 계속 빈 화면 — 스크린샷(15:59 마지막 표본, 거리 패널은 정상)과 일치.
