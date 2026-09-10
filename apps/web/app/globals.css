@@ -18,6 +18,7 @@
   --color-muted: #565d6b;
   --color-faint: #9aa1ad;
   --color-accent: #c2410c;
+  --color-brand: #0d9488;   /* 로고 전용 청록 — 수치 색(상승·하락·정상·강조)과 겹치지 않는 자리 (2026-09-10) */
   --color-accent-dim: rgba(249, 115, 22, 0.12);
   --color-up: #d92f45;
   --color-up-dim: rgba(217, 47, 69, 0.1);

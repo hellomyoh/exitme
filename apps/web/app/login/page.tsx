@@ -5,6 +5,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { login } from "../../lib/api";
 import { useFieldErrors } from "../../lib/form";
+import { BrandMark, BrandWord } from "../../components/brand";
 import { Card } from "../../components/ui";
 
 export default function LoginPage() {
@@ -39,8 +40,8 @@ export default function LoginPage() {
     <main className="flex w-full items-center justify-center">
       <Card className="w-full max-w-sm !p-8">
         <div className="mb-6 flex items-center gap-2">
-          <span className="inline-block h-3 w-3 rounded-sm bg-accent" />
-          <h1 className="text-lg font-extrabold tracking-tight">ExitMe</h1>
+          <BrandMark className="h-8 w-8 text-ink" title="ExitMe" />
+          <h1 className="text-lg font-extrabold tracking-tight"><BrandWord /></h1>
         </div>
         <div className="grid gap-3">
           <label className="grid gap-1.5 text-xs text-faint">아이디
