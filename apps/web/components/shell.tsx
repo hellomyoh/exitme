@@ -6,6 +6,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { ensureSession, fetchMe } from "../lib/api";
+import { BrandMark, BrandWord } from "./brand";
 import ChatBot from "./chatbot";
 import NavBar from "./nav";
 import TopBar from "./topbar";
@@ -42,7 +43,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <span className="flex items-center gap-2 text-[15px] font-bold text-faint">
-          <span className="inline-block h-2.5 w-2.5 animate-pulse rounded-sm bg-accent" />ExitMe
+          <BrandMark className="h-5 w-5 animate-pulse" /><BrandWord />
         </span>
       </div>
     );
