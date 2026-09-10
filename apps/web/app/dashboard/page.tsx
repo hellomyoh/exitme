@@ -10,7 +10,9 @@ import { MarketFlag } from "../../components/flags";
 import { Spark } from "../../components/spark";
 import { Badge, Card, CardTitle, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone, Stat, Tip } from "../../components/ui";
 
-type Breakdown = { value: number; cost: number; pnl: number; pnl_pct: number | null };
+// 시장 카드: 누적(pnl, 보유 원가 대비)과 오늘(day_change, 전일 종가 평가액 대비) — 2026-09-10 지시
+type Breakdown = { value: number; cost: number; pnl: number; pnl_pct: number | null;
+  day_change?: number | null; day_change_pct?: number | null };
 type PortPosition = { code: string; name: string; qty: number; value: number };
 // 오늘 손익 (2026-09-10 지시): 누적(pnl)은 보유 원가 대비, 오늘(day_change)은 **전일 종가 평가액 대비**.
 // day_missing = 전일 종가가 없어 오늘 손익에서 뺀 종목(오늘 신규 매수·시세 미확보)
@@ -87,6 +89,7 @@ type Dash = { portfolios?: PortRow[]; total_trend?: number[]; kr_trend?: number[
   total: number; stock: number; cash: number; other: number;
   trading_total?: number; journal?: number; journals?: JournalAsset[];   // 주식 거래 자산 / 매매일지 자산 분리 (2026-09-05)
   change_amount: number; change_pct: number | null; since_inception_pct: number | null;
+  since_inception_amount?: number | null;   // 누적 금액 (최초 스냅샷 대비, 입출금 제외) — 2026-09-10
   live_at?: string | null;   // 10초 폴링 시세로 평가한 시각 (없으면 종가 기준, 2026-09-10)
   kr_stock: Breakdown; us_stock: Breakdown;  // us_stock 값 단위: 센트
   manual_assets: { id: number; name: string; category: string; value: number }[];
@@ -105,6 +108,7 @@ const REGIME_KO: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립�
 /** '오늘 손익' 셀 — 금액(부호)과 전일 종가 대비 %. 값이 없으면(전일 종가 없음·시세 미연동) 한 줄 대시.
  *  compact=true 는 좁은 화면에서 누적 손익 아래에 붙는 보조 줄 (2026-09-10 지시). */
 const dayTone = (v?: number | null) => ((v ?? 0) > 0 ? "text-up" : (v ?? 0) < 0 ? "text-down" : "text-faint");
+const usd = (v: number) => `$${(v / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 function dayCell(v: number | null | undefined, pct: number | null | undefined, money: (n: number) => string, compact = false) {
   if (v == null) return <span className="text-faint">{compact ? "오늘 —" : "—"}</span>;
   const body = `${v >= 0 ? "+" : ""}${money(v)}${pct != null ? ` (${(pct * 100).toFixed(2)}%)` : ""}`;
@@ -224,35 +228,47 @@ export default function DashboardPage() {
             카드 위계 규칙 (2026-09-06): 총자산만 핵심(hero) 카드, 한국·미국 주식은 공용 Stat 19px — 네 페이지 동일 규칙 */}
         <Stat hero className="md:col-span-2" label="총자산 (KRW · 미국 자산 별도)" value={dash ? fmtWon(dash.total) : "—"}
           spark={dash?.total_trend ?? null}
+          tip={<span>모든 실전매매·매매일지·기타 자산의 합입니다(미국 자산은 별도 카드).<br />
+            <b>오늘</b> = 어제 총자산 대비 오늘의 변동, <b>누적</b> = 기록 시작 이후 증가액 — 둘 다 <b>입출금은 빼고</b> 순수 성과만 셉니다.<br />
+            시장 카드의 누적(보유 원가 대비)과는 기준이 다릅니다. 구성은 오른쪽 자산 구성 카드에서 봅니다.</span>}
           sub={dash ? (<>
+            {/* 오늘·누적 두 줄 (2026-09-10 지시) — 종전의 실전매매·매매일지 구성 줄은 자산 구성 카드와 계좌별 표에 있다 */}
             <span className="flex flex-wrap gap-x-3">
               <span className={`font-semibold ${toneCls[ct]}`}>
-                {dash.change_amount >= 0 ? "▲" : "▼"} 전일 {fmtWon(Math.abs(dash.change_amount))} ({fmtPct(dash.change_pct, 2)})
+                {dash.change_amount >= 0 ? "▲" : "▼"} 오늘 {fmtWon(Math.abs(dash.change_amount))} ({fmtPct(dash.change_pct, 2)})
               </span>
-              <span className="text-faint">전체 {fmtPct(dash.since_inception_pct, 2)}</span>
               {dash.live_at && <span className="text-ok" title="10초 간격 현재가로 평가 — 시세가 없는 종목은 종가 기준">● 실시간 {dash.live_at.slice(11, 16)}</span>}
             </span>
-            {/* 주식 거래 자산과 매매일지 자산 분리 표기 (2026-09-05 지시) */}
             <span className="mt-0.5 flex flex-wrap gap-x-3">
-              <span>실전매매 <b className="text-ink">{fmtWon(dash.trading_total ?? dash.stock + dash.cash)}</b></span>
-              <span>매매일지 <b className="text-ink">{fmtWon(dash.journal ?? 0)}</b></span>
-              {dash.other > 0 && <span>기타 <b className="text-ink">{fmtWon(dash.other)}</b></span>}
+              {dash.since_inception_amount != null ? (
+                <span className={`font-semibold ${toneCls[pnlTone(dash.since_inception_amount)]}`}>
+                  {dash.since_inception_amount >= 0 ? "▲" : "▼"} 누적 {fmtWon(Math.abs(dash.since_inception_amount))} ({fmtPct(dash.since_inception_pct, 2)})
+                </span>
+              ) : <span className="text-faint">누적 — 기록 이틀째부터</span>}
             </span>
           </>) : undefined} />
         <Stat className="md:col-span-1" label={<><MarketFlag market="KR" /> 한국 주식</>} value={dash ? fmtWon(dash.kr_stock.value) : "—"}
           spark={dash?.kr_trend ?? null} sparkColor="#2a78d6"
+          tip={<span>국내 실전매매가 보유한 주식의 평가액입니다(현금 제외).<br /><b>누적</b>은 보유 원가 대비, <b>오늘</b>은 전일 종가 평가액 대비 — 분모가 다릅니다.</span>}
           sub={dash && dash.kr_stock.cost > 0 ? (
             <span className={`font-semibold ${toneCls[pnlTone(dash.kr_stock.pnl)]}`}>
-              {dash.kr_stock.pnl >= 0 ? "+" : ""}{fmtWon(dash.kr_stock.pnl)}
+              누적 {dash.kr_stock.pnl >= 0 ? "+" : ""}{fmtWon(dash.kr_stock.pnl)}
               {dash.kr_stock.pnl_pct != null && ` (${fmtPct(dash.kr_stock.pnl_pct, 2)})`}
+              <span className={`mt-0.5 block font-semibold ${toneCls[pnlTone(dash.kr_stock.day_change ?? 0)]}`}>
+                {dayCell(dash.kr_stock.day_change, dash.kr_stock.day_change_pct, fmtWon, true)}
+              </span>
             </span>) : undefined} />
         <Stat className="md:col-span-1" label={<><MarketFlag market="US" /> 미국 주식 ($)</>}
           value={dash ? `$${(dash.us_stock.value / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "—"}
           spark={dash?.us_trend ?? null} sparkColor="#1baf7a"
+          tip={<span>미국 실전매매가 보유한 주식의 평가액입니다(달러).<br /><b>누적</b>은 보유 원가 대비, <b>오늘</b>은 전일 종가 평가액 대비 — 분모가 다릅니다.</span>}
           sub={dash && dash.us_stock.cost > 0 ? (
             <span className={`font-semibold ${toneCls[pnlTone(dash.us_stock.pnl)]}`}>
-              {dash.us_stock.pnl >= 0 ? "+" : ""}${(dash.us_stock.pnl / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+              누적 {dash.us_stock.pnl >= 0 ? "+" : ""}${(dash.us_stock.pnl / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}
               {dash.us_stock.pnl_pct != null && ` (${fmtPct(dash.us_stock.pnl_pct, 2)})`}
+              <span className={`mt-0.5 block font-semibold ${toneCls[pnlTone(dash.us_stock.day_change ?? 0)]}`}>
+                {dayCell(dash.us_stock.day_change, dash.us_stock.day_change_pct, usd, true)}
+              </span>
             </span>) : undefined} />
         <Card className="px-4 py-3.5 md:col-span-2">
           <CardTitle>RAVG v2.5 레짐</CardTitle>

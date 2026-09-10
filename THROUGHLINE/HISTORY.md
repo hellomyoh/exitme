@@ -802,3 +802,11 @@
 - 문서: feature-dashboard §5.
 - Git commit: feat: show cumulative and today's P&L side by side on the dashboard account and journal tables
 
+## [2026-09-10] ui | 대시보드 상단 카드 — 총자산은 오늘·누적 두 줄로, 시장 카드에 오늘 손익 추가 (사용자 지시)
+
+- 지시: "이 부분도 오늘, 누적이 필요할 것 같다" → 검토(총자산 카드는 오늘만 있고 누적은 %만, 시장 카드는 누적만) → "총자산 카드에서 '실전매매 …·매매일지 …' 줄은 빼고 오늘과 누적 비율·금액을 넣는 방안을 검토" → "제안 사항 모두 구현".
+- 작업 내용: (1) `dashboard()` 가 `since_inception_amount`(최초 스냅샷 대비 증가액, 입출금 차감 — 종전엔 % 만) 를 함께 준다. (2) `_market_breakdown` 이 `day_change`·`day_change_pct` 추가 — 계좌 표와 같은 규칙(현재가는 10초 캐시 우선·없으면 종가, 기준은 오늘 이전 마지막 종가, 전일 종가 없는 종목 제외). (3) 웹: 총자산 히어로 카드 보조를 "▲/▼ 오늘 금액(%)" + "▲/▼ 누적 금액(%)" 두 줄로 바꾸고 실전매매·매매일지 구성 줄 제거(같은 정보가 자산 구성 카드·계좌별 표에 있음), 한국·미국 주식 카드에 "누적 …" 아래 "오늘 …" 줄 추가, 세 카드 라벨에 ⓘ — **두 '누적'의 기준 차이**(총자산=최초 스냅샷 대비, 시장=보유 원가 대비)를 명시. 기록이 하루뿐이면 누적은 "기록 이틀째부터".
+- 테스트 결과: `test_day_change_rows` 에 상단 카드 검증 1건 추가(시장 카드 누적·오늘 각각의 분모, `since_inception_amount` = 총자산 − 최초 스냅샷). 전체 `pytest -q tests/` → **283 passed**, `tsc --noEmit` 무오류. 화면 확인: 히어로 카드가 "▼ 오늘 7,565원 (-0.02%) / ▼ 누적 88,414,115원 (-70.25%)" 두 줄, 구성 줄 사라짐.
+- 문서: feature-dashboard §5.
+- Git commit: ui: total-assets card shows today and cumulative; market cards gain today's P&L
+
