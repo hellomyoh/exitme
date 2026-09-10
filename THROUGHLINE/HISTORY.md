@@ -733,3 +733,11 @@
 - 작업 내용: ① 취소 직전 `sync_auto_orders` 로 당일 체결조회를 돌려 상태를 맞추고, 전량 체결이면 증권사에 요청을 보내지 않고 409 + `order.cancel` 경고 로그. 부분 체결은 잔량 취소하고 "체결 n주는 유지" 표기. 화면은 장중에 주문표를 `refresh=1` 로 받고(로드 시 + 살아 있는 무인 주문이 있으면 30초마다, 탭 숨김 시 건너뜀) 상태를 최신으로 유지. ② 줄별 **재등록** — `POST /portfolio/{pid}/orders/{oid}/reorder`, `retryable_rows`·`retry_auto_exec` 에 `statuses`·`only_lines` 를 더해 재사용(`REORDERABLE = failed·skipped·cancelled`). 취소로 풀린 현금은 매수가능조회로 자동 반영. ③ 새 실전매매 패널이 열려 있으면 기존 포트의 증권사 연동·이름·색 카드를 감추고, 패널 제목에 "증권사 계좌는 아래에서 고릅니다" 안내 — 잠긴 '연결됨' 이 새 포트의 계좌 선택처럼 보여 "새 계좌를 연결할 수 없다"는 오해를 낳았다. VERSION 0.17.0(마이너 — 새 엔드포인트·새 버튼).
 - 테스트 결과: 신규 `test_autoexec::test_cancel_refuses_filled_order_and_reorder_replaces_cancelled_line` — 전량 체결 취소 409·증권사 요청 없음·상태 자동 교정·경고 로그 / 미체결 취소 성공 / 체결된 줄 재등록 409 / 취소된 줄만 재등록(새 행·`retry_of`·다른 줄 불변·로그). 전체 `pytest -q tests/` **273 passed**, `tsc --noEmit` 무오류.
 - Git commit: fix: never cancel a filled order; add per-line reorder and hide stale broker card on new-portfolio panel
+
+## [2026-09-10] feat | 실전매매 직접 주문 (ADR-011) — PR 1/2 (사용자 지시 "api 로 주문 발행·취소, 무인과 다른 아이콘")
+
+- 배경: ADR-009 가 발주 경로를 HTS 직접·09:01 무인 둘로 못박아 주문 버튼을 모두 없앴지만, KIS 클라이언트에는 정규 주문·취소·매수가능조회가 이미 있었다(09:01 실행이 사용). 무인이 실패·생략한 줄, 주문표에 없는 종목, 급한 청산은 HTS 로 가야 했고 그 주문은 앱이 알지 못해 미체결 확인·취소가 불가능했다. ADR-011 로 발주 경로에 '앱의 직접 주문' 을 더한다.
+- 작업 내용: `POST /portfolio/{pid}/orders/manual` — `BrokerOrder(mode="manual")` 로 기록해 취소·체결 확정·표시가 무인과 같은 경로(취소 분기·`sync_auto_orders` 를 manual 까지 확장, 예약주문 동기화 대상에서는 제외). 통제 6가지: 연결 계좌만 · 장중 09:00~15:20 · 매수는 매수가능조회·매도는 잔고로 사전 검증 후 **초과면 거부**(무인의 '축소' 와 달리 사용자가 낸 수량을 바꾸지 않는다) · 같은 주문 5초 Redis 잠금 · `order.manual` 로그·알림(실패도 행으로 남김). 웹: 주문표 아래 '직접 주문 · 오늘 낸 주문' 카드(주문 폼 + 확인창에 계좌·실전/모의·시장가 취소 불가 경고, 그날 주문 전체를 경로 배지 🤖 무인 / 👤 직접 / 예약 로 나열하고 줄마다 취소), 주문표 '무인' 열은 직접 주문을 `👤 직접 발주됨` 으로 구분. VERSION 0.18.0.
+- 테스트 결과: 신규 `test_autoexec::test_manual_order_places_cancels_and_shows_with_auto` — 장 마감 뒤 409 / 매수가능 초과 거부(주문 미발송) / 잔고 초과 매도 거부 / 정상 접수(mode=manual·주문번호·로그) / 목록 표시 / 전량 체결 시 취소 409·미체결 취소 성공. 전체 `pytest -q tests/` **274 passed**, `tsc --noEmit` 무오류.
+- 남은 것: 매매일지 직접 주문 — `broker_orders` 에 `journal_id` 추가·`portfolio_id` nullable 마이그레이션(사용자 결정 A안)으로 **PR 2** 에서.
+- Git commit: feat: place KIS orders directly from the app (ADR-011) — portfolio side
