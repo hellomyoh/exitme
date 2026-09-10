@@ -447,9 +447,23 @@ def trend(range_: str = "3M", user_id: int = Depends(current_user_id),
             continue
         series.append({
             "portfolio_id": pf.id, "name": pf.name, "market": pf.market,
-            "currency": "KRW" if pf.market == "KR" else "USD",
+            "currency": "KRW" if pf.market == "KR" else "USD", "kind": "portfolio",
             "points": [{"date": r.snap_date.isoformat(), "equity": r.equity} for r in ps],
         })
+
+    # 매매일지 자산 추이 (2026-09-10 지시) — 일지 단위 스냅샷은 없고 사용자 합계(AssetSnapshot.journal)만
+    # 남으므로 한 줄로 그린다. journal 은 0020 이전 행에서 NULL(집계 자체가 없던 날)이라
+    # 0 으로 그리면 없던 급락이 생긴다 — 그 날짜는 점을 찍지 않는다.
+    jpts = [{"date": r.snap_date.isoformat(), "equity": int(r.journal)}
+            for r in rows if r.journal is not None]
+    if key == "ALL" and len(jpts) > 366:
+        jweek: dict[tuple[int, int], dict] = {}
+        for p in jpts:
+            jweek[date.fromisoformat(p["date"]).isocalendar()[:2]] = p
+        jpts = sorted(jweek.values(), key=lambda p: p["date"])
+    if len(jpts) >= 2 and any(p["equity"] > 0 for p in jpts):
+        series.append({"portfolio_id": None, "name": "매매일지", "market": "KR",
+                       "currency": "KRW", "kind": "journal", "points": jpts})
 
     return {"items": [
         {"date": r.snap_date.isoformat(), "total": r.total, "stock": r.stock,
