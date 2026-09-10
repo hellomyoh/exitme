@@ -55,7 +55,7 @@ KIND_TO_CATEGORY = {
     "autoexec.skip": "orders", "autoexec.cancel": "orders",   # 사용자 취소(수동 전환)·설정 해제로 취소 (ADR-009)
     "sync.post_close": "post_close", "sync.error": "post_close", "sync.reserved_failed": "post_close",
     "cash_check.warn": "cash_check", "cash_check.align": "cash_check",
-    "order.reserve": "orders", "order.cancel": "orders", "autoexec.account_setting": "orders",
+    "order.reserve": "orders", "order.cancel": "orders", "order.manual": "orders", "autoexec.account_setting": "orders",
     "tx.delete": "trades",
 }
 LEVEL_EMOJI = {"info": "ℹ️", "warn": "⚠️", "error": "🛑"}

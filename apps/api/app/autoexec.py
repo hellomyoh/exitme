@@ -978,7 +978,8 @@ def retry_portfolio_auto_exec(pid: int, user_id: int = Depends(current_user_id),
 def sync_auto_orders(session: Session, cred: BrokerCredential, rows: list[BrokerOrder], today: date,
                      now: datetime | None = None, client=None) -> int:
     """발주된(submitted/partial) 무인 주문의 체결 상태를 당일 체결조회로 확정한다. 반환: 바뀐 건수."""
-    active = [r for r in rows if r.mode == "auto" and r.status in LIVE_AUTO]
+    # 수동(직접) 주문도 같은 정규 주문이라 함께 확정한다 (2026-09-10, ADR-011)
+    active = [r for r in rows if r.mode in ("auto", "manual") and r.status in LIVE_AUTO]
     if not active:
         return 0
     now = now or datetime.now(KST)
