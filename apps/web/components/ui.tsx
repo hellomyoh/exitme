@@ -19,10 +19,11 @@ export function Card({ children, className = "" }: { children: ReactNode; classN
 
 export function CardTitle({ children, right }: { children: ReactNode; right?: ReactNode }) {
   return (
-    <div className="mb-4 flex items-center justify-between gap-3">
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
       <h2 className="min-w-0 text-[13.5px] font-semibold uppercase tracking-wide text-muted">{children}</h2>
-      {/* 우측 액션은 제목이 길어도 세로로 짜부라지지 않게 (2026-09-02 모바일) */}
-      {right && <div className="shrink-0 whitespace-nowrap">{right}</div>}
+      {/* 우측 액션: 넓은 화면에서는 한 줄로(제목이 길어도 짜부라지지 않게, 2026-09-02), 좁으면 아랫줄로 내려가고
+          그래도 넘치면 그 안에서 줄바꿈한다 — 본문이 넘침을 잘라내므로(shell) 삐져나가면 손댈 수 없다 (2026-09-10 모바일 점검) */}
+      {right && <div className="min-w-0 max-w-full shrink-0 whitespace-normal sm:whitespace-nowrap">{right}</div>}
     </div>
   );
 }

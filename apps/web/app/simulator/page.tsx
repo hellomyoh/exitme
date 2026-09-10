@@ -665,6 +665,7 @@ function JournalOrders({ title, orders, fill, extra, fpx, fm }: { title: string;
         <span>{title} ({orders.length}건)</span>{extra}
       </div>
       {orders.length === 0 ? <p className="text-[13px] text-faint">없음</p> : (
+        <div className="overflow-x-auto">
         <table className="w-full text-[14px]">
           <thead><tr className="text-left text-xs text-faint">
             <th className="pb-1 font-medium">구분</th><th className="pb-1 font-medium">종목</th>
@@ -692,6 +693,7 @@ function JournalOrders({ title, orders, fill, extra, fpx, fm }: { title: string;
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

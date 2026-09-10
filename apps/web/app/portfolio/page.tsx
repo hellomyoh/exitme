@@ -1338,7 +1338,7 @@ function PortfolioPage() {
               거래 입력 <span className="normal-case text-faint">· 기록은 장부에만, 증권사 주문은 실제로 나갑니다</span>
             </CardTitle>
             <div className="mb-3 flex flex-wrap items-center gap-2">
-              <div className="inline-flex overflow-hidden rounded-lg border border-line-strong">
+              <div className="inline-flex flex-wrap overflow-hidden rounded-lg border border-line-strong">
                 {([["fill", "✍️ 체결 기록", "이미 체결된 것"], ["cash", "💰 입출금", "현금 이동"],
                    ["order", "👤 증권사 주문", "실제로 냅니다"]] as const).map(([k, label, hint]) => {
                   const off = k === "order" && !(market === "KR" && broker?.linked);
@@ -1349,7 +1349,7 @@ function PortfolioPage() {
                         if (k === "cash" && !["deposit", "withdraw"].includes(form.kind)) setForm({ ...form, kind: "deposit" }); }}
                       className={`px-3 py-2 text-[13px] font-semibold disabled:opacity-40 ${txTab === k
                         ? (k === "order" ? "bg-down text-white" : "bg-ink text-white") : "bg-surface text-muted hover:text-ink"}`}>
-                      {label} <span className="font-normal opacity-80">· {hint}</span>
+                      {label} <span className="hidden font-normal opacity-80 sm:inline">· {hint}</span>
                     </button>
                   );
                 })}
