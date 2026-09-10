@@ -133,14 +133,14 @@ function JournalTradeCard({ jid, linked, closed, onChanged, right, meta, recordF
       ) : (<>
         {/* 주문유형 탭 (2026-09-10 지시) — 기록만 = 장부에 적기, 증권사 주문 = 실제 주문. 실수 방지로 주문 탭은 경고색 */}
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          <div className="inline-flex overflow-hidden rounded-lg border border-line-strong">
+          <div className="inline-flex flex-wrap overflow-hidden rounded-lg border border-line-strong">
             {TABS.map((t) => (
               <button key={t.k} disabled={t.k === "order" && !linked}
                 onClick={() => setTab(t.k)}
                 title={t.k === "order" && !linked ? "증권사 계좌를 먼저 연결하세요 (아래 '증권사 체결 가져오기')" : undefined}
                 className={`px-3 py-2 text-[13px] font-semibold disabled:opacity-40 ${tab === t.k
                   ? (t.k === "order" ? "bg-down text-white" : "bg-ink text-white") : "bg-surface text-muted hover:text-ink"}`}>
-                {t.label} <span className="font-normal opacity-80">· {t.hint}</span>
+                {t.label} <span className="hidden font-normal opacity-80 sm:inline">· {t.hint}</span>
               </button>
             ))}
           </div>
@@ -903,7 +903,7 @@ function MJournalPage() {
 
           <JournalTradeCard jid={detail.id} linked={detail.linked_account} closed={detail.closed_at}
             onChanged={() => void load(detail.id)}
-            right={<span className="flex items-center gap-3">
+            right={<span className="flex flex-wrap items-center gap-x-3 gap-y-1">
               {/* 청산 (2026-09-05 지시) — 전량 매도했거나 더 이상 거래하지 않는 일지. 기록은 남고 대시보드에서 빠진다 */}
               <button className="text-[12.5px] font-normal normal-case text-muted transition-colors hover:text-ink"
                 onClick={() => void (async () => {

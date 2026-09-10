@@ -763,3 +763,13 @@
 - 작업 내용: 공통 훅 `apps/web/lib/form.tsx` `useFieldErrors()` 신설 — `validate({칸: 사유|""})` 로 표시를 켜고 사유 요약을 돌려주며 `cls`(붉은 테두리)·`msg`(칸 아래 사유)·`clear`(입력 시 해제)·`has`. 규칙: **비활성 대신 눌러 보면 알려 준다**. 적용: 실전매매 거래 입력 3탭(체결·입출금·증권사 주문, 메시지도 카드 안으로) · 매매일지 기록 폼·주문 폼·새 일지 · 설정 증권사 계좌 등록/조회(`CredentialInput` 에 `invalid` 지원)·알림 봇 토큰 · 시뮬레이터 기간·자본금 · 로그인 아이디·비밀번호. 서버 변경 없음. VERSION 0.19.1.
 - 테스트 결과: 서버 변경 없음 — `pytest -q tests/` **275 passed**, `tsc --noEmit` 무오류. 화면 확인은 배포 후.
 - Git commit: fix: show which field is missing on every form (shared useFieldErrors)
+
+## [2026-09-10] fix | 모바일 잘림 3건 (사용자 지시 "메뉴별로 모바일 출력 분석")
+
+- 점검 방법: 로컬 web 컨테이너 결함으로 화면을 볼 수 없어 반응형 클래스·레이아웃 구조를 코드로 훑었다. 기반은 정상 — 사이드바는 `lg` 미만에서 서랍으로, 차트는 자동 크기, 표는 대부분 가로 스크롤 래퍼 안. 문제는 **본문 컨테이너가 넘침을 잘라내는데**(`shell.tsx` `overflow-x-clip`, 툴팁이 페이지를 밀지 않게 한 조치) 스크롤 없는 요소가 넘치면 보이지도 눌리지도 않는다는 점.
+- 고친 것 ①: `CardTitle` 의 오른쪽 액션이 `shrink-0 whitespace-nowrap` 이라 360px 에서 잘렸다(매매일지 청산·연동·삭제 3버튼 ≈280px, 실전매매 무인 칩 ≈285px) → 제목 줄을 `flex-wrap` 으로 바꿔 좁으면 아랫줄로 내려가고, 오른쪽 안에서도 `whitespace-normal sm:whitespace-nowrap` 으로 줄바꿈. 매매일지 헤더 버튼 묶음에도 `flex-wrap`.
+- 고친 것 ②: 2026-09-10 에 넣은 거래 입력 탭이 라벨+설명이라 3개 합계 ≈430px 로 넘쳤다 → 설명은 `hidden sm:inline`, 탭 묶음에 `flex-wrap`. 매매일지 2탭도 동일.
+- 고친 것 ③: 시뮬레이터 주문 표(`simulator/page.tsx`)만 스크롤 래퍼가 없어 칸이 눌렸다 → `overflow-x-auto` 래퍼.
+- 남긴 것(경미): 반응형 접두 없는 `grid-cols-2` 4곳(설정 상품코드·환경, 새 일지 요율, 시뮬레이터 옵션, 거리 패널) — 입력은 되고 답답한 정도. 2버튼 토글·마켓 스위치는 좁아도 들어간다.
+- 테스트 결과: 서버 변경 없음 — `pytest -q tests/` **275 passed**, `tsc --noEmit` 무오류. 재점검 스크립트로 스크롤 래퍼 없는 표 0건 확인(남은 3건은 래퍼가 4~5줄 위인 오탐). 실제 화면 확인은 배포 후.
+- Git commit: fix: stop mobile clipping — wrap card-title actions, collapse tab hints, scroll the simulator table
