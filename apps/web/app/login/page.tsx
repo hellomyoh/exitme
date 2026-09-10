@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { login } from "../../lib/api";
+import { useFieldErrors } from "../../lib/form";
 import { Card } from "../../components/ui";
 
 export default function LoginPage() {
@@ -17,8 +18,14 @@ export default function LoginPage() {
     } catch { return ""; }
   });
   const [busy, setBusy] = useState(false);
+  const fe = useFieldErrors();   // 입력 누락 표시 (2026-09-10, lib/form)
 
   async function submit() {
+    const bad = fe.validate({
+      email: email.trim() ? "" : "아이디(이메일)를 넣으세요",
+      password: password ? "" : "비밀번호를 넣으세요",
+    });
+    if (bad) { setMsg(`입력을 확인하세요 — ${bad}`); return; }
     setBusy(true);
     setMsg("");
     const r = await login(email, password);
@@ -37,14 +44,14 @@ export default function LoginPage() {
         </div>
         <div className="grid gap-3">
           <label className="grid gap-1.5 text-xs text-faint">아이디
-            <input className="input" value={email}
-              onChange={(e) => setEmail(e.target.value)} /></label>
+            <input className={`input${fe.cls("email")}`} value={email}
+              onChange={(e) => { setEmail(e.target.value); fe.clear("email"); }} />{fe.msg("email")}</label>
           <label className="grid gap-1.5 text-xs text-faint">비밀번호
-            <input className="input" type="password" value={password}
+            <input className={`input${fe.cls("password")}`} type="password" value={password}
               onKeyDown={(e) => e.key === "Enter" && void submit()}
-              onChange={(e) => setPassword(e.target.value)} /></label>
+              onChange={(e) => { setPassword(e.target.value); fe.clear("password"); }} />{fe.msg("password")}</label>
           <button className="btn btn-primary mt-1" disabled={busy} onClick={() => void submit()}>로그인</button>
-          {msg && <p className="text-[13px] text-up">{msg}</p>}
+          {msg && <p className={`text-[13px] ${fe.has || msg.includes("실패") || msg.includes("확인") ? "font-medium text-down" : "text-up"}`}>{msg}</p>}
         </div>
       </Card>
     </main>

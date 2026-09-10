@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useFieldErrors } from "../../lib/form";
 import { apiFetch, fetchMe, logout as apiLogout, type Me } from "../../lib/api";
 import { Callout, Card, CardTitle, PageTitle } from "../../components/ui";
 
@@ -13,15 +14,15 @@ import { Callout, Card, CardTitle, PageTitle } from "../../components/ui";
  *  그 9자 비밀번호가 시크릿으로 저장돼 계좌 조회가 실패했다. 비밀번호 필드일 이유가 없어(저장값은 어차피 마스킹)
  *  일반 text 로 두고, 입력 중인 값도 가리지 않는다 — 붙여넣은 값을 눈으로 확인할 수 있어야 이런 오입력을 바로 잡는다.
  *  비어 있고 포커스가 없을 때는 저장값(마스킹)을 회색으로 보여주고, 포커스하면 새 값을 입력받는다. */
-function CredentialInput({ name, value, onChange, stored, placeholder = "" }: {
-  name: string; value: string; onChange: (v: string) => void; stored?: string; placeholder?: string;
+function CredentialInput({ name, value, onChange, stored, placeholder = "", invalid = false }: {
+  name: string; value: string; onChange: (v: string) => void; stored?: string; placeholder?: string; invalid?: boolean;
 }) {
   const [focus, setFocus] = useState(false);
   const showStored = !focus && value === "" && !!stored;
   return (
     <input type="text" name={name} autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
       data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
-      className={`input w-full min-w-0 ${showStored ? "text-faint" : ""}`}
+      className={`input w-full min-w-0 ${showStored ? "text-faint" : ""}${invalid ? " !border-down focus:!border-down" : ""}`}
       value={showStored ? stored : value}
       placeholder={showStored ? "" : placeholder}
       onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
@@ -74,6 +75,7 @@ export default function SettingsPage() {
   type ProbeAcct = { account_no: string; acnt_prdt_cd: string; label: string; holdings: number; deposit: number; total_eval: number };
   const [accts, setAccts] = useState<Acct[]>([]);
   const [af, setAf] = useState({ label: "", app_key: "", app_secret: "", account_no: "", acnt_prdt_cd: "01", env: "prod" });
+  const afe = useFieldErrors();   // 계좌 등록 입력 누락 표시 (2026-09-10)
   const [acctOpen, setAcctOpen] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);   // null = 신규 등록
   const [testRes, setTestRes] = useState<Record<number, { ok: boolean; message?: string; holdings?: number; deposit?: number;
@@ -338,17 +340,17 @@ export default function SettingsPage() {
               <input className="input w-full min-w-0" placeholder="예: 한투 메인" value={af.label}
                 onChange={(e) => setAf({ ...af, label: e.target.value })} /></label>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">계좌번호 (앞 8자리)
-              <CredentialInput name="kis-account-no" value={af.account_no}
-                onChange={(v) => setAf({ ...af, account_no: v })}
+              <CredentialInput name="kis-account-no" value={af.account_no} invalid={!!afe.err.account_no}
+                onChange={(v) => { setAf({ ...af, account_no: v }); afe.clear("account_no"); }}
                 stored={curAcct ? `${curAcct.account_no}-${curAcct.acnt_prdt_cd}` : undefined}
                 placeholder={editId === null ? "12345678" : "새 계좌번호 (비우면 유지)"} /></label>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱키(App Key)
-              <CredentialInput name="kis-app-key" value={af.app_key}
-                onChange={(v) => setAf({ ...af, app_key: v })} stored={curAcct?.app_key}
+              <CredentialInput name="kis-app-key" value={af.app_key} invalid={!!afe.err.app_key}
+                onChange={(v) => { setAf({ ...af, app_key: v }); afe.clear("app_key"); }} stored={curAcct?.app_key}
                 placeholder={editId === null ? "KIS Developers 앱키 36자" : "새 앱키 (비우면 유지)"} /></label>
             <label className="grid min-w-0 gap-1 text-[13px] text-faint">앱시크릿(App Secret)
-              <CredentialInput name="kis-app-secret" value={af.app_secret}
-                onChange={(v) => setAf({ ...af, app_secret: v })} stored={curAcct?.app_secret}
+              <CredentialInput name="kis-app-secret" value={af.app_secret} invalid={!!afe.err.app_secret}
+                onChange={(v) => { setAf({ ...af, app_secret: v }); afe.clear("app_secret"); }} stored={curAcct?.app_secret}
                 placeholder={editId === null ? "KIS Developers 앱시크릿 180자" : "새 시크릿 (비우면 유지)"} /></label>
             <div className="grid grid-cols-2 gap-3">
               <label className="grid min-w-0 gap-1 text-[13px] text-faint">환경
@@ -358,9 +360,16 @@ export default function SettingsPage() {
                 </select></label>
               <div className="grid content-end">
                 {/* KIS 는 계좌 목록 API 가 없어, 입력 계좌를 실제 조회해 상품코드까지 확인한다 */}
-                <button className="btn !py-2" title={editId !== null ? "조회하려면 앱키·시크릿·계좌번호를 입력하세요" : ""}
-                  disabled={!(af.app_key && af.app_secret && af.account_no)}
+                {/* 비활성 대신 눌러 보면 어느 칸이 빈지 알려 준다 (2026-09-10 지시) */}
+                <button className="btn !py-2"
                   onClick={() => void (async () => {
+                    const bad = afe.validate({
+                      account_no: af.account_no.trim() ? "" : "계좌번호를 넣으세요",
+                      app_key: af.app_key.trim() ? "" : "앱키를 넣으세요",
+                      app_secret: af.app_secret.trim() ? "" : "앱시크릿을 넣으세요",
+                    });
+                    if (bad) { setAcctMsg(`조회하려면 입력이 필요합니다 — ${bad}`); return; }
+                    afe.reset();
                     setAcctMsg("조회 중…"); setProbe(null);
                     const r = await apiFetch("/broker/probe", { method: "POST", body: JSON.stringify({
                       app_key: af.app_key, app_secret: af.app_secret, account_no: af.account_no, env: af.env }) });
@@ -395,8 +404,17 @@ export default function SettingsPage() {
             )}
             <div className="flex items-center gap-3 sm:col-span-2 lg:col-span-3">
               <button className="btn btn-primary"
-                disabled={editId === null && !(af.app_key && af.app_secret && af.account_no)}
                 onClick={() => void (async () => {
+                  // 비활성 대신 눌러 보면 어느 칸이 빈지 알려 준다 (2026-09-10 지시)
+                  if (editId === null) {
+                    const bad = afe.validate({
+                      account_no: af.account_no.trim() ? "" : "계좌번호를 넣으세요",
+                      app_key: af.app_key.trim() ? "" : "앱키를 넣으세요",
+                      app_secret: af.app_secret.trim() ? "" : "앱시크릿을 넣으세요",
+                    });
+                    if (bad) { setAcctMsg(`입력을 확인하세요 — ${bad}`); return; }
+                  }
+                  afe.reset(); setAcctMsg("");
                   const body = editId === null ? af : {
                     label: af.label, env: af.env, acnt_prdt_cd: af.acnt_prdt_cd,
                     ...(af.account_no.trim() ? { account_no: af.account_no } : {}),
@@ -609,6 +627,7 @@ function NotifySettings() {
   const [cfg, setCfg] = useState<NotifyCfg | null>(null);
   const [token, setToken] = useState("");
   const [chatId, setChatId] = useState("");
+  const nfe = useFieldErrors();   // 알림 입력 누락 표시 (2026-09-10)
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
@@ -627,6 +646,13 @@ function NotifySettings() {
     return true;
   }
   async function saveCreds() {
+    // 토큰은 저장돼 있으면 비워 둘 수 있다. 채팅 ID 는 '연결 확인' 이 채우므로 둘 다 비면 알려 준다
+    const bad = nfe.validate({
+      tg_token: (token.trim() || cfg?.has_token) ? "" : "봇 토큰을 넣으세요 (@BotFather 발급)",
+      tg_chat: (chatId.trim() || token.trim() || cfg?.has_token) ? "" : "채팅 ID 또는 봇 토큰이 필요합니다",
+    });
+    if (bad) { setMsg(`입력을 확인하세요 — ${bad}`); return; }
+    nfe.reset();
     const ok = await save({ bot_token: token.trim() || undefined, chat_id: chatId.trim() }, "봇 정보를 저장했습니다 — 아래 '연결 확인'으로 테스트 메시지를 보내 보세요");
     if (ok) setToken("");
   }
@@ -675,7 +701,8 @@ function NotifySettings() {
         </ol>
         <div className="grid gap-3 sm:grid-cols-[2fr_1fr]">
           <label className="grid gap-1 text-[13px] text-faint">봇 토큰
-            <CredentialInput name="tg_token" value={token} onChange={setToken} stored={cfg.has_token ? cfg.token_masked : undefined} placeholder="123456789:AAH…" /></label>
+            <CredentialInput name="tg_token" value={token} invalid={!!nfe.err.tg_token}
+              onChange={(v) => { setToken(v); nfe.clear("tg_token"); }} stored={cfg.has_token ? cfg.token_masked : undefined} placeholder="123456789:AAH…" /></label>
           <label className="grid gap-1 text-[13px] text-faint">채팅 ID <span className="text-[11.5px]">(비워 두면 연결 확인이 채움)</span>
             <input className="input" value={chatId} onChange={(e) => setChatId(e.target.value)} placeholder="자동" /></label>
         </div>
