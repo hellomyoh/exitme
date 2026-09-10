@@ -793,3 +793,12 @@
 - 남은 것: 9/14 첫 주에 ① 주식 일봉이 저녁에 실제로 갱신되는지(16:05 vs 20:10 값 비교) ② 예약주문 접수 창 변경 여부 ③ KIS 가 애프터마켓 주문 TR 을 지원하는지(직접 주문 창 09:00~15:20 확장 여부) 확인.
 - Git commit: feat: evening batches for the KRX after-market — stock bars 20:10, sync 20:15, snapshot 20:20 with conditional daily status
 
+## [2026-09-10] feat | 계좌별 현황·매매일지 자산에 '오늘 손익' 열 — 누적과 분모를 나눠 함께 표기 (사용자 지시)
+
+- 지시: "계좌와 매매일지 현황에 누적 수익율/금액과 오늘 손익율/금액을 표기하도록 검토" → 검토(두 표 모두 누적만 있었고, 필요한 계산은 9/9 `portfolio_summary.day_change`·9/9 `add_day_change` 에 이미 있었음 — 표만 연결하면 됨) → "제안 사항을 모두 구현".
+- 작업 내용: (1) `dashboard.dashboard()` 계좌 행 — `_live_price_overrides`(10초 폴링 캐시 → {instrument_id: 현재가})와 `_prev_close_map_by_id`(오늘 이전 마지막 종가)를 더해 `day_change`·`day_change_pct`·`day_missing`·`price_source` 를 돌려주고, 평가액·누적도 같은 현재가로 계산해 총자산 카드와 기준을 맞췄다(적재 스냅샷은 종가 유지 — 2026-09-09 반쪽 스냅샷 사고 규칙 불변). 셀 보유가 없으면 `day_change=null`(화면 '—'). (2) `mjournal.journal_assets` — `add_day_change` 를 붙이고 **총자산에 넣는 종목만** 합산해 `day_change`·`day_change_pct`·`day_missing` 추가. (3) 웹 대시보드 두 표에 '오늘 손익' 열(≥sm)과 좁은 화면용 보조 줄, 열 제목 ⓘ 에 분모 설명(누적=원가, 오늘=전일 종가 평가액)과 제외 종목 안내, 공용 `dayCell`·`dayTone`.
+- 테스트 결과: 신규 `tests/test_day_change_rows.py` 3건 — 계좌 행(누적 원가 대비·오늘 전일 종가 대비·오늘 산 종목은 `day_missing` 으로 제외) / 실시간 캐시가 있으면 그 값으로 평가·오늘 손익(`price_source=live`) / 매매일지 행(포함 종목만·전일 종가 없는 종목 제외). 전체 `pytest -q tests/` → **282 passed**, `tsc --noEmit` 무오류. 화면 확인: 계좌 행은 현금만이라 '—', 일지 행은 한투-삼성 누적 +1,438,800(94.6%)·오늘 −5,500(−0.19%), 연금저축 누적 −15,450(−1.0%)·오늘 −2,065(−0.14%).
+- 특이사항: 재기동 직후 잔고 가격 캐시가 비어 있던 순간에 일지 평가액이 한 번 낮게 찍혔다(스크린샷). 캐시가 채워진 뒤 정상값으로 돌아왔고 API 값도 정합 — 계산 경로 문제는 아니다.
+- 문서: feature-dashboard §5.
+- Git commit: feat: show cumulative and today's P&L side by side on the dashboard account and journal tables
+

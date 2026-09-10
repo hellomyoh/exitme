@@ -8,11 +8,13 @@ import { createChart, IChartApi, AreaSeries, LineSeries } from "lightweight-char
 import { apiFetch, ensureSession } from "../../lib/api";
 import { MarketFlag } from "../../components/flags";
 import { Spark } from "../../components/spark";
-import { Badge, Card, CardTitle, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone, Stat } from "../../components/ui";
+import { Badge, Card, CardTitle, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone, Stat, Tip } from "../../components/ui";
 
 type Breakdown = { value: number; cost: number; pnl: number; pnl_pct: number | null };
 type PortPosition = { code: string; name: string; qty: number; value: number };
-type PortRow = { trend?: number[];  id: number; name: string; market: string; equity: number; stock_value: number; cash: number; pnl: number; pnl_pct: number | null; color?: string | null; positions?: PortPosition[] };
+// 오늘 손익 (2026-09-10 지시): 누적(pnl)은 보유 원가 대비, 오늘(day_change)은 **전일 종가 평가액 대비**.
+// day_missing = 전일 종가가 없어 오늘 손익에서 뺀 종목(오늘 신규 매수·시세 미확보)
+type PortRow = { trend?: number[]; day_change?: number; day_change_pct?: number | null; day_missing?: string[]; price_source?: string;  id: number; name: string; market: string; equity: number; stock_value: number; cash: number; pnl: number; pnl_pct: number | null; color?: string | null; positions?: PortPosition[] };
 
 /** 계좌별 도넛 (2026-09-05 지시) — 계좌마다 도넛 하나, 조각 = 보유 종목(+현금).
  *  같은 종목은 모든 도넛에서 같은 색(색은 엔티티를 따른다). hover 에 종목/수량/평가액. */
@@ -91,6 +93,7 @@ type Dash = { portfolios?: PortRow[]; total_trend?: number[]; kr_trend?: number[
 };
 type JournalAsset = { excluded?: { symbol: string; code: string | null; value: number }[]; id: number; name: string; symbol: string; cost: number; realized: number; return_pct: number | null;
   value?: number; priced?: boolean; unrealized?: number | null; unrealized_pct?: number | null;   // 현재가 평가 (2026-09-06)
+  day_change?: number | null; day_change_pct?: number | null; day_missing?: string[];              // 오늘 손익 (2026-09-10)
   holdings: { symbol: string; qty: number; cost: number; price?: number | null; eval?: number | null }[]; entries: number; counted: boolean; note: string | null };
 type TrendSeries = { portfolio_id: number; name: string; market: string; currency: string;
   points: { date: string; equity: number }[] };
@@ -98,6 +101,15 @@ type Signal = { status: string; regime?: string; e_target?: number; w_200?: numb
 type CalItem = { date: string; pnl: number };
 
 const REGIME_KO: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
+
+/** '오늘 손익' 셀 — 금액(부호)과 전일 종가 대비 %. 값이 없으면(전일 종가 없음·시세 미연동) 한 줄 대시.
+ *  compact=true 는 좁은 화면에서 누적 손익 아래에 붙는 보조 줄 (2026-09-10 지시). */
+const dayTone = (v?: number | null) => ((v ?? 0) > 0 ? "text-up" : (v ?? 0) < 0 ? "text-down" : "text-faint");
+function dayCell(v: number | null | undefined, pct: number | null | undefined, money: (n: number) => string, compact = false) {
+  if (v == null) return <span className="text-faint">{compact ? "오늘 —" : "—"}</span>;
+  const body = `${v >= 0 ? "+" : ""}${money(v)}${pct != null ? ` (${(pct * 100).toFixed(2)}%)` : ""}`;
+  return <span className={compact ? dayTone(v) : undefined}>{compact ? `오늘 ${body}` : body}</span>;
+}
 const REGIME_COLOR: Record<string, string> = { BULL: "var(--color-up)", NEUTRAL: "var(--color-accent)", BEAR: "var(--color-down)" };
 const toneCls = { up: "text-up", down: "text-down", default: "text-muted" };
 
@@ -316,7 +328,12 @@ export default function DashboardPage() {
                   <th className="pb-2 pr-2 font-medium">#</th>
                   <th className="pb-2 font-medium">계좌</th>
                   <th className="pb-2 text-right font-medium">평가액</th>
-                  <th className="pb-2 text-right font-medium">평가손익</th>
+                  <th className="pb-2 text-right font-medium">
+                    <Tip tip={<span>매수 이후 누적 평가손익입니다.<br />%는 <b>보유 원가</b> 대비.</span>}>누적 손익 ⓘ</Tip>
+                  </th>
+                  <th className="hidden pb-2 text-right font-medium sm:table-cell">
+                    <Tip tip={<span>오늘 하루의 평가 변동입니다 — 현재가(장중 10초 시세, 없으면 종가) − <b>전일 종가</b>.<br />%는 전일 종가 평가액 대비라 누적과 분모가 다릅니다.<br />전일 종가가 없는 종목(오늘 신규 매수 등)은 빠집니다.</span>}>오늘 손익 ⓘ</Tip>
+                  </th>
                   <th className="pb-2 pl-6 font-medium">추세</th>
                 </tr></thead>
                 <tbody>
@@ -342,6 +359,13 @@ export default function DashboardPage() {
                           <td className={`table-num py-2.5 font-semibold ${p.pnl > 0 ? "text-up" : p.pnl < 0 ? "text-down" : "text-faint"}`}>
                             {p.pnl !== 0 ? `${p.pnl >= 0 ? "+" : ""}${money(p.pnl)}` : "—"}
                             {p.pnl_pct !== null && p.pnl !== 0 && ` (${(p.pnl_pct * 100).toFixed(2)}%)`}
+                            {/* 좁은 화면에서는 오늘 손익을 아랫줄로 (열을 늘리면 잘린다, 2026-09-10) */}
+                            <div className="text-[12px] font-normal sm:hidden">{dayCell(p.day_change, p.day_change_pct, money, true)}</div>
+                          </td>
+                          <td className={`hidden table-num py-2.5 font-semibold sm:table-cell ${dayTone(p.day_change)}`}
+                            title={(p.day_missing?.length ?? 0) > 0 ? `전일 종가가 없어 제외: ${p.day_missing!.join(", ")}` : undefined}>
+                            {dayCell(p.day_change, p.day_change_pct, money)}
+                            {(p.day_missing?.length ?? 0) > 0 && <span className="text-[11.5px] font-normal text-faint"> *</span>}
                           </td>
                           <td className="py-1 pl-6">
                             {/* 이틀 이상 데이터가 있어야 선이 됨 — 첫날은 빈칸 대신 안내 (2026-09-05 지시) */}
@@ -370,7 +394,12 @@ export default function DashboardPage() {
                   <th className="pb-2 pr-2 font-medium">#</th>
                   <th className="pb-2 font-medium">일지</th>
                   <th className="pb-2 text-right font-medium">평가액 <span className="font-normal">(원가)</span></th>
-                  <th className="pb-2 text-right font-medium">평가손익</th>
+                  <th className="pb-2 text-right font-medium">
+                    <Tip tip={<span>매수 이후 누적 평가손익입니다. %는 <b>보유 원가</b> 대비.</span>}>누적 손익 ⓘ</Tip>
+                  </th>
+                  <th className="hidden pb-2 text-right font-medium sm:table-cell">
+                    <Tip tip={<span>오늘 하루의 평가 변동 — 현재가 − <b>전일 종가</b>. %는 전일 종가 평가액 대비.<br />총자산에 넣는 종목만 셉니다(실전매매와 겹쳐 제외한 종목은 빠짐).</span>}>오늘 손익 ⓘ</Tip>
+                  </th>
                   <th className="pb-2 text-right font-medium">실현손익</th>
                   <th className="pb-2 pl-6 font-medium">총자산 포함</th>
                 </tr></thead>
@@ -387,7 +416,13 @@ export default function DashboardPage() {
                       <td className="table-num py-2.5 font-bold">{fmtWon(j.value ?? j.cost)}
                         {j.priced && <span className="ml-1 text-[11.5px] font-normal text-faint">({fmtWon(j.cost)})</span>}</td>
                       <td className={`table-num py-2.5 font-semibold ${(j.unrealized ?? 0) > 0 ? "text-up" : (j.unrealized ?? 0) < 0 ? "text-down" : "text-faint"}`}>
-                        {j.priced && j.unrealized != null ? `${j.unrealized >= 0 ? "+" : ""}${fmtWon(j.unrealized)}${j.unrealized_pct != null ? ` (${(j.unrealized_pct * 100).toFixed(1)}%)` : ""}` : "—"}</td>
+                        {j.priced && j.unrealized != null ? `${j.unrealized >= 0 ? "+" : ""}${fmtWon(j.unrealized)}${j.unrealized_pct != null ? ` (${(j.unrealized_pct * 100).toFixed(1)}%)` : ""}` : "—"}
+                        {/* 좁은 화면에서는 오늘 손익을 아랫줄로 (2026-09-10) */}
+                        <div className="text-[12px] font-normal sm:hidden">{dayCell(j.day_change, j.day_change_pct, fmtWon, true)}</div></td>
+                      <td className={`hidden table-num py-2.5 font-semibold sm:table-cell ${dayTone(j.day_change)}`}
+                        title={(j.day_missing?.length ?? 0) > 0 ? `전일 종가가 없어 제외: ${j.day_missing!.join(", ")}` : undefined}>
+                        {dayCell(j.day_change, j.day_change_pct, fmtWon)}
+                        {(j.day_missing?.length ?? 0) > 0 && <span className="text-[11.5px] font-normal text-faint"> *</span>}</td>
                       <td className={`table-num py-2.5 font-semibold ${j.realized > 0 ? "text-up" : j.realized < 0 ? "text-down" : "text-faint"}`}>
                         {j.realized !== 0 ? `${j.realized >= 0 ? "+" : ""}${fmtWon(j.realized)}` : "—"}
                         {j.return_pct != null && j.realized !== 0 && ` (${(j.return_pct * 100).toFixed(1)}%)`}
