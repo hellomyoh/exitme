@@ -85,6 +85,7 @@ type Dash = { portfolios?: PortRow[]; total_trend?: number[]; kr_trend?: number[
   total: number; stock: number; cash: number; other: number;
   trading_total?: number; journal?: number; journals?: JournalAsset[];   // 주식 거래 자산 / 매매일지 자산 분리 (2026-09-05)
   change_amount: number; change_pct: number | null; since_inception_pct: number | null;
+  live_at?: string | null;   // 10초 폴링 시세로 평가한 시각 (없으면 종가 기준, 2026-09-10)
   kr_stock: Breakdown; us_stock: Breakdown;  // us_stock 값 단위: 센트
   manual_assets: { id: number; name: string; category: string; value: number }[];
 };
@@ -117,6 +118,22 @@ export default function DashboardPage() {
     const s = await apiFetch("/signals/daily");
     if (s.ok) setSignal((await s.json()) as Signal);
   }, []);
+
+  // 실시간 총자산 (2026-09-10 지시) — 10초마다 가벼운 /dashboard/live 만 읽어 총액·전일 대비를 갱신한다.
+  // 서버가 live_at 을 주지 않으면(장외·휴장) 멈추고, 화면이 숨겨져 있으면 건너뛴다
+  const liveTick = useCallback(async () => {
+    if (typeof document !== "undefined" && document.hidden) return;
+    const r = await apiFetch("/dashboard/live");
+    if (!r.ok) return;
+    const j = (await r.json()) as Partial<Dash>;
+    if (!j.live_at) return;
+    setDash((prev) => (prev ? { ...prev, ...j } : prev));
+  }, []);
+  useEffect(() => {
+    if (!dash?.live_at) return;
+    const t = setInterval(() => { void liveTick(); }, 10_000);
+    return () => clearInterval(t);
+  }, [dash?.live_at, liveTick]);
 
   const disposeChart = useCallback(() => {
     try { chartApi.current?.remove(); } catch { /* already disposed */ }
@@ -201,6 +218,7 @@ export default function DashboardPage() {
                 {dash.change_amount >= 0 ? "▲" : "▼"} 전일 {fmtWon(Math.abs(dash.change_amount))} ({fmtPct(dash.change_pct, 2)})
               </span>
               <span className="text-faint">전체 {fmtPct(dash.since_inception_pct, 2)}</span>
+              {dash.live_at && <span className="text-ok" title="10초 간격 현재가로 평가 — 시세가 없는 종목은 종가 기준">● 실시간 {dash.live_at.slice(11, 16)}</span>}
             </span>
             {/* 주식 거래 자산과 매매일지 자산 분리 표기 (2026-09-05 지시) */}
             <span className="mt-0.5 flex flex-wrap gap-x-3">

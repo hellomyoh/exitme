@@ -36,6 +36,7 @@ type Detail = JournalMeta & {
     eval_total?: number; unrealized_total?: number; unrealized_pct?: number | null; total_pnl?: number; priced?: boolean; priced_count?: number;
     holdings_count?: number; cost_total?: number; cost_priced?: number;   // 평가 커버리지 (2026-09-07)
     unpriced?: { symbol: string; code: string | null; cost: number }[]; price_notes?: string[];
+    live_at?: string | null;   // 10초 폴링 시세로 평가한 시각 (없으면 증권사 잔고·종가 기준, 2026-09-10)
     // 총 자본금 (2026-09-07) — 연동 O: 계좌 잔고 기준(주식+예수금) / 연동 X: 일지 등록 보유 기준
     account_deposit?: number | null; account_covered?: boolean; account_total?: number | null;
     capital_basis?: "account" | "journal"; capital_total?: number | null; capital_stock?: number | null;
@@ -470,7 +471,9 @@ function MJournalPage() {
   const spNew = sp?.get("new") === "1";
   const [list, setList] = useState<JournalMeta[]>([]);
   const [jid, setJid] = useState<number | null>(null);
+  const jidRef = useRef<number | null>(null);   // 실시간 갱신 타이머가 최신 일지를 보게 (2026-09-10)
   const [detail, setDetail] = useState<Detail | null>(null);
+  jidRef.current = jid;
   const [showNew, setShowNew] = useState(spNew);
   const [nf, setNf] = useState({ name: "", symbol: "", broker: "", fee: "0.015", tax: "0.23" });
   const NEW_SYM = "__new__";
@@ -479,6 +482,20 @@ function MJournalPage() {
   const [msg, setMsg] = useState("");
   const [accts, setAccts] = useState<Acct[]>([]);          // 설정에 등록된 증권사 계좌 (0018)
   const [showImport, setShowImport] = useState(false);
+
+  // 실시간 평가 (2026-09-10 지시) — 10초마다 이 일지만 다시 읽어 평가액·수익률을 갱신한다. 서버가 live_at 을 주지 않으면 멈춘다
+  const liveTick = useCallback(async () => {
+    if (typeof document !== "undefined" && document.hidden) return;
+    const id = jidRef.current;
+    if (id === null) return;
+    const d = await apiFetch(`/mjournals/${id}`);
+    if (d.ok) setDetail((await d.json()) as Detail);
+  }, []);
+  useEffect(() => {
+    if (!detail?.summary?.live_at) return;
+    const t = setInterval(() => { void liveTick(); }, 10_000);
+    return () => clearInterval(t);
+  }, [detail?.summary?.live_at, liveTick]);
 
   const load = useCallback(async (selected: number | null) => {
     const r = await apiFetch("/mjournals");

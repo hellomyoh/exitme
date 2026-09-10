@@ -802,7 +802,12 @@ def enrich_valuation(session: Session, j: ManualJournal, entries: list[ManualJou
     nameless = {h["symbol"] for h in computed["holdings"] if h["symbol"] not in code_of}
     if nameless:
         code_of.update(_codes_by_name(session, nameless))
-    need = {code_of[s] for s in code_of if code_of[s] not in broker}
+    # 실시간 현재가 (2026-09-10 지시) — 10초 폴링 캐시가 있으면 증권사 잔고(120초 캐시)보다 먼저 쓴다. KIS 호출 없음
+    from app.quotes import live_quotes
+
+    live = live_quotes([c for c in code_of.values() if c])
+    live_at: str | None = None
+    need = {code_of[s] for s in code_of if code_of[s] not in broker and code_of[s] not in live}
     closes = _close_price_map(session, need) if need else {}
     # DB 에 없는 종목은 KIS 일봉으로 보충 (2026-09-07)
     backfill_notes: list[str] = []
@@ -816,9 +821,15 @@ def enrich_valuation(session: Session, j: ManualJournal, entries: list[ManualJou
         r = broker.get(code) if code else None
         if r is None:
             r = broker.get("name:" + _norm(h["symbol"]))
-        px, src = (int(r["price"]), "증권사 잔고") if r and r.get("price") else (None, None)
-        if px is None and code and code in closes:
-            px, src = closes[code], "종가"
+        lq = live.get(code) if code else None
+        if lq:
+            px, src = int(lq["price"]), "실시간"
+            at = str(lq.get("as_of") or "")
+            live_at = max(live_at, at) if live_at else (at or None)
+        else:
+            px, src = (int(r["price"]), "증권사 잔고") if r and r.get("price") else (None, None)
+            if px is None and code and code in closes:
+                px, src = closes[code], "종가"
         h["code"], h["price"], h["price_source"] = code, px, src
         if px is None:
             h["eval"] = h["unrealized"] = h["unrealized_pct"] = None
@@ -845,6 +856,7 @@ def enrich_valuation(session: Session, j: ManualJournal, entries: list[ManualJou
     s["unpriced"] = [{"symbol": h["symbol"], "code": h.get("code"), "cost": h["cost"]}
                      for h in computed["holdings"] if h["price"] is None]
     s["price_notes"] = backfill_notes
+    s["live_at"] = live_at        # 10초 폴링 시세로 평가한 시각 (없으면 종가·증권사 잔고 기준, 2026-09-10)
     # ── 총 자본금 (2026-09-07 지시) — "이 일지가 대표하는 총 자본금". 기준이 둘로 갈린다.
     #
     #   연동 O → **계좌 기준**: 계좌 잔고만으로 총액을 만든다 (계좌 주식 평가액 + 예수금).
