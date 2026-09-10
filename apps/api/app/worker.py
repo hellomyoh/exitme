@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta, timezone
+from datetime import time as _dtime
 
 from celery import Celery
 from celery.schedules import crontab
@@ -31,10 +32,18 @@ celery_app.conf.update(
     # 그 이상이면 건너뛴다 — 낡은 상태 파일이나 긴 중단 뒤에 하루치 배치가 한꺼번에 도는 일을 막는다. 09:01 무인 실행은 별도로 09:30 상한(autoexec.LATE_RUN_LIMIT)
     beat_cron_starting_deadline=3600,
     beat_schedule={
-        # 장 마감 후 일봉 수집 — KST 16:05 (feature-market-data §6: 20분 내 완료 목표)
+        # 장 마감 후 일봉 수집 — KST 16:05 (feature-market-data §6: 20분 내 완료 목표).
+        # 애프터마켓(16:00~20:00) 대상인 국내 주식은 이 시각에 아직 확정이 아니라 20:10 에 따로 받는다 (2026-09-14)
         "daily-ingest": {
             "task": "app.worker.daily_ingest",
             "schedule": crontab(hour=16, minute=5, day_of_week="mon-fri"),
+            "kwargs": {"scope": "regular"},
+        },
+        # 국내 주식 일봉 — 애프터마켓 종료(20:00) 후 (2026-09-14 KRX 애프터마켓 개장 대응)
+        "stock-daily-ingest": {
+            "task": "app.worker.daily_ingest",
+            "schedule": crontab(hour=20, minute=10, day_of_week="mon-fri"),
+            "kwargs": {"scope": "stocks"},
         },
         # 장중 현재가 폴링 — 10초 (ASSUMPTIONS: 기본값, KIS 한도 실측 후 조정)
         "poll-quotes": {
@@ -56,6 +65,16 @@ celery_app.conf.update(
             "task": "app.worker.broker_post_close_sync",
             "schedule": crontab(hour=17, minute=10, day_of_week="mon-fri"),
             "kwargs": {"retry": True},   # 변경 없으면 알림 생략 (2026-09-09)
+        },
+        # 애프터마켓(16:00~20:00) 체결 반영 — 20:15 동기화 후 20:20 스냅샷 재계산 (2026-09-14 대응, 사용자 지시)
+        "broker-post-close-sync-evening": {
+            "task": "app.worker.broker_post_close_sync",
+            "schedule": crontab(hour=20, minute=15, day_of_week="mon-fri"),
+            "kwargs": {"retry": True},   # 저녁 체결이 없으면 조용히 끝난다
+        },
+        "evening-asset-snapshot": {
+            "task": "app.worker.evening_asset_snapshot",
+            "schedule": crontab(hour=20, minute=20, day_of_week="mon-fri"),
         },
         # 무인 매매 단일 실행 (ADR-009, 2026-09-08) — 09:01 에 주문표 계산·동결 → 시가 확인 → 갭 판정 → 잔고 → 상한 → 발주. 하루 1회
         "auto-exec-open": {
@@ -92,9 +111,27 @@ celery_app.conf.update(
 KST = timezone(timedelta(hours=9))
 
 
+def ingest_targets(session, scope: str = "all") -> list:
+    """수집 대상 종목 — 확정 시각이 다른 무리를 나눈다 (2026-09-14 KRX 애프터마켓).
+
+    regular: 정규장 마감(15:30)이 그날의 끝인 종목 — 국내 ETF·ETN 과 해외(미국은 자체 마감 기준).
+    stocks : 애프터마켓(20:00)까지 거래되는 국내 주식.
+    all    : 전부 (수동 실행·과거 소급용 — 확정봉 가드가 어차피 미완성 봉을 막는다).
+    """
+    from app.models import Instrument
+    from app.services.ingest import AFTER_MARKET_TYPES
+
+    rows = session.scalars(select(Instrument)).all()
+    if scope == "all":
+        return list(rows)
+    def is_kr_stock(i) -> bool:
+        return i.market not in ("NASDAQ", "NYSE") and (i.type or "").upper() in AFTER_MARKET_TYPES
+    return [i for i in rows if (is_kr_stock(i) if scope == "stocks" else not is_kr_stock(i))]
+
+
 @celery_app.task(name="app.worker.daily_ingest", max_retries=2, autoretry_for=(Exception,), retry_backoff=60)
-def daily_ingest(target: str | None = None) -> dict:
-    """당일(또는 target=YYYY-MM-DD) 일봉 수집. 추적 종목 = instruments 전체."""
+def daily_ingest(target: str | None = None, scope: str = "all") -> dict:
+    """당일(또는 target=YYYY-MM-DD) 일봉 수집. scope 로 확정 시각이 다른 무리를 나눠 받는다(ingest_targets)."""
     from app.db import SessionLocal
     from app.models import Instrument, TradingCalendar
     from app.services import pykrx_client
@@ -109,13 +146,13 @@ def daily_ingest(target: str | None = None) -> dict:
             logger.info("skip daily_ingest: %s is a holiday", target_date)
             return {"skipped": "holiday", "date": target_date.isoformat()}
 
-        run = start_batch(session, "daily_ingest", {"date": target_date.isoformat()})
+        run = start_batch(session, "daily_ingest", {"date": target_date.isoformat(), "scope": scope})
         totals = {"inserted": 0, "rejected": 0, "fallback": 0, "failed": []}
         kis: KisClient | None = None
         if settings.kis_app_key and settings.kis_app_secret:
             kis = KisClient(KisAuth(settings.kis_app_key, settings.kis_app_secret, settings.kis_env))
 
-        instruments = session.scalars(select(Instrument)).all()
+        instruments = ingest_targets(session, scope)
         for inst in instruments:
             try:
                 if inst.market == "NASDAQ":
@@ -416,6 +453,61 @@ def broker_post_close_sync(retry: bool = False) -> dict:
             logger.info("skip broker_post_close_sync: %s is a holiday", today)
             return {"skipped": "holiday", "date": today.isoformat()}
         return run_post_close_sync(session, retry=retry)
+
+
+EVENING_SINCE = _dtime(16, 45)   # 이 시각 뒤에 등록된 오늘 체결 = 애프터마켓 체결 (16:40 스냅샷 이후)
+
+
+def users_with_evening_fills(session, today: date, since: datetime) -> set[int]:
+    """since 이후 등록된 '오늘 체결'이 있는 사용자 — 실전매매 원장과 매매일지 양쪽 (2026-09-14 대응).
+
+    가격만 움직인 경우는 포함하지 않는다(사용자 결정 2026-09-10: 추가 거래가 있을 때만 한 번 더 알린다).
+    """
+    from app.models import ManualJournal, ManualJournalEntry, TradePortfolio, TradeTransaction
+
+    out: set[int] = set()
+    rows = session.execute(
+        select(TradePortfolio.user_id).join(TradeTransaction, TradeTransaction.portfolio_id == TradePortfolio.id)
+        .where(TradeTransaction.kind.in_(("buy", "sell")), TradeTransaction.created_at >= since)).all()
+    out.update(r[0] for r in rows)
+    rows = session.execute(
+        select(ManualJournal.user_id).join(ManualJournalEntry, ManualJournalEntry.journal_id == ManualJournal.id)
+        .where(ManualJournalEntry.trade_date == today, ManualJournalEntry.created_at >= since)).all()
+    out.update(r[0] for r in rows)
+    return out
+
+
+@celery_app.task(name="app.worker.evening_asset_snapshot")
+def evening_asset_snapshot() -> dict:
+    """애프터마켓 종료 후 스냅샷 재계산 (20:20, 2026-09-14 대응).
+
+    16:40 스냅샷은 애프터마켓 한복판의 값이라 그날의 끝이 아니다. 같은 (사용자, 날짜) 키로 덮어써 최종값으로 만든다.
+    일일 현황은 **저녁에 새 체결이 있은 사용자에게만** 한 번 더 보낸다(사용자 결정: 가격만 움직인 경우는 보내지 않는다).
+    """
+    from app.dashboard import compute_user_snapshot, kst_today
+    from app.db import SessionLocal
+    from app.models import TradingCalendar, User
+    from app.notify import send_daily_status
+
+    today = datetime.now(KST).date()
+    with SessionLocal() as session:
+        cal = session.get(TradingCalendar, today)
+        if cal is not None and not cal.is_open:
+            return {"skipped": "holiday", "date": today.isoformat()}
+        users = session.scalars(select(User)).all()
+        for u in users:
+            compute_user_snapshot(session, u.id, kst_today())
+        session.commit()
+        traded = users_with_evening_fills(session, today, datetime.combine(today, EVENING_SINCE, tzinfo=KST))
+        sent = 0
+        for uid in sorted(traded):
+            try:
+                sent += 1 if send_daily_status(session, uid, kst_today(), phase="after") else 0
+            except Exception:  # noqa: BLE001 — 알림 실패가 스냅샷을 되돌리지 않게
+                logger.warning("evening daily status failed user=%s", uid)
+        session.commit()
+        logger.info("evening snapshot: users=%s traded=%s notified=%s", len(users), len(traded), sent)
+        return {"date": today.isoformat(), "users": len(users), "traded": len(traded), "notified": sent}
 
 
 @celery_app.task(name="app.worker.daily_asset_snapshot")
