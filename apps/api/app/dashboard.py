@@ -133,6 +133,34 @@ def compute_user_snapshot(session: Session, user_id: int, snap_date: date) -> As
     return snap
 
 
+def _live_price_overrides(session: Session, inst_ids: set[int]) -> tuple[dict[int, float], str | None]:
+    """10초 폴링 캐시의 현재가 — {instrument_id: price}, 표본 시각. 캐시가 없으면 빈 dict (표시 전용)."""
+    from app.models import Instrument
+    from app.quotes import live_quotes
+
+    if not inst_ids:
+        return {}, None
+    code_of = {i: (session.get(Instrument, i).code if session.get(Instrument, i) else None) for i in inst_ids}
+    live = live_quotes([c for c in code_of.values() if c])
+    if not live:
+        return {}, None
+    out = {i: float(live[c]["price"]) for i, c in code_of.items() if c in live and live[c].get("price")}
+    at = max((v.get("as_of") or "") for v in live.values()) or None
+    return out, at
+
+
+def _prev_close_map_by_id(session: Session, inst_ids: set[int], before: date) -> dict[int, float]:
+    """before(미포함) 이전 마지막 종가 — 오늘 손익의 기준값. 오늘 상장·오늘 첫 매수 종목은 값이 없다."""
+    from app.portfolios import prev_close_before
+
+    out: dict[int, float] = {}
+    for iid in inst_ids:
+        pc = prev_close_before(session, iid, before)
+        if pc:
+            out[iid] = float(pc)
+    return out
+
+
 def live_kr_stock(session: Session, user_id: int) -> tuple[str | None, int]:
     """10초 폴링 캐시로 평가한 국내 포트 주식 평가액 합 — 캐시가 하나도 없으면 (None, 0).
 
@@ -223,8 +251,13 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
     all_inst = set(session.scalars(select(PositionLot.instrument_id).where(
         PositionLot.portfolio_id.in_([p.id for p in all_pfs]))).all()) if all_pfs else set()
     all_prices = latest_closes(session, all_inst)
+    # 표시용 현재가 — 10초 폴링 캐시가 있으면 그것, 없으면 종가 (총자산 카드와 같은 기준, 2026-09-10).
+    # 적재 스냅샷은 종가 그대로 (live_kr_stock 도큐스트링 참조).
+    live_px, live_row_at = _live_price_overrides(session, all_inst)
+    prices_now = {**all_prices, **live_px}
+    prev_px = _prev_close_map_by_id(session, all_inst, today)   # 오늘 손익의 기준 = 오늘 이전 마지막 종가
     for pfr in all_pfs:
-        stock_v, cash_v, cost_v = _portfolio_state(session, pfr.id, all_prices)
+        stock_v, cash_v, cost_v = _portfolio_state(session, pfr.id, prices_now)
         if stock_v == 0 and cash_v == 0 and cost_v == 0:
             continue  # 활동 없는 빈 포트(기본 계좌 등)는 표기 생략
         pnl = stock_v - cost_v
@@ -234,18 +267,32 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
         for l in session.scalars(select(PositionLot).where(PositionLot.portfolio_id == pfr.id)).all():
             it = pos.setdefault(l.instrument_id, {"qty": 0, "value": 0.0})
             it["qty"] += l.qty_open
-            it["value"] += l.qty_open * all_prices.get(l.instrument_id, l.price)
+            it["value"] += l.qty_open * prices_now.get(l.instrument_id, l.price)
         positions = []
+        # 오늘 손익 (2026-09-10 지시) — 누적(원가 대비)과 달리 **전일 종가 평가액 대비**. 전일 종가가 없는 종목
+        # (오늘 신규 매수·신규 상장)은 빼고 이름을 알린다 — 매입가와 비교하면 누적과 같아져 뜻이 흐려진다.
+        day_change = prev_eval = 0.0
+        day_missing: list[str] = []
         for iid, it in pos.items():
             if it["qty"] <= 0:
                 continue
             inst = session.get(Instrument, iid)
             positions.append({"code": inst.code, "name": inst.name,
                               "qty": it["qty"], "value": round(it["value"])})
+            pc, now_px = prev_px.get(iid), prices_now.get(iid)
+            if pc and now_px:
+                day_change += it["qty"] * (now_px - pc)
+                prev_eval += it["qty"] * pc
+            else:
+                day_missing.append(inst.name)
         port_rows.append({
             "id": pfr.id, "name": pfr.name, "market": pfr.market,
             "equity": round(stock_v) + cash_v, "stock_value": round(stock_v), "cash": cash_v,
             "pnl": round(pnl), "pnl_pct": (pnl / cost_v) if cost_v > 0 else None,
+            # 셀 수 있는 보유가 없으면(현금만·전일 종가 없음) 0 이 아니라 값 없음 — 화면은 '—'
+            "day_change": round(day_change) if prev_eval > 0 else None,
+            "day_change_pct": (day_change / prev_eval) if prev_eval > 0 else None,
+            "day_missing": day_missing, "price_source": "live" if live_px else "close",
             "color": (pfr.params or {}).get("color"),  # 탭 배경색 (2026-09-05)
             "positions": positions,
         })

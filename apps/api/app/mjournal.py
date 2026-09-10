@@ -591,6 +591,8 @@ def journal_assets(session: Session, user_id: int) -> list[dict]:
     총자산에 넣는다. 계좌 단위로 통째로 빼던 이전 규칙은 포트가 현금만 들고 있을 때 일지의 주식 전부를
     누락시켰다(2026-09-06 발견: 매매일지 0원). 같은 주식을 두 번 세는 일은 종목 매칭(코드 → 정규화 이름)으로 막는다.
     """
+    from app.dashboard import kst_today
+
     port_held = _port_holdings_by_cred(session, user_id)
     out = []
     for j in session.scalars(select(ManualJournal).where(ManualJournal.user_id == user_id,
@@ -598,12 +600,16 @@ def journal_assets(session: Session, user_id: int) -> list[dict]:
                              .order_by(ManualJournal.id)).all():
         entries = session.scalars(select(ManualJournalEntry).where(ManualJournalEntry.journal_id == j.id)).all()
         c = enrich_valuation(session, j, entries, _compute(j, entries))  # 현재가 평가 (2026-09-06)
+        add_day_change(session, c, kst_today())                          # 전일 종가 대비 오늘 손익 (2026-09-10 지시)
         cost = sum(h["cost"] for h in c["holdings"])
         s = c["summary"]
         held = port_held.get(j.broker_credential_id, {}) if j.broker_credential_id else {}
         held_norm = {_norm(n) for n in held.values()}
         included_value = 0
         excluded: list[dict] = []
+        # 오늘 손익도 총자산에 넣는 종목(제외되지 않은 것)만 — 표의 평가액과 같은 범위 (2026-09-10)
+        day_change = prev_eval = 0
+        day_missing: list[str] = []
         for h in c["holdings"]:
             # value 규약: 전 종목 현재가가 있으면 평가액, 아니면 취득원가(시세 미연동 종목 보호)
             hv = (h.get("eval") if s["priced"] else None) or h["cost"]
@@ -612,6 +618,11 @@ def journal_assets(session: Session, user_id: int) -> list[dict]:
                 excluded.append({"symbol": h["symbol"], "code": h.get("code"), "value": hv})
             else:
                 included_value += hv
+                if h.get("day_change") is not None and h.get("prev_close"):
+                    day_change += h["day_change"]
+                    prev_eval += h["prev_close"] * h["qty"]
+                else:
+                    day_missing.append(h["symbol"])   # 전일 종가 없음(오늘 매수·시세 미확보)
         all_excluded = bool(c["holdings"]) and len(excluded) == len(c["holdings"])
         note = None
         if excluded:
@@ -623,6 +634,9 @@ def journal_assets(session: Session, user_id: int) -> list[dict]:
                     "unrealized": s["unrealized_total"] if s["priced"] else None,
                     "unrealized_pct": s["unrealized_pct"] if s["priced"] else None,
                     "realized": s["realized"], "return_pct": s["return_pct"],
+                    "day_change": day_change if prev_eval > 0 else None,
+                    "day_change_pct": (day_change / prev_eval) if prev_eval > 0 else None,
+                    "day_missing": day_missing,
                     "holdings": [{"symbol": h["symbol"], "qty": h["qty"], "cost": h["cost"],
                                   "price": h.get("price"), "eval": h.get("eval")} for h in c["holdings"]],
                     "entries": len(entries), "counted": not all_excluded, "excluded": excluded, "note": note})
