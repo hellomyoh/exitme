@@ -42,5 +42,6 @@ ADR-009 §4 는 발주 경로를 **HTS 직접 또는 09:01 무인 실행 둘뿐*
 ## 영향
 
 - 되돌리기 어려운 동작(실계좌 주문)이 화면에 생긴다. 확인창에 계좌 라벨·실전/모의·수량·가격을 그대로 보이고, 시장가는 "접수 즉시 체결되어 취소할 수 없습니다"를 경고한다.
-- 매매일지에서도 같은 기능이 필요하다 → `broker_orders` 에 `journal_id` 를 더하고 `portfolio_id` 를 nullable 로 바꾸는 마이그레이션으로 **PR 2** 에서 이어간다(사용자 결정: A안).
-- 버전: 새 엔드포인트·새 화면 요소 — 마이너 `0.18.0`.
+- 매매일지도 같은 표를 쓴다(사용자 결정 A안) — 마이그레이션 0026 이 `broker_orders.journal_id` 를 더하고 `portfolio_id` 를 nullable 로 바꾼다. 소유자는 둘 중 하나여야 한다(CHECK `ck_broker_orders_owner`). 주문 본체(`place_manual_kis_order`)와 취소(`cancel_regular_order`)를 공용 함수로 뽑아 실전 포트·매매일지가 **같은 코드**를 쓴다.
+  - 매매일지 API: `GET /mjournals/{jid}/orders?date=&refresh=`, `POST /mjournals/{jid}/orders/manual`, `POST /mjournals/{jid}/orders/{oid}/cancel`. 계좌 연동·체결 가져오기는 이미 있던 기능(0018)이라 그대로 쓰고, 체결분은 그 경로가 일지 기록으로 넣는다.
+- 버전: 새 엔드포인트·새 화면 요소·마이그레이션 — 마이너 `0.18.0` (실전매매·매매일지 두 부분을 한 릴리스로).

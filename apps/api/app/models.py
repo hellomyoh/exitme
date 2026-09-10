@@ -334,7 +334,9 @@ class BrokerOrder(TimestampMixin, Base):
     __tablename__ = "broker_orders"
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False)
+    # 소유자 — 실전 포트 또는 매매일지 (0026, ADR-011 PR 2: 매매일지도 같은 표를 쓴다). 둘 중 하나는 반드시 있다(CHECK)
+    portfolio_id: Mapped[int | None] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=True)
+    journal_id: Mapped[int | None] = mapped_column(ForeignKey("manual_journals.id", ondelete="CASCADE"), nullable=True)
     broker_credential_id: Mapped[int | None] = mapped_column(
         ForeignKey("broker_credentials.id", ondelete="SET NULL"), nullable=True)
     plan_date: Mapped[date] = mapped_column(Date, nullable=False)       # 주문표 실행일

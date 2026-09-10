@@ -741,3 +741,10 @@
 - 테스트 결과: 신규 `test_autoexec::test_manual_order_places_cancels_and_shows_with_auto` — 장 마감 뒤 409 / 매수가능 초과 거부(주문 미발송) / 잔고 초과 매도 거부 / 정상 접수(mode=manual·주문번호·로그) / 목록 표시 / 전량 체결 시 취소 409·미체결 취소 성공. 전체 `pytest -q tests/` **274 passed**, `tsc --noEmit` 무오류.
 - 남은 것: 매매일지 직접 주문 — `broker_orders` 에 `journal_id` 추가·`portfolio_id` nullable 마이그레이션(사용자 결정 A안)으로 **PR 2** 에서.
 - Git commit: feat: place KIS orders directly from the app (ADR-011) — portfolio side
+
+## [2026-09-10] feat | 매매일지 직접 주문 (ADR-011) — PR 2/2, 같은 PR 에 이어 커밋 (사용자 결정 A안)
+
+- 배경: 매매일지의 **계좌 연동·체결 가져오기·잔고 기초 보유 등록은 이미 있었고**(0018), 없던 것은 주문 발행뿐이었다. 실전매매와 같은 코드로 묶기 위해 `broker_orders` 를 두 주인이 공유하게 한다(사용자 결정 A안).
+- 작업 내용: 마이그레이션 **0026** — `broker_orders.journal_id` 추가(FK CASCADE), `portfolio_id` nullable, 소유자 CHECK(`portfolio_id IS NOT NULL OR journal_id IS NOT NULL`), `(journal_id, plan_date)` 인덱스. 주문 본체를 `place_manual_kis_order()`, 취소를 `cancel_regular_order()` 로 공용화해 실전 포트·매매일지가 같은 안전장치를 쓴다(장중·매수가능/잔고 사전 검증·중복 잠금·취소 전 체결 재확인). 매매일지 API 3종(`GET /mjournals/{jid}/orders`, `POST …/orders/manual`, `POST …/orders/{oid}/cancel`). 웹: 매매일지 '직접 주문' 카드(주문 폼 + 그날 주문 목록 + 취소, 살아 있는 주문이 있으면 장중 30초 상태 갱신).
+- 테스트 결과: 신규 `test_mjournal::test_journal_manual_order_place_list_and_cancel` — 계좌 미연결 거부 / 장 마감 뒤 409 / 잔고 초과 매도 거부(주문 미발송) / 정상 접수(journal_id 기록·portfolio_id None) / 목록·연결 계좌 / 전량 체결 취소 409·미체결 취소 성공 / 다른 일지와 격리. 전체 `pytest -q tests/` **275 passed**, `tsc --noEmit` 무오류.
+- Git commit: feat: journal-side manual orders sharing broker_orders (migration 0026)
