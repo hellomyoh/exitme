@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.db import SessionLocal, engine
 from app.main import app
@@ -127,3 +128,38 @@ def test_journal_asset_row_has_today_change(monkeypatch):
     # 오늘 = 10×(11,000−10,000) = 10,000, 분모 = 100,000. B 는 전일 종가가 없어 제외
     assert row["day_change"] == 10_000 and abs(row["day_change_pct"] - 0.1) < 1e-9
     assert row["day_missing"] == [f"일지B{b}"]
+
+
+def test_market_card_and_total_card_carry_today_and_cumulative(monkeypatch):
+    """상단 카드 (2026-09-10 지시) — 한국 주식 카드는 누적(원가 대비)+오늘(전일 종가 대비),
+    총자산 카드는 누적 금액(since_inception_amount, 입출금 제외)을 함께 준다."""
+    from app.dashboard import compute_user_snapshot, kst_today
+    from app.models import AssetSnapshot, TradePortfolio
+
+    today = kst_today()
+    y = today - timedelta(days=1)
+    code = "M" + uuid.uuid4().hex[:5].upper()
+    _seed(code, f"시장{code}", {y: 100_000, today: 110_000})
+
+    c, h = _client()
+    pid = c.post("/portfolios", json={"name": "시장카드", "market": "KR", "code_200": "102110"}, headers=h).json()["id"]
+    with SessionLocal() as s_:
+        uid = s_.get(TradePortfolio, pid).user_id
+    d0 = (today - timedelta(days=5)).isoformat() + "T10:00:00+09:00"
+    c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 2_000_000, "executed_at": d0}, headers=h)
+    c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": code, "qty": 10, "price": 90_000, "executed_at": d0}, headers=h)
+    # 어제 스냅샷을 만들어 두면 누적(최초 대비)·오늘(전일 대비)이 모두 성립한다
+    with SessionLocal() as s_:
+        compute_user_snapshot(s_, uid, y)
+        snap = s_.scalar(select(AssetSnapshot).where(AssetSnapshot.user_id == uid, AssetSnapshot.snap_date == y))
+        base = int(snap.total)
+        s_.commit()
+
+    d = c.get("/dashboard", headers=h).json()
+    kr = d["kr_stock"]
+    assert kr["pnl"] == 10 * (110_000 - 90_000) and abs(kr["pnl_pct"] - 200_000 / 900_000) < 1e-9   # 누적: 원가 대비
+    assert kr["day_change"] == 10 * (110_000 - 100_000) and abs(kr["day_change_pct"] - 0.1) < 1e-9  # 오늘: 전일 종가 대비
+    # 누적 금액 = 오늘 총자산 − 최초 스냅샷 총자산 (그 사이 입출금 없음)
+    assert d["since_inception_amount"] == d["total"] - base
+    assert d["since_inception_pct"] is not None and d["change_amount"] == d["total"] - base
+

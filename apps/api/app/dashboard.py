@@ -221,28 +221,48 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
         denom = prev.total + f
         change_pct = change / denom if denom > 0 else None
     since_pct = None
+    since_amount = None      # 누적 금액도 함께 (2026-09-10 지시) — 카드에 %만 있어 크기를 알 수 없었다
     if first and first.snap_date < today:
         f_all = user_flows_between(session, user_id, first.snap_date, today)
         denom = first.total + f_all
-        since_pct = (total_now - first.total - f_all) / denom if denom > 0 else None
+        since_amount = total_now - first.total - f_all
+        since_pct = (since_amount / denom) if denom > 0 else None
     # 자산 내용 카드 — KR/US 구분 (feature-dashboard §5, 2026-09-02). US 는 센트, $ 표기는 웹 담당.
     from app.models import PositionLot
 
     def _market_breakdown(market: str) -> dict:
+        """시장 카드 — 누적(보유 원가 대비)과 **오늘**(현재가 − 전일 종가, 전일 종가 평가액 대비)을 함께 (2026-09-10 지시).
+
+        계좌 표와 같은 규칙: 현재가는 10초 폴링 캐시 우선·없으면 종가, 전일 종가가 없는 종목(오늘 신규 매수)은 오늘에서 뺀다.
+        """
         pfs = session.scalars(select(TradePortfolio).where(
             TradePortfolio.user_id == user_id, TradePortfolio.market == market)).all()
         pf_ids = [p.id for p in pfs]
         inst_ids = set(session.scalars(select(PositionLot.instrument_id).where(
             PositionLot.portfolio_id.in_(pf_ids))).all()) if pf_ids else set()
-        prices = latest_closes(session, inst_ids)
+        live_px, _at = _live_price_overrides(session, inst_ids)
+        prices = {**latest_closes(session, inst_ids), **live_px}
+        prev_px = _prev_close_map_by_id(session, inst_ids, today)
         value = cost = 0
         for p in pfs:
             s, _c, co = _portfolio_state(session, p.id, prices)
             value += s
             cost += co
+        day_change = prev_eval = 0.0
+        qty_by_inst: dict[int, int] = {}
+        for l in session.scalars(select(PositionLot).where(PositionLot.portfolio_id.in_(pf_ids or [0]))).all():
+            if l.qty_open > 0:
+                qty_by_inst[l.instrument_id] = qty_by_inst.get(l.instrument_id, 0) + l.qty_open
+        for iid, qty in qty_by_inst.items():
+            pc, now_px = prev_px.get(iid), prices.get(iid)
+            if pc and now_px:
+                day_change += qty * (now_px - pc)
+                prev_eval += qty * pc
         pnl = value - cost
         return {"value": value, "cost": cost, "pnl": pnl,
-                "pnl_pct": (pnl / cost) if cost > 0 else None}
+                "pnl_pct": (pnl / cost) if cost > 0 else None,
+                "day_change": round(day_change) if prev_eval > 0 else None,
+                "day_change_pct": (day_change / prev_eval) if prev_eval > 0 else None}
 
     # 포트별 분리 표기 (2026-09-02 지시) — 진행 중 실전매매 각각의 평가액·평가손익
     port_rows = []
@@ -350,7 +370,7 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
         "us_trend": [v for _d, v in sorted(us_by_date.items())],
         "change_amount": change,
         "change_pct": change_pct,
-        "since_inception_pct": since_pct,
+        "since_inception_pct": since_pct, "since_inception_amount": since_amount,
         "kr_stock": _market_breakdown("KR"),
         "us_stock": _market_breakdown("US"),  # 값 단위: 센트 (환율 미도입 — KRW 합산 제외)
         "manual_assets": [
