@@ -744,3 +744,95 @@ def test_capital_basis_account_covered_and_mismatch(monkeypatch):
     assert s2["capital_total"] == 800_000 + 1_100_000 + 96_159   # 카드는 사라지지 않는다
     assert s2["capital_return_pct"] is None                       # 범위 불일치 → 수익률 미표시
     assert [(m["symbol"], m["journal_qty"], m["account_qty"]) for m in s2["account_mismatch"]] == [("SK하이닉스", 0, 5)]
+
+
+def test_journal_manual_order_place_list_and_cancel(monkeypatch):
+    """매매일지 직접 주문 (ADR-011 PR 2, 2026-09-10 지시) — 연결 계좌에 KIS 정규 주문을 내고 broker_orders(journal_id)로 기록,
+    목록·취소가 실전매매와 같은 코드. 계좌 미연결·청산 일지·장 마감 뒤·수량 초과는 거부."""
+    import uuid as _uuid
+    from datetime import datetime, time, timedelta, timezone
+    from unittest.mock import patch
+
+    import app.broker as br
+    from app.db import SessionLocal
+    from app.models import BrokerOrder
+
+    KST = timezone(timedelta(hours=9))
+    today = datetime.now(KST).date()
+
+    class _Kis:
+        def __init__(self):
+            self.placed, self.cancelled, self.fills = [], [], {}
+
+        def fetch_price(self, code):
+            return {"stck_prpr": "70000"}
+
+        def buyable(self, code, price):
+            return {"cash": 700_000, "cash_qty": 700_000 // int(price), "max_qty": 10, "raw": {}}
+
+        def fetch_balance(self):
+            return {"holdings": [{"code": "005930", "name": "삼성전자", "qty": 3, "avg_price": 70000,
+                                  "buy_amount": 0, "price": 70000, "eval_amount": 0}], "deposit": 700_000, "total_eval": 0}
+
+        def place_order(self, code, side, qty, price):
+            self.placed.append((code, side, qty, price))
+            return {"order_no": f"J{len(self.placed):04d}", "orgno": "00950", "msg": "주문 전송 완료",
+                    "raw": {"ODNO": f"J{len(self.placed):04d}", "KRX_FWDG_ORD_ORGNO": "00950"}}
+
+        def cancel_order(self, order_no, orgno=""):
+            self.cancelled.append(order_no)
+            return {"msg": "취소 완료", "raw": {}}
+
+        def fetch_executions(self, start, end, only_filled=True):
+            class E:
+                def __init__(self, no, q):
+                    self.order_no, self.filled_qty = no, q
+            return [E(no, q) for no, q in self.fills.items()]
+
+    kis = _Kis()
+    import app.autoexec as ae
+
+    monkeypatch.setattr(br, "_client", lambda cred: kis)
+    monkeypatch.setattr(ae, "_client", lambda cred: kis)   # 취소 직전 체결 재확인이 쓰는 경로
+    c, h = _client()
+    jid = c.post("/mjournals", json={"name": "주문일지", "symbol": "삼성전자"}, headers=h).json()["id"]
+    acct = c.post("/broker/accounts", json={"label": "위탁", "app_key": "PS" + "j" * 34, "app_secret": "S" * 180,
+                                            "account_no": "68800037-01"}, headers=h).json()
+
+    def order(body, at=(10, 0)):
+        with patch("app.broker.datetime") as dt:
+            dt.now.return_value = datetime.combine(today, time(*at), tzinfo=KST)
+            return c.post(f"/mjournals/{jid}/orders/manual", json=body, headers=h)
+
+    # ① 계좌 미연결 → 거부
+    assert order({"code": "005930", "side": "buy", "qty": 1, "price": 70_000}).status_code in (404, 409)
+    assert c.put(f"/mjournals/{jid}/broker", json={"credential_id": acct["id"]}, headers=h).status_code == 200
+    # ② 장 마감 뒤 → 409
+    r = order({"code": "005930", "side": "buy", "qty": 1, "price": 70_000}, at=(16, 30))
+    assert r.status_code == 409 and "장중" in r.json()["detail"]
+    # ③ 잔고 초과 매도 → 거부, 주문 미발송
+    r = order({"code": "005930", "side": "sell", "qty": 99, "price": 80_000})
+    assert r.status_code == 409 and "잔고 부족" in r.json()["detail"] and kis.placed == []
+    # ④ 정상 접수 — journal_id 로 기록되고 실전 포트 주문과 섞이지 않는다
+    r = order({"code": "005930", "side": "buy", "qty": 2, "price": 70_000})
+    assert r.status_code == 200, r.text
+    row = r.json()
+    assert row["mode"] == "manual" and row["status"] == "submitted" and row["order_no"] == "J0001"
+    assert kis.placed == [("005930", "buy", 2, 70000)]
+    with SessionLocal() as s:
+        o = s.get(BrokerOrder, row["id"])
+        assert o.journal_id == jid and o.portfolio_id is None
+    lst = c.get(f"/mjournals/{jid}/orders", headers=h).json()
+    assert [i["order_no"] for i in lst["items"]] == ["J0001"] and lst["linked_account"]["id"] == acct["id"]
+    # ⑤ 전량 체결이면 취소 거부, 미체결이면 취소 (실전매매와 같은 함수)
+    kis.fills = {"J0001": 2}
+    assert c.post(f"/mjournals/{jid}/orders/{row['id']}/cancel", headers=h).status_code == 409
+    assert kis.cancelled == []
+    kis.fills = {}
+    r2 = order({"code": "005930", "side": "sell", "qty": 1, "price": 80_000})
+    assert r2.status_code == 200
+    assert c.post(f"/mjournals/{jid}/orders/{r2.json()['id']}/cancel", headers=h).status_code == 200
+    assert kis.cancelled == ["J0002"]
+    # ⑥ 다른 일지의 주문은 보이지 않는다
+    jid2 = c.post("/mjournals", json={"name": "다른일지", "symbol": "카카오"}, headers=h).json()["id"]
+    assert c.get(f"/mjournals/{jid2}/orders", headers=h).json()["items"] == []

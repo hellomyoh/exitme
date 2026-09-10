@@ -11,7 +11,7 @@ import logging
 import re
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -474,6 +474,75 @@ def import_journal_fills_for(session: Session, j: ManualJournal, cred: BrokerCre
 # ── 청산 (0020, 2026-09-05 지시) ───────────────────────────────────────────────────
 # 전량 매도했거나 더 이상 거래하지 않는 일지는 청산으로 표시한다. 기록은 보존되고 조회 가능하지만
 # 새 기록을 받지 않으며 대시보드(매매일지 자산·총자산)에서 빠진다. 되돌리기 = 다시 열기.
+
+
+# ── 직접 주문 (ADR-011 PR 2, 2026-09-10 지시 "매매일지에도 수동 매수/매도") ───────────────
+# 연결 계좌가 있는 일지에서 KIS 정규 주문을 바로 낸다. 기록은 실전 포트와 같은 broker_orders(mode="manual", journal_id)
+# 이므로 취소·체결 확정·표시가 같은 코드다. 체결분은 기존 '체결 가져오기'(15:45 배치·화면 버튼)가 일지 기록으로 넣는다.
+
+class JournalOrderIn(BaseModel):
+    code: str = Field(min_length=4, max_length=12)
+    side: str = Field(pattern="^(buy|sell)$")
+    qty: int = Field(gt=0, le=1_000_000)
+    price: int | None = Field(default=None, ge=0)   # 없으면 시장가
+
+
+def _journal_orders(session: Session, jid: int, day: date | None = None):
+    from app.models import BrokerOrder
+
+    q = select(BrokerOrder).where(BrokerOrder.journal_id == jid)
+    if day is not None:
+        q = q.where(BrokerOrder.plan_date == day)
+    return session.scalars(q.order_by(BrokerOrder.id)).all()
+
+
+@router.get("/mjournals/{jid}/orders")
+def list_journal_orders(jid: int, date_: date | None = Query(default=None, alias="date"), refresh: bool = False,
+                        user_id: int = Depends(current_user_id), session: Session = Depends(get_session)) -> dict:
+    """이 일지가 낸 주문 목록. refresh=1 이면 당일 체결조회로 상태를 맞춘다(장중 갱신용)."""
+    from app.broker import _order_out
+    from app.dashboard import kst_today
+
+    j = _owned(session, jid, user_id)
+    rows = _journal_orders(session, jid, date_)
+    if refresh and j.broker_credential_id:
+        cred = session.get(BrokerCredential, j.broker_credential_id)
+        if cred is not None and cred.user_id == user_id:
+            from app.autoexec import sync_auto_orders
+
+            if sync_auto_orders(session, cred, rows, kst_today()):
+                session.commit()
+    return {"items": [_order_out(r) for r in rows], "linked_account": _linked_out(session, j)}
+
+
+@router.post("/mjournals/{jid}/orders/manual")
+def place_journal_order(jid: int, body: JournalOrderIn, user_id: int = Depends(current_user_id),
+                        session: Session = Depends(get_session)) -> dict:
+    """매매일지 직접 주문 — 실전 포트와 같은 본체·같은 안전장치(장중·매수가능/잔고 사전 검증·중복 잠금)."""
+    from app.broker import _order_out, place_manual_kis_order
+
+    j = _owned(session, jid, user_id)
+    if j.closed_at is not None:
+        raise HTTPException(status_code=409, detail="청산된 일지입니다 — 먼저 '다시 열기'를 하세요")
+    cred = _cred_for_journal(session, j, user_id)
+    row = place_manual_kis_order(session, user_id, cred, code=body.code, side=body.side, qty=body.qty,
+                                 price=body.price, leg="ETC", kind="manual", journal_id=j.id, lock_scope=f"j{j.id}")
+    return _order_out(row)
+
+
+@router.post("/mjournals/{jid}/orders/{oid}/cancel")
+def cancel_journal_order(jid: int, oid: int, user_id: int = Depends(current_user_id),
+                         session: Session = Depends(get_session)) -> dict:
+    """매매일지 주문 취소 — 취소 직전 체결 재확인 포함(실전 포트와 같은 함수)."""
+    from app.broker import _order_out, cancel_regular_order
+    from app.models import BrokerOrder
+
+    j = _owned(session, jid, user_id)
+    row = session.get(BrokerOrder, oid)
+    if row is None or row.journal_id != jid:
+        raise HTTPException(status_code=404, detail="order not found")
+    cred = _cred_for_journal(session, j, user_id)
+    return _order_out(cancel_regular_order(session, user_id, row, cred))
 
 
 @router.post("/mjournals/{jid}/close")

@@ -48,6 +48,124 @@ type Detail = JournalMeta & {
   closed_at?: string | null;   // 청산 시각 (0020) — 있으면 기록 추가 불가, 대시보드 제외
 };
 
+// 국내 장중(평일 09:00~15:20 KST) — 직접 주문 가능 시간 (2026-09-10, ADR-011)
+const krMarketOpen = () => {
+  const k = new Date(Date.now() + 9 * 3600e3);
+  const d = k.getUTCDay(), m = k.getUTCHours() * 60 + k.getUTCMinutes();
+  return d >= 1 && d <= 5 && m >= 9 * 60 && m <= 15 * 60 + 20;
+};
+
+/** 직접 주문 (ADR-011 PR 2, 2026-09-10 지시 "매매일지에도 수동 매수/매도") — 연결 계좌에 KIS 정규 주문을 바로 내고
+ *  그날 낸 주문을 상태와 함께 보여 준다. 기록은 실전매매와 같은 broker_orders 라 취소·체결 확정이 같은 코드다.
+ *  체결된 주문은 기존 '증권사 체결 가져오기' 가 일지 기록으로 넣는다. */
+function JournalOrders({ jid, linked, onChanged }: {
+  jid: number; linked: { id: number; label: string; env: string } | null; onChanged: () => void }) {
+  type Row = { id: number | null; code: string; side: string; qty: number; price: number | null; status: string;
+    status_ko: string; order_no: string | null; filled_qty: number; message: string | null; mode?: string; plan_date: string };
+  const [rows, setRows] = useState<Row[]>([]);
+  const [code, setCode] = useState("");
+  const [side, setSide] = useState<"buy" | "sell">("buy");
+  const [qty, setQty] = useState("");
+  const [price, setPrice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const open = krMarketOpen();
+  const reload = useCallback(async (refresh = false) => {
+    const r = await apiFetch(`/mjournals/${jid}/orders${refresh ? "?refresh=1" : ""}`);
+    if (r.ok) setRows(((await r.json()) as { items: Row[] }).items);
+  }, [jid]);
+  useEffect(() => { void reload(false); }, [reload]);
+  // 살아 있는 주문이 있으면 장중 30초마다 상태를 맞춘다 (실전매매와 같은 규칙)
+  const live = rows.some((x) => ["submitted", "partial"].includes(x.status));
+  useEffect(() => {
+    if (!live || !krMarketOpen()) return;
+    const t = setInterval(() => { if (!document.hidden) void reload(true); }, 30_000);
+    return () => clearInterval(t);
+  }, [live, reload]);
+  async function submit() {
+    const c = code.trim().toUpperCase(), q = Number(qty), px = price.trim() ? Number(price) : null;
+    if (!c || !Number.isFinite(q) || q <= 0) { setMsg("종목코드와 수량을 확인하세요"); return; }
+    const what = `${c} ${side === "buy" ? "매수" : "매도"} ${q.toLocaleString()}주${px ? ` @${px.toLocaleString()}원` : " 시장가"}`;
+    const warn = px ? "" : "\n\n⚠️ 시장가는 접수 즉시 체결되어 취소할 수 없습니다.";
+    if (!window.confirm(`${linked?.label ?? "연결 계좌"}${linked?.env === "vps" ? " (모의)" : " (실전)"} 계좌에 실제 주문을 냅니다.\n\n${what}${warn}\n\n계속할까요?`)) return;
+    setBusy(true); setMsg("");
+    const r = await apiFetch(`/mjournals/${jid}/orders/manual`, { method: "POST", body: JSON.stringify({ code: c, side, qty: q, price: px }) });
+    const j = (await r.json().catch(() => ({}))) as { order_no?: string | null; detail?: string };
+    setBusy(false);
+    if (!r.ok) { setMsg(`주문 실패 — ${j.detail ?? r.status}`); return; }
+    setMsg(`👤 직접 주문 접수 — ${what} · 주문번호 ${j.order_no ?? "-"}`);
+    setQty(""); setPrice("");
+    void reload(false);
+    onChanged();
+  }
+  async function cancel(oid: number, label: string) {
+    if (!window.confirm(`${label} 주문을 취소합니다.\n\n남아 있는 잔량이 취소되고 이미 체결된 수량은 취소되지 않습니다.\n\n계속할까요?`)) return;
+    setBusy(true); setMsg("");
+    const r = await apiFetch(`/mjournals/${jid}/orders/${oid}/cancel`, { method: "POST" });
+    const j = (await r.json().catch(() => ({}))) as { detail?: string };
+    setBusy(false);
+    if (!r.ok) { setMsg(`취소 실패 — ${j.detail ?? r.status}`); void reload(true); return; }
+    setMsg(`${label} 주문을 취소했습니다`);
+    void reload(false);
+  }
+  if (!linked) return null;
+  return (
+    <Card className="mb-4">
+      <CardTitle right={<span className="text-[12px] font-normal normal-case text-faint">{linked.label}{linked.env === "vps" ? " · 모의" : " · 실전"}</span>}>
+        직접 주문 <span className="normal-case text-faint">· 연결 계좌에 바로 냅니다 · 장중 09:00~15:20 · 체결분은 &apos;체결 가져오기&apos;가 기록으로 넣습니다</span>
+      </CardTitle>
+      <div className="flex flex-wrap items-end gap-2 text-[13.5px]">
+        <label className="grid gap-1 text-[12.5px] text-faint">종목코드
+          <input className="input !w-36 !py-2" placeholder="005930" value={code} onChange={(e) => setCode(e.target.value)} /></label>
+        <span className="inline-flex overflow-hidden rounded-lg border border-line">
+          {(["buy", "sell"] as const).map((sd) => (
+            <button key={sd} className={`px-3 py-2 text-[13px] ${side === sd ? (sd === "buy" ? "bg-down text-white" : "bg-accent text-white") : "bg-inset text-muted hover:text-ink"}`}
+              onClick={() => setSide(sd)}>{sd === "buy" ? "매수" : "매도"}</button>
+          ))}
+        </span>
+        <label className="grid gap-1 text-[12.5px] text-faint">수량
+          <input className="input !w-24 !py-2" inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value)} /></label>
+        <label className="grid gap-1 text-[12.5px] text-faint">지정가 (비우면 시장가)
+          <input className="input !w-32 !py-2" inputMode="numeric" placeholder="시장가" value={price} onChange={(e) => setPrice(e.target.value)} /></label>
+        <button className="btn btn-primary !py-2" disabled={busy || !open} onClick={() => void submit()}>{busy ? "접수 중…" : "주문 넣기"}</button>
+        {!open && <span className="text-[12.5px] text-faint">장중(09:00~15:20)에만 낼 수 있습니다</span>}
+      </div>
+      {msg && <p className="mt-2 text-[13px] text-muted">{msg}</p>}
+      {rows.length > 0 && (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-left text-[13px]">
+            <thead className="border-b border-line text-[12px] text-faint"><tr>
+              <th className="pb-1.5 font-medium">일자</th><th className="pb-1.5 font-medium">종목</th>
+              <th className="pb-1.5 font-medium">방향</th><th className="pb-1.5 text-right font-medium">수량 · 가격</th>
+              <th className="pb-1.5 pl-3 font-medium">상태</th><th className="pb-1.5 pl-3 font-medium"> </th>
+            </tr></thead>
+            <tbody>
+              {rows.slice().reverse().map((x) => (
+                <tr key={x.id ?? `${x.order_no}`} className="border-b border-line/50 last:border-0">
+                  <td className="py-1.5">{x.plan_date}</td>
+                  <td className="py-1.5">{x.code}</td>
+                  <td className={`py-1.5 ${x.side === "buy" ? "text-down" : "text-accent"}`}>{x.side === "buy" ? "매수" : "매도"}</td>
+                  <td className="py-1.5 text-right">{x.qty.toLocaleString()}주 · {x.price ? `${x.price.toLocaleString()}원` : "시장가"}</td>
+                  <td className="py-1.5 pl-3" title={x.message ?? ""}>
+                    {x.status === "submitted" ? "👤 발주됨" : x.status === "filled" ? `✓ 체결 ${x.filled_qty.toLocaleString()}주`
+                      : x.status === "partial" ? `◐ ${x.filled_qty}/${x.qty}` : x.status_ko}
+                    {x.order_no && <span className="ml-1 text-faint">#{x.order_no}</span>}
+                  </td>
+                  <td className="py-1.5 pl-3">
+                    {x.id != null && ["submitted", "partial"].includes(x.status) && (
+                      <button className="text-[12px] text-down hover:underline disabled:opacity-50" disabled={busy}
+                        onClick={() => void cancel(x.id as number, `${x.code} ${x.side === "buy" ? "매수" : "매도"} ${x.qty}주`)}>취소</button>)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 /** 증권사 체결 가져오기 (0018, 2026-09-05 지시) — 검토 문서 권고안.
  *  계좌는 설정에서 등록한 것 중 선택해 연결하고, 체결은 미리보기(종목 매칭·경고 확인) → 등록 두 단계.
  *  조회 전용이며 수동 기록을 자동으로 고치지 않는다 — 보유 초과 매도·수동 중복은 경고만. */
@@ -796,6 +914,9 @@ function MJournalPage() {
             {msg && <p className="mt-2 text-[13.5px] text-up">{msg}</p>}
           </Card>
 
+          {showImport && !detail.closed_at && (
+            <JournalOrders jid={detail.id} linked={detail.linked_account} onChanged={() => void load(detail.id)} />
+          )}
           {showImport && !detail.closed_at && <BrokerImport detail={detail} accts={accts} onChanged={() => void load(detail.id)} />}
 
           <Card>

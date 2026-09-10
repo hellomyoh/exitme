@@ -646,13 +646,123 @@ def list_broker_orders(pid: int, date_: date | None = Query(default=None, alias=
         if cred is not None and cred.user_id == user_id:
             from app.autoexec import sync_auto_orders
 
-            changed = sync_orders(session, cred, rows, kst_today()) + sync_auto_orders(session, cred, rows, kst_today())
+            reserved_rows = [r for r in rows if (getattr(r, "mode", "reserve") or "reserve") not in ("auto", "manual")]
+            changed = sync_orders(session, cred, reserved_rows, kst_today()) + sync_auto_orders(session, cred, rows, kst_today())
             if changed:
                 session.commit()
     from app.autoexec import auto_exec_view
 
     return {"window": reservation_window(session=session), "items": [_order_out(r) for r in rows],
             "auto_exec": auto_exec_view(session, pf, date_)}   # 상태 한 줄(state) 포함 — 화면이 보는 실행일 기준 (ADR-009)
+
+
+MANUAL_WINDOW = (time(9, 0), time(15, 20))   # 앱에서 직접 주문 가능한 시간 (동시호가 전까지) — ADR-011
+
+
+class ManualOrderIn(BaseModel):
+    """앱에서 직접 내는 정규 주문 (2026-09-10 지시, ADR-011). price 생략·0 = 시장가."""
+
+    code: str = Field(min_length=4, max_length=12)
+    side: str = Field(pattern="^(buy|sell)$")
+    qty: int = Field(gt=0, le=1_000_000)
+    price: int | None = Field(default=None, ge=0)
+    line_key: str | None = Field(default=None, max_length=200)   # 주문표 줄에서 냈으면 그 줄 — 표의 같은 행에 결과가 뜬다
+    kind: str | None = Field(default=None, max_length=40)
+
+
+def _manual_lock(scope: str, key: str) -> bool:
+    """같은 주문 중복 접수 방지 — Redis SET NX(5초). Redis 가 없으면 통과."""
+    try:
+        import redis as sync_redis
+
+        from app.config import get_settings
+
+        r = sync_redis.from_url(get_settings().redis_url, decode_responses=True, socket_connect_timeout=1)
+        return bool(r.set(f"order:manual:{scope}:{key}", "1", nx=True, ex=5))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def place_manual_kis_order(session: Session, user_id: int, cred: BrokerCredential, *, code: str, side: str,
+                           qty: int, price: int | None, leg: str = "ETC", line_key: str | None = None,
+                           kind: str | None = None, portfolio_id: int | None = None,
+                           journal_id: int | None = None, lock_scope: str = "") -> BrokerOrder:
+    """앱에서 KIS 정규 주문을 직접 내는 본체 — 실전 포트·매매일지 공용 (2026-09-10 지시, ADR-011).
+
+    `mode="manual"` 로 기록해 취소·체결 확정(15:45 동기화·장중 갱신)·표시가 무인과 같은 경로를 탄다.
+    안전장치: 장중(09:00~15:20) · 매수는 매수가능조회, 매도는 잔고로 사전 검증(초과면 **거부**, 수량을 줄이지 않는다) · 중복 클릭 잠금.
+    """
+    from app.activity import log_event
+    from app.dashboard import kst_today
+
+    now = datetime.now(KST)
+    if not (MANUAL_WINDOW[0] <= now.time() <= MANUAL_WINDOW[1]):
+        raise HTTPException(status_code=409,
+                            detail=f"직접 주문은 장중({MANUAL_WINDOW[0]:%H:%M}~{MANUAL_WINDOW[1]:%H:%M})에만 가능합니다 — 지금은 {now:%H:%M} 입니다")
+    code, qty = code.strip().upper(), int(qty)
+    price = int(price) if price else None
+    otype = "limit" if price else "market"
+    if not _manual_lock(lock_scope or f"p{portfolio_id}j{journal_id}", f"{code}:{side}:{qty}:{price or 'mkt'}"):
+        raise HTTPException(status_code=409, detail="같은 주문이 방금 접수됐습니다 — 5초 뒤 다시 시도하세요")
+    client = _client(cred)
+    # 사전 검증 — 매수는 주문가능 수량, 매도는 보유 수량. 초과면 내지 않는다(수량을 줄이지 않음: 사용자가 낸 수량이 뜻이다)
+    if side == "buy":
+        est = price or int(str(client.fetch_price(code).get("stck_prpr") or "0").replace(",", "") or 0)
+        if est <= 0:
+            raise HTTPException(status_code=409, detail="현재가를 확인하지 못해 시장가 주문을 낼 수 없습니다 — 지정가로 내세요")
+        try:
+            pb = client.buyable(code, est)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"매수가능조회 실패 — {humanize_kis_error(str(exc)[:160])}")
+        can = int(pb.get("cash_qty") or 0)
+        if can < qty:
+            raise HTTPException(status_code=409,
+                                detail=f"주문가능 수량 부족 — 가능 {can:,}주 (주문가능현금 {int(pb.get('cash') or 0):,}원), 요청 {qty:,}주")
+    else:
+        try:
+            held = {h["code"]: int(h["qty"]) for h in client.fetch_balance().get("holdings", [])}
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"잔고 조회 실패 — {humanize_kis_error(str(exc)[:160])}")
+        if qty > held.get(code, 0):
+            raise HTTPException(status_code=409, detail=f"잔고 부족 — 보유 {held.get(code, 0):,}주, 요청 {qty:,}주")
+    what = f"{code} {'매수' if side == 'buy' else '매도'} {qty:,}주" + (f" @{price:,}원" if price else " 시장가")
+    row = BrokerOrder(portfolio_id=portfolio_id, journal_id=journal_id, broker_credential_id=cred.id, plan_date=kst_today(),
+                      line_key=line_key or f"manual:{code}:{side}:{otype}:{price or 'mkt'}:{int(now.timestamp())}",
+                      code=code, instrument=leg, kind=kind or "manual", side=side, otype=otype,
+                      qty=qty, price=price, mode="manual", status="failed",
+                      response={"manual": True, "at": now.isoformat(timespec="seconds")})
+    session.add(row)
+    session.flush()
+    try:
+        res = client.place_order(code, side, qty, price)
+    except Exception as exc:  # noqa: BLE001
+        row.message = humanize_kis_error(str(exc)[:200])
+        log_event(session, user_id, "order.manual", f"직접 주문 실패 — {what}: {row.message}", level="error", portfolio_id=portfolio_id,
+                  data={"order_id": row.id, "code": code, "side": side, "qty": qty, "price": price, "journal_id": journal_id}, at=now)
+        session.commit()
+        raise HTTPException(status_code=502, detail=f"주문 실패 — {row.message}")
+    row.order_no, row.status = (res["order_no"] or None), "submitted"
+    row.message = res["msg"] or "발주됨"
+    row.response = {**(row.response or {}), "order": res["raw"]}
+    log_event(session, user_id, "order.manual", f"직접 주문 — {what} (주문 {row.order_no})", level="warn", portfolio_id=portfolio_id,
+              data={"order_id": row.id, "order_no": row.order_no, "code": code, "side": side, "qty": qty, "price": price,
+                    "journal_id": journal_id}, at=now)
+    session.commit()
+    return row
+
+
+@router.post("/portfolio/{pid}/orders/manual")
+def place_manual_order(pid: int, body: ManualOrderIn, user_id: int = Depends(current_user_id),
+                       session: Session = Depends(get_session)) -> dict:
+    """실전매매 직접 주문 (ADR-011). 종목이 이 포트의 전략 종목이면 K200/LEV 로, 아니면 ETC 로 기록한다."""
+    pf = _owned(session, pid, user_id)
+    cred = _cred(session, pid, user_id)
+    code = body.code.strip().upper()
+    code_200, code_lev = _resolve_codes(session, pf)
+    leg = "K200" if code == code_200 else ("LEV" if code == code_lev else "ETC")
+    row = place_manual_kis_order(session, user_id, cred, code=code, side=body.side, qty=body.qty, price=body.price,
+                                 leg=leg, line_key=body.line_key, kind=body.kind, portfolio_id=pf.id, lock_scope=f"p{pf.id}")
+    return _order_out(row)
 
 
 @router.post("/portfolio/{pid}/orders/reserve")
@@ -737,6 +847,47 @@ def reserve_broker_orders(pid: int, body: ReserveIn, user_id: int = Depends(curr
     return {"date": body.date.isoformat(), "reserved": ok, "failed": failed, "items": items}
 
 
+def cancel_regular_order(session: Session, user_id: int, row: BrokerOrder, cred: BrokerCredential) -> BrokerOrder:
+    """정규 주문(무인·직접) 취소 — 실전 포트·매매일지 공용 (ADR-011 PR 2).
+
+    취소 직전 당일 체결조회로 상태를 맞추고(2026-09-10 지시 "체결된 거래는 취소가 안 되어야 한다"), 전량 체결이면
+    증권사에 요청을 보내지 않고 409. 부분 체결은 잔량만 취소하고 체결분은 유지한다.
+    """
+    from app.activity import log_event
+    from app.autoexec import sync_auto_orders
+    from app.dashboard import kst_today
+
+    pid = row.portfolio_id
+    what = f"{row.code} {'매수' if row.side == 'buy' else '매도'} {int(row.qty):,}주" + (f" @{int(row.price):,}" if row.price else " 시장가")
+    if row.status == "approved":
+        row.status, row.message = "cancelled", "승인 철회"
+        log_event(session, user_id, "order.cancel", f"무인 실행 승인 철회 — {what} (실행일 {row.plan_date.isoformat()})",
+                  portfolio_id=pid, data={"order_id": row.id})
+        session.commit()
+        return row
+    if row.status not in ("submitted", "partial"):
+        raise HTTPException(status_code=409, detail=f"취소할 수 없는 상태입니다 ({STATUS_KO.get(row.status, row.status)})")
+    if sync_auto_orders(session, cred, [row], kst_today()):
+        session.commit()
+    if row.status == "filled":
+        log_event(session, user_id, "order.cancel", f"취소 불가(이미 체결) — {what} · {int(row.filled_qty or 0):,}주 체결",
+                  level="warn", portfolio_id=pid, data={"order_id": row.id, "order_no": row.order_no})
+        session.commit()
+        raise HTTPException(status_code=409,
+                            detail=f"이미 전량 체결되어 취소할 수 없습니다 ({int(row.filled_qty or 0):,}주 체결) — 정리하려면 반대 매매로 하세요")
+    if row.status not in ("submitted", "partial"):
+        raise HTTPException(status_code=409, detail=f"취소할 수 없는 상태입니다 ({STATUS_KO.get(row.status, row.status)})")
+    try:
+        r = _client(cred).cancel_order(row.order_no or "", orgno=str(((row.response or {}).get("order") or {}).get("KRX_FWDG_ORD_ORGNO") or ""))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"주문 취소 실패 — {humanize_kis_error(str(exc)[:200])}")
+    row.status, row.message = "cancelled", (r["msg"] or "취소됨") + (f" · 체결 {int(row.filled_qty):,}주는 유지" if row.filled_qty else "")
+    log_event(session, user_id, "order.cancel", f"{'직접' if row.mode == 'manual' else '무인'} 발주 취소 — {what} (주문 {row.order_no})",
+              level="warn", portfolio_id=pid, data={"order_id": row.id, "order_no": row.order_no})
+    session.commit()
+    return row
+
+
 @router.post("/portfolio/{pid}/orders/{oid}/cancel")
 def cancel_broker_order(pid: int, oid: int, user_id: int = Depends(current_user_id),
                         session: Session = Depends(get_session)) -> dict:
@@ -748,38 +899,8 @@ def cancel_broker_order(pid: int, oid: int, user_id: int = Depends(current_user_
     if row is None or row.portfolio_id != pid:
         raise HTTPException(status_code=404, detail="order not found")
     what = f"{row.code} {'매수' if row.side == 'buy' else '매도'} {int(row.qty):,}주" + (f" @{int(row.price):,}" if row.price else " 시장가")
-    if (getattr(row, "mode", "reserve") or "reserve") == "auto":
-        if row.status == "approved":
-            row.status, row.message = "cancelled", "승인 철회"
-            log_event(session, user_id, "order.cancel", f"무인 실행 승인 철회 — {what} (실행일 {row.plan_date.isoformat()})", portfolio_id=pid, data={"order_id": row.id})
-            session.commit()
-            return _order_out(row)
-        if row.status not in ("submitted", "partial"):
-            raise HTTPException(status_code=409, detail=f"취소할 수 없는 상태입니다 ({STATUS_KO.get(row.status, row.status)})")
-        cred = _cred(session, pid, user_id)
-        # 취소 직전 체결 재확인 (2026-09-10 지시 "체결된 거래는 취소가 안 되어야 한다") — 상태는 15:45 동기화가 확정하므로
-        # 장중에는 '발주됨' 이 낡은 값일 수 있다. 당일 체결조회로 먼저 맞춘 뒤, 전량 체결이면 취소 요청을 보내지 않는다
-        from app.autoexec import sync_auto_orders
-        from app.dashboard import kst_today as _today
-
-        if sync_auto_orders(session, cred, [row], _today()):
-            session.commit()
-        if row.status == "filled":
-            log_event(session, user_id, "order.cancel", f"취소 불가(이미 체결) — {what} · {int(row.filled_qty or 0):,}주 체결",
-                      level="warn", portfolio_id=pid, data={"order_id": row.id, "order_no": row.order_no})
-            session.commit()
-            raise HTTPException(status_code=409,
-                                detail=f"이미 전량 체결되어 취소할 수 없습니다 ({int(row.filled_qty or 0):,}주 체결) — 정리하려면 반대 매매로 하세요")
-        if row.status not in ("submitted", "partial"):
-            raise HTTPException(status_code=409, detail=f"취소할 수 없는 상태입니다 ({STATUS_KO.get(row.status, row.status)})")
-        try:
-            r = _client(cred).cancel_order(row.order_no or "", orgno=str(((row.response or {}).get("order") or {}).get("KRX_FWDG_ORD_ORGNO") or ""))
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"주문 취소 실패 — {humanize_kis_error(str(exc)[:200])}")
-        row.status, row.message = "cancelled", (r["msg"] or "취소됨") + (f" · 체결 {int(row.filled_qty):,}주는 유지" if row.filled_qty else "")
-        log_event(session, user_id, "order.cancel", f"무인 발주 취소 — {what} (주문 {row.order_no})", level="warn", portfolio_id=pid, data={"order_id": row.id, "order_no": row.order_no})
-        session.commit()
-        return _order_out(row)
+    if (getattr(row, "mode", "reserve") or "reserve") in ("auto", "manual"):
+        return _order_out(cancel_regular_order(session, user_id, row, _cred(session, pid, user_id)))
     if row.status not in ("reserved", "partial"):
         raise HTTPException(status_code=409, detail=f"취소할 수 없는 상태입니다 ({STATUS_KO.get(row.status, row.status)})")
     cred = _cred(session, pid, user_id)
@@ -831,7 +952,7 @@ def run_post_close_sync(session: Session, now: datetime | None = None, retry: bo
                 BrokerOrder.portfolio_id == pf.id, BrokerOrder.status.in_(("reserved", "partial", "submitted")))).all()
             from app.autoexec import pause_if_reconcile_warns, sync_auto_orders
 
-            rec["orders_changed"] = (sync_orders(session, cred, [r for r in rows if r.mode != "auto"], today, now)
+            rec["orders_changed"] = (sync_orders(session, cred, [r for r in rows if r.mode not in ("auto", "manual")], today, now)
                                      + sync_auto_orders(session, cred, rows, today, now))
             # 무인 실행 자동 정지 — 계획·체결 불일치 경고가 있으면 다음 날 발주를 멈춘다 (ADR-008 ⑥)
             rec["auto_exec_paused"] = pause_if_reconcile_warns(session, pf, reconcile_for_portfolio(session, pf.id), now)

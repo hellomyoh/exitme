@@ -181,6 +181,12 @@ function PortfolioPage() {
   const [bo, setBo] = useState<BrokerOrders | null>(null);
   const [boBusy, setBoBusy] = useState(false);
   const [boMsg, setBoMsg] = useState("");
+  // 직접 주문 (2026-09-10 지시, ADR-011) — 연결 계좌에 KIS 정규 주문을 앱에서 낸다
+  const [moCode, setMoCode] = useState("");
+  const [moSide, setMoSide] = useState<"buy" | "sell">("buy");
+  const [moQty, setMoQty] = useState("");
+  const [moPrice, setMoPrice] = useState("");
+  const [moBusy, setMoBusy] = useState(false);
   const [editName, setEditName] = useState("");
   const [editEtf, setEditEtf] = useState("LTM_QLD");  // US 공식 변경 (2026-09-06 지시)
   const [editColor, setEditColor] = useState("");
@@ -301,6 +307,27 @@ function PortfolioPage() {
     if (!r.ok) { setBoMsg(`${label} 재등록 실패 — ${j.detail ?? r.status}`); return; }
     const t = j.retry;
     setBoMsg(t ? `${label} 재등록 — 발주 ${t.submitted}건${t.skipped ? ` · 생략 ${t.skipped}` : ""}${t.failed ? ` · 실패 ${t.failed}` : ""}` : `${label} 재등록했습니다`);
+    void load(pid);
+  }
+  // 직접 주문 접수 (2026-09-10 지시) — 실제 계좌에 나가는 주문이라 계좌·수량·가격을 확인창에 그대로 보이고, 시장가는 취소 불가를 경고한다
+  async function submitManualOrder() {
+    if (!sum) return;
+    const code = moCode.trim().toUpperCase();
+    const qty = Number(moQty), price = moPrice.trim() ? Number(moPrice) : null;
+    if (!code || !Number.isFinite(qty) || qty <= 0) { setBoMsg("종목코드와 수량을 확인하세요"); return; }
+    if (price !== null && (!Number.isFinite(price) || price <= 0)) { setBoMsg("지정가를 확인하세요 (비우면 시장가)"); return; }
+    const acct = ae?.account ? `${ae.account.label}${ae.account.env === "vps" ? " (모의)" : " (실전)"}` : "연결 계좌";
+    const what = `${code} ${moSide === "buy" ? "매수" : "매도"} ${qty.toLocaleString()}주${price ? ` @${fpx(price)}` : " 시장가"}`;
+    const warn = price ? "" : "\n\n⚠️ 시장가는 접수 즉시 체결되어 취소할 수 없습니다.";
+    if (!window.confirm(`${acct} 계좌에 실제 주문을 냅니다.\n\n${what}${warn}\n\n계속할까요?`)) return;
+    setMoBusy(true); setBoMsg("");
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/orders/manual`, {
+      method: "POST", body: JSON.stringify({ code, side: moSide, qty, price }) });
+    const j = (await r.json().catch(() => ({}))) as { order_no?: string | null; detail?: string };
+    setMoBusy(false);
+    if (!r.ok) { setBoMsg(`직접 주문 실패 — ${j.detail ?? r.status}`); return; }
+    setBoMsg(`👤 직접 주문 접수 — ${what} · 주문번호 ${j.order_no ?? "-"}`);
+    setMoQty(""); setMoPrice("");
     void load(pid);
   }
   async function unskipAutoExec() {
@@ -1203,7 +1230,7 @@ function PortfolioPage() {
                               onClick={() => void cancelOrderLine(b.id as number, kindKo, b.qty, b.price)}>취소</button>);
                           if (b.status === "submitted") return (
                             <span className="inline-flex flex-wrap items-center gap-1.5">
-                              <span className="font-semibold text-ok" title={b.message ?? ""}>🤖 발주됨 #{b.order_no}{clip}{rt}</span>{cancelBtn}
+                              <span className="font-semibold text-ok" title={b.message ?? ""}>{b.mode === "manual" ? "👤 직접 발주됨" : "🤖 발주됨"} #{b.order_no}{clip}{rt}</span>{cancelBtn}
                             </span>);
                           if (b.status === "filled") return <span className="font-semibold text-ok" title={b.message ?? ""}>✓ 체결 {b.filled_qty.toLocaleString()}주</span>;
                           if (b.status === "partial") return (
@@ -1284,6 +1311,77 @@ function PortfolioPage() {
             {signal?.status === "OK" ? "오늘은 신규 주문이 없습니다." : "시그널이 아직 없습니다 — 장 마감 배치(16:05) 이후 표시됩니다."}
           </p>
         )}
+        {/* 직접 주문 · 오늘 낸 주문 (2026-09-10 지시, ADR-011) — 연결 계좌에 KIS 정규 주문을 내고 결과·체결을 한 곳에서 본다 */}
+        {market === "KR" && broker?.linked && sum && (
+          <Card className="mt-4">
+            <CardTitle right={<span className="text-[12px] font-normal normal-case text-faint">
+              {ae?.account ? `${ae.account.label}${ae.account.env === "vps" ? " · 모의" : " · 실전"}` : ""}</span>}>
+              직접 주문 <span className="normal-case text-faint">· 무인과 별개로 이 계좌에 바로 냅니다 · 장중 09:00~15:20</span>
+            </CardTitle>
+            <div className="flex flex-wrap items-end gap-2 text-[13.5px]">
+              <label className="grid gap-1 text-[12.5px] text-faint">종목코드
+                <input className="input !w-36 !py-2" placeholder={signal?.code_200 ?? "102110"} value={moCode}
+                  onChange={(e) => setMoCode(e.target.value)} /></label>
+              <span className="inline-flex overflow-hidden rounded-lg border border-line">
+                {(["buy", "sell"] as const).map((sd) => (
+                  <button key={sd} className={`px-3 py-2 text-[13px] ${moSide === sd ? (sd === "buy" ? "bg-down text-white" : "bg-accent text-white") : "bg-inset text-muted hover:text-ink"}`}
+                    onClick={() => setMoSide(sd)}>{sd === "buy" ? "매수" : "매도"}</button>
+                ))}
+              </span>
+              <label className="grid gap-1 text-[12.5px] text-faint">수량
+                <input className="input !w-24 !py-2" inputMode="numeric" value={moQty} onChange={(e) => setMoQty(e.target.value)} /></label>
+              <label className="grid gap-1 text-[12.5px] text-faint">지정가 (비우면 시장가)
+                <input className="input !w-32 !py-2" inputMode="numeric" placeholder="시장가" value={moPrice}
+                  onChange={(e) => setMoPrice(e.target.value)} /></label>
+              <button className="btn btn-primary !py-2" disabled={moBusy || !krMarketOpen()}
+                onClick={() => void submitManualOrder()}>{moBusy ? "접수 중…" : "주문 넣기"}</button>
+              {!krMarketOpen() && <span className="text-[12.5px] text-faint">장중(09:00~15:20)에만 낼 수 있습니다</span>}
+              {signal?.code_200 && (
+                <button className="text-[12px] text-accent hover:underline" onClick={() => setMoCode(signal.code_200 as string)}>
+                  {signal.name_200 ?? signal.code_200} 넣기</button>
+              )}
+            </div>
+            {(() => {
+              const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+              const rows = (bo?.items ?? []).filter((i) => i.plan_date === today).slice().reverse();
+              if (!rows.length) return <p className="mt-3 text-[13px] text-faint">오늘 낸 주문이 없습니다. 09:01 무인 주문도 여기에 함께 보입니다.</p>;
+              return (
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full text-left text-[13px]">
+                    <thead className="border-b border-line text-[12px] text-faint"><tr>
+                      <th className="pb-1.5 font-medium">경로</th><th className="pb-1.5 font-medium">종목·구분</th>
+                      <th className="pb-1.5 text-right font-medium">수량 · 가격</th><th className="pb-1.5 pl-3 font-medium">상태</th>
+                      <th className="pb-1.5 pl-3 font-medium"> </th>
+                    </tr></thead>
+                    <tbody>
+                      {rows.map((i) => (
+                        <tr key={i.id ?? `${i.line_key}:${i.order_no}`} className="border-b border-line/50 last:border-0">
+                          <td className="py-1.5">{i.mode === "manual" ? "👤 직접" : i.mode === "auto" ? "🤖 무인" : "예약"}</td>
+                          <td className="py-1.5">{i.code} <span className="text-faint">{ORDER_KIND_KO[i.kind] ?? i.kind}</span>
+                            <span className={i.side === "buy" ? "ml-1.5 text-down" : "ml-1.5 text-accent"}>{i.side === "buy" ? "매수" : "매도"}</span></td>
+                          <td className="py-1.5 text-right">{i.qty.toLocaleString()}주 · {i.price ? fpx(i.price) : "시장가"}</td>
+                          <td className="py-1.5 pl-3" title={i.message ?? ""}>
+                            {i.status === "submitted" ? "발주됨" : i.status === "filled" ? `✓ 체결 ${i.filled_qty.toLocaleString()}주`
+                              : i.status === "partial" ? `◐ ${i.filled_qty}/${i.qty}` : i.status_ko}
+                            {i.order_no && <span className="ml-1 text-faint">#{i.order_no}</span>}
+                          </td>
+                          <td className="py-1.5 pl-3">
+                            {i.id != null && ["submitted", "partial"].includes(i.status) && (
+                              <button className="text-[12px] text-down hover:underline disabled:opacity-50" disabled={boBusy}
+                                onClick={() => void cancelOrderLine(i.id as number, ORDER_KIND_KO[i.kind] ?? i.kind, i.qty, i.price)}>취소</button>)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+            <p className="mt-2 text-[11.5px] leading-relaxed text-faint">직접 주문은 앱이 기록하므로 취소·체결 확인이 무인 주문과 같습니다. 체결분은 15:45 동기화가 원장에 넣습니다(장중에는 30초마다 상태 갱신).
+              HTS 에서 낸 주문은 앱이 알지 못해 여기에 보이지 않습니다.</p>
+          </Card>
+        )}
+
         {/* 실시간 현재가 vs 주문선 (2026-09-09 지시) — 기존 10초 폴링 시계열 + WS, KIS 호출 추가 없음. 국내·주문표 있을 때만 */}
       {market === "KR" && signal?.status === "OK" && signal.code_200 && (signal.orders?.length ?? 0) > 0 && (() => {
         const lines: OrderLine[] = (signal.orders ?? [])

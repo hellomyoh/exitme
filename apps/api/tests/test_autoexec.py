@@ -536,3 +536,56 @@ def test_cancel_refuses_filled_order_and_reorder_replaces_cancelled_line(monkeyp
     assert [i["status"] for i in g2_rows] == ["cancelled", "submitted"] and g2_rows[1]["retry_of"] == g2_rows[0]["id"]
     ev2 = [i for i in c.get("/logs?type=event", headers=h).json()["items"] if i["kind"] == "autoexec.retry"]
     assert ev2 and "무인 재등록" in ev2[0]["text"]
+
+
+def test_manual_order_places_cancels_and_shows_with_auto(monkeypatch):
+    """앱에서 직접 KIS 주문 (2026-09-10 지시, ADR-011) — 장중만, 매수는 주문가능 수량·매도는 잔고로 사전 검증,
+    mode='manual' 로 기록돼 취소·체결 확정·주문표 표시가 무인과 같은 경로를 탄다."""
+    import app.broker as br
+    from unittest.mock import patch
+
+    c, h = _client()
+    today = datetime.now(KST).date()
+    pid, aid = _setup_portfolio(c, h, today, deposit_krw=9_000_000)
+    fake = FillKis(open_px=100_000, deposit=9_000_000, holdings={"069500": 4}, psbl_cash=600_000)
+    monkeypatch.setattr(br, "_client", lambda cred: fake)
+
+    def order(body, at=(10, 0)):
+        with patch("app.broker.datetime") as dt:      # 장중 시각 고정 — 테스트가 시각에 흔들리지 않게
+            dt.now.return_value = datetime.combine(today, time(*at), tzinfo=KST)
+            return c.post(f"/portfolio/{pid}/orders/manual", json=body, headers=h)
+
+    # ① 장 마감 뒤에는 거부
+    r = order({"code": "069500", "side": "buy", "qty": 1, "price": 99_000}, at=(16, 0))
+    assert r.status_code == 409 and "장중" in r.json()["detail"]
+    # ② 매수가능 수량 초과 → 거부하고 주문을 내지 않는다 (600,000 ÷ 99,000 = 6주)
+    r = order({"code": "069500", "side": "buy", "qty": 20, "price": 99_000})
+    assert r.status_code == 409 and "주문가능 수량 부족" in r.json()["detail"] and fake.placed == []
+    # ③ 잔고 초과 매도 → 거부
+    r = order({"code": "069500", "side": "sell", "qty": 10, "price": 103_000})
+    assert r.status_code == 409 and "잔고 부족" in r.json()["detail"] and fake.placed == []
+    # ④ 정상 접수 — mode=manual, 주문번호 기록
+    r = order({"code": "069500", "side": "buy", "qty": 5, "price": 99_000})
+    assert r.status_code == 200, r.text
+    row = r.json()
+    assert row["mode"] == "manual" and row["status"] == "submitted" and row["order_no"] == "N0001"
+    assert fake.placed == [("069500", "buy", 5, 99000)]
+    ev = [i for i in c.get("/logs?type=event", headers=h).json()["items"] if i["kind"] == "order.manual"]
+    assert ev and "직접 주문" in ev[0]["text"] and "5주" in ev[0]["text"]
+    # ⑤ 목록에 무인과 함께 보이고 취소도 같은 경로 — 미체결이면 취소, 체결이면 거부
+    items = c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]
+    mine = [i for i in items if i["mode"] == "manual"]
+    assert len(mine) == 1 and mine[0]["kind"] == "manual"
+    monkeypatch.setattr(ae_mod(), "_client", lambda cred: fake)
+    fake.fills = {"N0001": 5}
+    assert c.post(f"/portfolio/{pid}/orders/{mine[0]['id']}/cancel", headers=h).status_code == 409   # 전량 체결 → 취소 불가
+    fake.fills = {}
+    r2 = order({"code": "069500", "side": "sell", "qty": 2, "price": 103_000})
+    assert r2.status_code == 200 and fake.placed[-1] == ("069500", "sell", 2, 103000)
+    assert c.post(f"/portfolio/{pid}/orders/{r2.json()['id']}/cancel", headers=h).status_code == 200
+    assert fake.cancelled == ["N0002"]
+
+
+def ae_mod():
+    import app.autoexec as ae
+    return ae
