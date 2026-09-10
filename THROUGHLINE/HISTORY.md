@@ -748,3 +748,11 @@
 - 작업 내용: 마이그레이션 **0026** — `broker_orders.journal_id` 추가(FK CASCADE), `portfolio_id` nullable, 소유자 CHECK(`portfolio_id IS NOT NULL OR journal_id IS NOT NULL`), `(journal_id, plan_date)` 인덱스. 주문 본체를 `place_manual_kis_order()`, 취소를 `cancel_regular_order()` 로 공용화해 실전 포트·매매일지가 같은 안전장치를 쓴다(장중·매수가능/잔고 사전 검증·중복 잠금·취소 전 체결 재확인). 매매일지 API 3종(`GET /mjournals/{jid}/orders`, `POST …/orders/manual`, `POST …/orders/{oid}/cancel`). 웹: 매매일지 '직접 주문' 카드(주문 폼 + 그날 주문 목록 + 취소, 살아 있는 주문이 있으면 장중 30초 상태 갱신).
 - 테스트 결과: 신규 `test_mjournal::test_journal_manual_order_place_list_and_cancel` — 계좌 미연결 거부 / 장 마감 뒤 409 / 잔고 초과 매도 거부(주문 미발송) / 정상 접수(journal_id 기록·portfolio_id None) / 목록·연결 계좌 / 전량 체결 취소 409·미체결 취소 성공 / 다른 일지와 격리. 전체 `pytest -q tests/` **275 passed**, `tsc --noEmit` 무오류.
 - Git commit: feat: journal-side manual orders sharing broker_orders (migration 0026)
+
+## [2026-09-10] refactor | 거래 입력을 한 섹션으로 — 주문유형 탭 (사용자 지시 "체결 수동등록과 증권사 주문을 나누지 말고 한곳에서")
+
+- 배경: 같은 화면에 '체결·입출금 등록'(장부 기록)과 '직접 주문'(실제 발주)이 따로 있어 어디에 무엇을 넣는지 헷갈렸다. 두 폼은 방향·종목·수량이 같고 가격의 뜻(단가 vs 지정가)과 일자·이유 칸만 달랐다.
+- 작업 내용: **실전매매** — 주문표 안에 접혀 있던 `<details id="fill-entry">` 를 걷어내고 주문표 아래에 '거래 입력' 카드 신설, 탭 3개(사용자 결정): `✍️ 체결 기록`(매수/매도 토글 + 종목·수량·단가·메모) · `💰 입출금`(입금/출금 토글 + 금액) · `👤 증권사 주문`(종목코드·방향·수량·지정가, 경고색 테두리와 붉은 버튼, 계좌 미연결·국내 아님이면 비활성). 탭 전환이 `form.kind` 를 맞춘다. 주문표 줄의 '체결 등록' 은 체결 탭을 열고 값을 채운다(`entryOpen` 상태 제거). '오늘 낸 주문' 목록을 같은 카드 안으로. **매매일지** — '오늘 입력' 카드를 `JournalTradeCard` 로 바꿔 탭 2개(기록만 · 증권사 주문), 기록 폼은 `recordForm` 프롭으로 그대로 넘겨 재사용, 낸 주문 목록도 같은 카드에. 서버 변경 없음. VERSION 0.19.0.
+- 함께 고침: 실전매매 체결 폼의 단가 라벨이 `wontouch` 로 깨져 있던 것(d60ecd9 의 일괄 치환 흔적)을 `단가({unit})` 로 복구.
+- 테스트 결과: 서버 변경이 없어 기존 스위트 그대로 — `pytest -q tests/` **275 passed**(`test_ws_quotes` 1건은 알려진 간헐 실패, 단독 재실행 2 passed), `tsc --noEmit` 무오류. 화면 확인은 배포 후.
+- Git commit: refactor: one trade-entry section with order-type tabs (portfolio 3 tabs, journal 2)

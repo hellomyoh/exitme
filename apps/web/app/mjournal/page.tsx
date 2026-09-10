@@ -58,10 +58,13 @@ const krMarketOpen = () => {
 /** 직접 주문 (ADR-011 PR 2, 2026-09-10 지시 "매매일지에도 수동 매수/매도") — 연결 계좌에 KIS 정규 주문을 바로 내고
  *  그날 낸 주문을 상태와 함께 보여 준다. 기록은 실전매매와 같은 broker_orders 라 취소·체결 확정이 같은 코드다.
  *  체결된 주문은 기존 '증권사 체결 가져오기' 가 일지 기록으로 넣는다. */
-function JournalOrders({ jid, linked, onChanged }: {
-  jid: number; linked: { id: number; label: string; env: string } | null; onChanged: () => void }) {
+function JournalTradeCard({ jid, linked, closed, onChanged, right, meta, recordForm, recordMsg }: {
+  jid: number; linked: { id: number; label: string; env: string } | null; closed: string | null | undefined;
+  onChanged: () => void; right: React.ReactNode; meta: React.ReactNode;
+  recordForm: React.ReactNode; recordMsg: React.ReactNode }) {
   type Row = { id: number | null; code: string; side: string; qty: number; price: number | null; status: string;
     status_ko: string; order_no: string | null; filled_qty: number; message: string | null; mode?: string; plan_date: string };
+  const [tab, setTab] = useState<"record" | "order">("record");
   const [rows, setRows] = useState<Row[]>([]);
   const [code, setCode] = useState("");
   const [side, setSide] = useState<"buy" | "sell">("buy");
@@ -108,31 +111,60 @@ function JournalOrders({ jid, linked, onChanged }: {
     setMsg(`${label} 주문을 취소했습니다`);
     void reload(false);
   }
-  if (!linked) return null;
+  const TABS = [
+    { k: "record" as const, label: "✍️ 기록만", hint: "이미 체결된 것" },
+    { k: "order" as const, label: "👤 증권사 주문", hint: "실제로 냅니다" },
+  ];
   return (
     <Card className="mb-4">
-      <CardTitle right={<span className="text-[12px] font-normal normal-case text-faint">{linked.label}{linked.env === "vps" ? " · 모의" : " · 실전"}</span>}>
-        직접 주문 <span className="normal-case text-faint">· 연결 계좌에 바로 냅니다 · 장중 09:00~15:20 · 체결분은 &apos;체결 가져오기&apos;가 기록으로 넣습니다</span>
-      </CardTitle>
-      <div className="flex flex-wrap items-end gap-2 text-[13.5px]">
-        <label className="grid gap-1 text-[12.5px] text-faint">종목코드
-          <input className="input !w-36 !py-2" placeholder="005930" value={code} onChange={(e) => setCode(e.target.value)} /></label>
-        <span className="inline-flex overflow-hidden rounded-lg border border-line">
-          {(["buy", "sell"] as const).map((sd) => (
-            <button key={sd} className={`px-3 py-2 text-[13px] ${side === sd ? (sd === "buy" ? "bg-down text-white" : "bg-accent text-white") : "bg-inset text-muted hover:text-ink"}`}
-              onClick={() => setSide(sd)}>{sd === "buy" ? "매수" : "매도"}</button>
-          ))}
-        </span>
-        <label className="grid gap-1 text-[12.5px] text-faint">수량
-          <input className="input !w-24 !py-2" inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value)} /></label>
-        <label className="grid gap-1 text-[12.5px] text-faint">지정가 (비우면 시장가)
-          <input className="input !w-32 !py-2" inputMode="numeric" placeholder="시장가" value={price} onChange={(e) => setPrice(e.target.value)} /></label>
-        <button className="btn btn-primary !py-2" disabled={busy || !open} onClick={() => void submit()}>{busy ? "접수 중…" : "주문 넣기"}</button>
-        {!open && <span className="text-[12.5px] text-faint">장중(09:00~15:20)에만 낼 수 있습니다</span>}
-      </div>
-      {msg && <p className="mt-2 text-[13px] text-muted">{msg}</p>}
+      <CardTitle right={right}>거래 입력 <span className="normal-case text-faint">{meta}</span></CardTitle>
+      {closed ? (
+        <p className="text-[13.5px] text-muted">
+          <b className="text-ink">청산된 일지입니다</b> ({String(closed).slice(0, 10)}) — 기록은 보존되며 대시보드·총자산에서 제외됩니다.
+          다시 거래하려면 오른쪽 위 &quot;다시 열기&quot;를 누르세요.
+        </p>
+      ) : (<>
+        {/* 주문유형 탭 (2026-09-10 지시) — 기록만 = 장부에 적기, 증권사 주문 = 실제 주문. 실수 방지로 주문 탭은 경고색 */}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <div className="inline-flex overflow-hidden rounded-lg border border-line-strong">
+            {TABS.map((t) => (
+              <button key={t.k} disabled={t.k === "order" && !linked}
+                onClick={() => setTab(t.k)}
+                title={t.k === "order" && !linked ? "증권사 계좌를 먼저 연결하세요 (아래 '증권사 체결 가져오기')" : undefined}
+                className={`px-3 py-2 text-[13px] font-semibold disabled:opacity-40 ${tab === t.k
+                  ? (t.k === "order" ? "bg-down text-white" : "bg-ink text-white") : "bg-surface text-muted hover:text-ink"}`}>
+                {t.label} <span className="font-normal opacity-80">· {t.hint}</span>
+              </button>
+            ))}
+          </div>
+          {tab === "order" && linked && (
+            <span className="text-[12.5px] text-faint">{linked.label}{linked.env === "vps" ? " · 모의" : " · 실전"} · 장중 09:00~15:20 · 체결분은 &apos;체결 가져오기&apos;가 기록으로 넣습니다</span>
+          )}
+        </div>
+        {tab === "record" ? recordForm : (
+          <div className="flex flex-wrap items-end gap-2 rounded-xl border border-down/40 bg-down/5 p-3 text-[13.5px]">
+            <label className="grid gap-1 text-[12.5px] text-faint">종목코드
+              <input className="input !w-36 !py-2" placeholder="005930" value={code} onChange={(e) => setCode(e.target.value)} /></label>
+            <span className="inline-flex overflow-hidden rounded-lg border border-line">
+              {(["buy", "sell"] as const).map((sd) => (
+                <button key={sd} className={`px-3 py-2 text-[13px] ${side === sd ? (sd === "buy" ? "bg-up text-white" : "bg-down text-white") : "bg-surface text-muted hover:text-ink"}`}
+                  onClick={() => setSide(sd)}>{sd === "buy" ? "매수" : "매도"}</button>
+              ))}
+            </span>
+            <label className="grid gap-1 text-[12.5px] text-faint">수량
+              <input className="input !w-24 !py-2" inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value)} /></label>
+            <label className="grid gap-1 text-[12.5px] text-faint">지정가 (비우면 시장가)
+              <input className="input !w-32 !py-2" inputMode="numeric" placeholder="시장가" value={price} onChange={(e) => setPrice(e.target.value)} /></label>
+            <button className="btn !bg-down !py-2 !text-white" disabled={busy || !open} onClick={() => void submit()}>
+              {busy ? "접수 중…" : "증권사에 주문 넣기"}</button>
+            {!open && <span className="text-[12.5px] text-faint">장중(09:00~15:20)에만 낼 수 있습니다</span>}
+          </div>
+        )}
+      </>)}
+      {tab === "record" ? recordMsg : (msg && <p className="mt-2 text-[13px] text-muted">{msg}</p>)}
       {rows.length > 0 && (
         <div className="mt-3 overflow-x-auto">
+          <div className="mb-1 text-[12.5px] font-semibold text-muted">낸 주문 <span className="font-normal text-faint">· 증권사에 접수된 것만 (기록은 아래 표)</span></div>
           <table className="w-full text-left text-[13px]">
             <thead className="border-b border-line text-[12px] text-faint"><tr>
               <th className="pb-1.5 font-medium">일자</th><th className="pb-1.5 font-medium">종목</th>
@@ -144,7 +176,7 @@ function JournalOrders({ jid, linked, onChanged }: {
                 <tr key={x.id ?? `${x.order_no}`} className="border-b border-line/50 last:border-0">
                   <td className="py-1.5">{x.plan_date}</td>
                   <td className="py-1.5">{x.code}</td>
-                  <td className={`py-1.5 ${x.side === "buy" ? "text-down" : "text-accent"}`}>{x.side === "buy" ? "매수" : "매도"}</td>
+                  <td className={`py-1.5 ${x.side === "buy" ? "text-up" : "text-down"}`}>{x.side === "buy" ? "매수" : "매도"}</td>
                   <td className="py-1.5 text-right">{x.qty.toLocaleString()}주 · {x.price ? `${x.price.toLocaleString()}원` : "시장가"}</td>
                   <td className="py-1.5 pl-3" title={x.message ?? ""}>
                     {x.status === "submitted" ? "👤 발주됨" : x.status === "filled" ? `✓ 체결 ${x.filled_qty.toLocaleString()}주`
@@ -844,8 +876,9 @@ function MJournalPage() {
           {/* 그래프는 통계 카드 아래, 선택한 일지의 데이터만 (2026-09-05 지시) */}
           <Overview detail={detail} />
 
-          <Card className="mb-4">
-            <CardTitle right={<span className="flex items-center gap-3">
+          <JournalTradeCard jid={detail.id} linked={detail.linked_account} closed={detail.closed_at}
+            onChanged={() => void load(detail.id)}
+            right={<span className="flex items-center gap-3">
               {/* 청산 (2026-09-05 지시) — 전량 매도했거나 더 이상 거래하지 않는 일지. 기록은 남고 대시보드에서 빠진다 */}
               <button className="text-[12.5px] font-normal normal-case text-muted transition-colors hover:text-ink"
                 onClick={() => void (async () => {
@@ -863,17 +896,12 @@ function MJournalPage() {
                   const r = await apiFetch(`/mjournals/${detail.id}`, { method: "DELETE" });
                   if (r.ok) void load(null);
                 })()}>🗑 일지 삭제</button>
-            </span>}>
-              오늘 입력 <span className="normal-case text-faint">
+            </span>}
+            meta={<span className="normal-case text-faint">
                 · {detail.broker || "증권사 미지정"} · 수수료 {(detail.fee_rate * 100).toFixed(3)}% · 제세금 {(detail.tax_rate * 100).toFixed(2)}%
-                {detail.linked_account && <> · 연결 계좌 <b className="text-ink">{detail.linked_account.label}</b></>}</span>
-            </CardTitle>
-            {detail.closed_at ? (
-              <p className="text-[13.5px] text-muted">
-                <b className="text-ink">청산된 일지입니다</b> ({detail.closed_at.slice(0, 10)}) — 기록은 보존되며 대시보드·총자산에서 제외됩니다.
-                다시 거래하려면 오른쪽 위 &quot;다시 열기&quot;를 누르세요.
-              </p>
-            ) : (
+                {detail.linked_account && <> · 연결 계좌 <b className="text-ink">{detail.linked_account.label}</b></>}</span>}
+            recordMsg={msg ? <p className="mt-2 text-[13.5px] text-up">{msg}</p> : null}
+            recordForm={<>
             <div className="flex flex-wrap items-end gap-2">
               <div className="flex overflow-hidden rounded-lg border border-line-strong">
                 {(["buy", "sell"] as const).map((s) => (
@@ -910,13 +938,8 @@ function MJournalPage() {
               <button className="btn btn-primary !py-2.5" disabled={!(Number(ef.qty) > 0 && Number(ef.price) > 0)}
                 onClick={() => void addEntry()}>등록</button>
             </div>
-            )}
-            {msg && <p className="mt-2 text-[13.5px] text-up">{msg}</p>}
-          </Card>
+            </>} />
 
-          {showImport && !detail.closed_at && (
-            <JournalOrders jid={detail.id} linked={detail.linked_account} onChanged={() => void load(detail.id)} />
-          )}
           {showImport && !detail.closed_at && <BrokerImport detail={detail} accts={accts} onChanged={() => void load(detail.id)} />}
 
           <Card>
