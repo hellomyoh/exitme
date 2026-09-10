@@ -4,7 +4,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createChart, IChartApi, AreaSeries, LineSeries } from "lightweight-charts";
+import { createChart, AreaSeries, LineSeries, LineStyle,
+  type IChartApi, type ISeriesApi, type LineWidth } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
 import { MarketFlag } from "../../components/flags";
 import { Spark } from "../../components/spark";
@@ -98,8 +99,14 @@ type JournalAsset = { excluded?: { symbol: string; code: string | null; value: n
   value?: number; priced?: boolean; unrealized?: number | null; unrealized_pct?: number | null;   // 현재가 평가 (2026-09-06)
   day_change?: number | null; day_change_pct?: number | null; day_missing?: string[];              // 오늘 손익 (2026-09-10)
   holdings: { symbol: string; qty: number; cost: number; price?: number | null; eval?: number | null }[]; entries: number; counted: boolean; note: string | null };
-type TrendSeries = { portfolio_id: number; name: string; market: string; currency: string;
+type TrendSeries = { portfolio_id: number | null; name: string; market: string; currency: string;
+  kind?: string;   // "portfolio" | "journal" (2026-09-10) — 매매일지는 합계 한 줄
   points: { date: string; equity: number }[] };
+type TrendKind = "total" | "port" | "journal";
+type TrendHandle = { name: string; color: string; kind: TrendKind;
+  api: ISeriesApi<"Area"> | ISeriesApi<"Line"> };
+type TrendTip = { x: number; flip: boolean; date: string;
+  rows: { name: string; color: string; value: number }[] };
 type Signal = { status: string; regime?: string; e_target?: number; w_200?: number; w_lev?: number };
 type CalItem = { date: string; pnl: number };
 
@@ -124,8 +131,12 @@ export default function DashboardPage() {
   const [signal, setSignal] = useState<Signal | null>(null);
   const [range, setRange] = useState("3M");
   const [trendLegend, setTrendLegend] = useState<{ name: string; color: string }[]>([]);
+  // 범례에서 고른 계열 — 그래프에 이름·마지막 값을 띄우고 나머지는 흐리게 (2026-09-10 지시)
+  const [trendPick, setTrendPick] = useState<string | null>(null);
+  const [trendTip, setTrendTip] = useState<TrendTip | null>(null);
   const trendRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
+  const trendSeries = useRef<TrendHandle[]>([]);
 
   const load = useCallback(async () => {
     const d = await apiFetch("/dashboard");
@@ -158,6 +169,7 @@ export default function DashboardPage() {
 
   // 포트별 다선 색 — 총자산(주황 면적) 외 KRW 포트 라인 (feature-dashboard §8, ADR-008)
   const SERIES_COLORS = ["#2563eb", "#059669", "#7c3aed", "#db2777", "#0891b2", "#ca8a04"];
+  const JOURNAL_COLOR = "#475569";   // 매매일지는 성격이 달라 회청색 파선 (2026-09-10)
 
   const loadTrend = useCallback(async (r: string) => {
     const res = await apiFetch(`/portfolio/trend?range_=${r}`);
@@ -181,24 +193,78 @@ export default function DashboardPage() {
       autoSize: true,
     });
     chartApi.current = chart;
-    chart.addSeries(AreaSeries, {
+    const handles: TrendHandle[] = [];
+    const total = chart.addSeries(AreaSeries, {
       lineColor: "#f97316", lineWidth: 2,
       topColor: "rgba(180,83,9,0.16)", bottomColor: "rgba(180,83,9,0.0)",
       priceLineVisible: false,
-    }).setData(items.map((i) => ({ time: i.date, value: i.total })));
-    // 실전매매 포트별 라인 — KRW 만 (US 는 센트 단위라 환율 도입 전 제외, ASSUMPTIONS 2026-09-02)
+    });
+    total.setData(items.map((i) => ({ time: i.date, value: i.total })));
+    handles.push({ name: "총자산", color: "#f97316", kind: "total", api: total });
+    // 실전매매 포트별 라인 + 매매일지 합계 — KRW 만 (US 는 센트 단위라 환율 도입 전 제외, ASSUMPTIONS 2026-09-02)
     const legend: { name: string; color: string }[] = [{ name: "총자산", color: "#f97316" }];
-    (body.series ?? []).filter((sr) => sr.currency === "KRW" && sr.points.length >= 2)
-      .forEach((sr, i) => {
-        const color = SERIES_COLORS[i % SERIES_COLORS.length];
-        chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
-          .setData(sr.points.map((pt) => ({ time: pt.date, value: pt.equity })));
-        legend.push({ name: sr.name, color });
+    let ci = 0;
+    for (const sr of (body.series ?? []).filter((x) => x.currency === "KRW" && x.points.length >= 2)) {
+      const isJournal = sr.kind === "journal";
+      const color = isJournal ? JOURNAL_COLOR : SERIES_COLORS[ci++ % SERIES_COLORS.length];
+      const line = chart.addSeries(LineSeries, {
+        color, lineWidth: isJournal ? 2 : 1, priceLineVisible: false, lastValueVisible: false,
+        lineStyle: isJournal ? LineStyle.Dashed : LineStyle.Solid,
       });
+      line.setData(sr.points.map((pt) => ({ time: pt.date, value: pt.equity })));
+      handles.push({ name: sr.name, color, kind: isJournal ? "journal" : "port", api: line });
+      legend.push({ name: sr.name, color });
+    }
+    trendSeries.current = handles;
+    setTrendPick(null);
     setTrendLegend(legend.length > 1 ? legend : []);
+    // 커서가 가리키는 날짜의 계열별 값 (dataviz: 선·면 차트는 크로스헤어 읽기를 기본으로 둔다)
+    chart.subscribeCrosshairMove((param) => {
+      const box = trendRef.current;
+      if (!box || !param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
+        setTrendTip(null);
+        return;
+      }
+      const rows = handles
+        .map((h) => {
+          const d = param.seriesData.get(h.api) as { value?: number } | undefined;
+          return d?.value == null ? null : { name: h.name, color: h.color, value: d.value };
+        })
+        .filter((r): r is { name: string; color: string; value: number } => r !== null)
+        .sort((a, b) => b.value - a.value);
+      if (!rows.length) { setTrendTip(null); return; }
+      setTrendTip({ x: param.point.x, flip: param.point.x > box.clientWidth * 0.55,
+        date: String(param.time), rows });
+    });
     chart.timeScale().fitContent();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [disposeChart]);
+
+  // 범례 선택 → 그래프 표기 (2026-09-10 지시): 고른 계열만 이름·가격선·마지막 값을 켜고 나머지는 흐리게
+  useEffect(() => {
+    const fade = (hex: string) => {
+      const n = parseInt(hex.slice(1), 16);
+      return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, 0.2)`;
+    };
+    for (const h of trendSeries.current) {
+      const on = !trendPick || h.name === trendPick;
+      const sel = trendPick === h.name;
+      const width = (sel ? 3 : h.kind === "port" ? 1 : 2) as LineWidth;
+      const color = on ? h.color : fade(h.color);
+      if (h.kind === "total") {
+        (h.api as ISeriesApi<"Area">).applyOptions({
+          lineColor: color, lineWidth: width, lastValueVisible: on, priceLineVisible: sel,
+          title: sel ? h.name : "",
+          topColor: on ? "rgba(180,83,9,0.16)" : "rgba(180,83,9,0.03)",
+        });
+      } else {
+        (h.api as ISeriesApi<"Line">).applyOptions({
+          color, lineWidth: width, lastValueVisible: sel, priceLineVisible: sel,
+          title: sel ? h.name : "",
+        });
+      }
+    }
+  }, [trendPick]);
 
   useEffect(() => {
     void ensureSession().then((ok) => {
@@ -301,15 +367,44 @@ export default function DashboardPage() {
               ))}
             </span>
           }>자산 추이</CardTitle>
-          <div ref={trendRef} className="h-52" />
+          <div className="relative">
+            <div ref={trendRef} className="h-52" />
+            {/* 커서 날짜의 계열별 값 — 왼쪽 절반에서는 오른쪽에, 오른쪽 절반에서는 왼쪽에 붙인다 */}
+            {trendTip && (
+              <div className="pointer-events-none absolute top-1 z-10 min-w-[10rem] rounded-lg border border-line
+                bg-surface/95 px-2.5 py-2 text-[12px] shadow-card"
+                style={{ left: trendTip.x, transform: trendTip.flip ? "translateX(calc(-100% - 12px))" : "translateX(12px)" }}>
+                <div className="mb-1 font-semibold text-ink">{trendTip.date}</div>
+                {trendTip.rows.map((r, i) => (
+                  <div key={i} className="flex items-center justify-between gap-3 leading-5">
+                    {/* 이름이 길면 줄바꿈 대신 말줄임 — 금액 줄이 접히지 않게 (2026-09-10) */}
+                    <span className="inline-flex min-w-0 items-center gap-1.5 text-muted">
+                      <i className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: r.color }} />
+                      <span className="max-w-[7.5rem] truncate">{r.name}</span>
+                    </span>
+                    <b className="whitespace-nowrap tabular-nums text-ink">{fmtWon(r.value)}</b>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           {trendLegend.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-muted">
+            <div className="mt-2 flex flex-wrap items-center gap-x-1 gap-y-1 text-[12.5px] text-muted">
               {/* 이름은 중복 가능(예: '내 계좌' 2개) — 위치 기반 키 (2026-09-05 중복 키 오류) */}
-              {trendLegend.map((l, i) => (
-                <span key={i} className="inline-flex items-center gap-1.5">
-                  <i className="inline-block h-2 w-2 rounded-full" style={{ background: l.color }} />{l.name}
-                </span>
-              ))}
+              {trendLegend.map((l, i) => {
+                const on = trendPick === l.name;
+                return (
+                  <button key={i} type="button" aria-pressed={on} title={`${l.name} 강조`}
+                    onClick={() => setTrendPick(on ? null : l.name)}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-colors
+                      ${on ? "bg-raised font-semibold text-ink" : trendPick ? "text-faint hover:text-ink" : "hover:text-ink"}`}>
+                    <i className="inline-block h-2 w-2 rounded-full" style={{ background: l.color }} />{l.name}
+                  </button>
+                );
+              })}
+              <span className="ml-1 text-[11.5px] text-faint">
+                {trendPick ? "다시 누르면 전체 보기" : "항목을 누르면 그 선만 강조합니다"}
+              </span>
             </div>
           )}
         </Card>
