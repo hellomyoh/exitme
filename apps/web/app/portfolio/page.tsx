@@ -190,7 +190,8 @@ function PortfolioPage() {
   const [editName, setEditName] = useState("");
   const [editEtf, setEditEtf] = useState("LTM_QLD");  // US 공식 변경 (2026-09-06 지시)
   const [editColor, setEditColor] = useState("");
-  const [entryOpen, setEntryOpen] = useState(false);  // 체결 입력 폼 펼침 (2026-08-29 일지 개편)
+  // 거래 입력 탭 (2026-09-10 지시 "한 섹션에서 주문유형으로 구분") — 체결 기록 · 입출금 · 증권사 주문
+  const [txTab, setTxTab] = useState<"fill" | "cash" | "order">("fill");
   const [signal, setSignal] = useState<Signal | null>(null);
   execDayRef.current = signal?.exec_day ?? null;
   const [curve, setCurve] = useState<{ date: string; equity: number; index: number; pnl?: number }[]>([]);
@@ -434,7 +435,7 @@ function PortfolioPage() {
       qty: String(o.qty), price: o.price ? String(market === "US" ? o.price / 100 : o.price) : "", amount: "",
       memo: ORDER_KIND_KO[o.kind] ?? o.kind,
       date: date ?? new Date().toISOString().slice(0, 10) });
-    setEntryOpen(true);
+    setTxTab("fill");   // '체결 등록' 버튼 → 거래 입력 카드의 체결 탭을 열고 값을 채운다 (2026-09-10)
     setTimeout(() => document.getElementById("fill-entry")?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
   }
 
@@ -1311,42 +1312,96 @@ function PortfolioPage() {
             {signal?.status === "OK" ? "오늘은 신규 주문이 없습니다." : "시그널이 아직 없습니다 — 장 마감 배치(16:05) 이후 표시됩니다."}
           </p>
         )}
-        {/* 직접 주문 · 오늘 낸 주문 (2026-09-10 지시, ADR-011) — 연결 계좌에 KIS 정규 주문을 내고 결과·체결을 한 곳에서 본다 */}
-        {market === "KR" && broker?.linked && sum && (
+        {/* 거래 입력 (2026-09-10 지시) — 체결 기록·입출금·증권사 주문을 한 섹션에서 탭으로. 아래에 오늘 낸 주문 상태 */}
+        {sum && (
+          <div id="fill-entry">
           <Card className="mt-4">
-            <CardTitle right={<span className="text-[12px] font-normal normal-case text-faint">
-              {ae?.account ? `${ae.account.label}${ae.account.env === "vps" ? " · 모의" : " · 실전"}` : ""}</span>}>
-              직접 주문 <span className="normal-case text-faint">· 무인과 별개로 이 계좌에 바로 냅니다 · 장중 09:00~15:20</span>
+            <CardTitle right={ae?.account ? <span className="text-[12px] font-normal normal-case text-faint">
+              {ae.account.label}{ae.account.env === "vps" ? " · 모의" : " · 실전"}</span> : undefined}>
+              거래 입력 <span className="normal-case text-faint">· 기록은 장부에만, 증권사 주문은 실제로 나갑니다</span>
             </CardTitle>
-            <div className="flex flex-wrap items-end gap-2 text-[13.5px]">
-              <label className="grid gap-1 text-[12.5px] text-faint">종목코드
-                <input className="input !w-36 !py-2" placeholder={signal?.code_200 ?? "102110"} value={moCode}
-                  onChange={(e) => setMoCode(e.target.value)} /></label>
-              <span className="inline-flex overflow-hidden rounded-lg border border-line">
-                {(["buy", "sell"] as const).map((sd) => (
-                  <button key={sd} className={`px-3 py-2 text-[13px] ${moSide === sd ? (sd === "buy" ? "bg-down text-white" : "bg-accent text-white") : "bg-inset text-muted hover:text-ink"}`}
-                    onClick={() => setMoSide(sd)}>{sd === "buy" ? "매수" : "매도"}</button>
-                ))}
-              </span>
-              <label className="grid gap-1 text-[12.5px] text-faint">수량
-                <input className="input !w-24 !py-2" inputMode="numeric" value={moQty} onChange={(e) => setMoQty(e.target.value)} /></label>
-              <label className="grid gap-1 text-[12.5px] text-faint">지정가 (비우면 시장가)
-                <input className="input !w-32 !py-2" inputMode="numeric" placeholder="시장가" value={moPrice}
-                  onChange={(e) => setMoPrice(e.target.value)} /></label>
-              <button className="btn btn-primary !py-2" disabled={moBusy || !krMarketOpen()}
-                onClick={() => void submitManualOrder()}>{moBusy ? "접수 중…" : "주문 넣기"}</button>
-              {!krMarketOpen() && <span className="text-[12.5px] text-faint">장중(09:00~15:20)에만 낼 수 있습니다</span>}
-              {signal?.code_200 && (
-                <button className="text-[12px] text-accent hover:underline" onClick={() => setMoCode(signal.code_200 as string)}>
-                  {signal.name_200 ?? signal.code_200} 넣기</button>
-              )}
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <div className="inline-flex overflow-hidden rounded-lg border border-line-strong">
+                {([["fill", "✍️ 체결 기록", "이미 체결된 것"], ["cash", "💰 입출금", "현금 이동"],
+                   ["order", "👤 증권사 주문", "실제로 냅니다"]] as const).map(([k, label, hint]) => {
+                  const off = k === "order" && !(market === "KR" && broker?.linked);
+                  return (
+                    <button key={k} disabled={off}
+                      title={off ? "국내 포트에 증권사 계좌를 연결하면 쓸 수 있습니다" : undefined}
+                      onClick={() => { setTxTab(k); if (k === "fill" && !["buy", "sell"].includes(form.kind)) setForm({ ...form, kind: "buy" });
+                        if (k === "cash" && !["deposit", "withdraw"].includes(form.kind)) setForm({ ...form, kind: "deposit" }); }}
+                      className={`px-3 py-2 text-[13px] font-semibold disabled:opacity-40 ${txTab === k
+                        ? (k === "order" ? "bg-down text-white" : "bg-ink text-white") : "bg-surface text-muted hover:text-ink"}`}>
+                      {label} <span className="font-normal opacity-80">· {hint}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {txTab === "order" && <span className="text-[12.5px] text-faint">장중 09:00~15:20 · 체결분은 15:45 동기화가 원장에 넣습니다</span>}
+              {txTab !== "order" && <span className="text-[12.5px] text-faint">장 마감 후 실제 체결된 것만 입력하면 다음 주문표에 반영됩니다</span>}
             </div>
+            {txTab === "order" ? (
+              <div className="flex flex-wrap items-end gap-2 rounded-xl border border-down/40 bg-down/5 p-3 text-[13.5px]">
+                <label className="grid gap-1 text-[12.5px] text-faint">종목코드
+                  <input className="input !w-36 !py-2" placeholder={signal?.code_200 ?? "102110"} value={moCode}
+                    onChange={(e) => setMoCode(e.target.value)} /></label>
+                <span className="inline-flex overflow-hidden rounded-lg border border-line">
+                  {(["buy", "sell"] as const).map((sd) => (
+                    <button key={sd} className={`px-3 py-2 text-[13px] ${moSide === sd ? (sd === "buy" ? "bg-down text-white" : "bg-accent text-white") : "bg-surface text-muted hover:text-ink"}`}
+                      onClick={() => setMoSide(sd)}>{sd === "buy" ? "매수" : "매도"}</button>
+                  ))}
+                </span>
+                <label className="grid gap-1 text-[12.5px] text-faint">수량
+                  <input className="input !w-24 !py-2" inputMode="numeric" value={moQty} onChange={(e) => setMoQty(e.target.value)} /></label>
+                <label className="grid gap-1 text-[12.5px] text-faint">지정가 (비우면 시장가)
+                  <input className="input !w-32 !py-2" inputMode="numeric" placeholder="시장가" value={moPrice}
+                    onChange={(e) => setMoPrice(e.target.value)} /></label>
+                <button className="btn !bg-down !py-2 !text-white" disabled={moBusy || !krMarketOpen()}
+                  onClick={() => void submitManualOrder()}>{moBusy ? "접수 중…" : "증권사에 주문 넣기"}</button>
+                {!krMarketOpen() && <span className="text-[12.5px] text-faint">장중(09:00~15:20)에만 낼 수 있습니다</span>}
+                {signal?.code_200 && (
+                  <button className="text-[12px] text-accent hover:underline" onClick={() => setMoCode(signal.code_200 as string)}>
+                    {signal.name_200 ?? signal.code_200} 넣기</button>
+                )}
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="grid gap-1 text-xs text-faint">{txTab === "fill" ? "체결일" : "일자"}
+                  <input type="date" className="input" value={form.date}
+                    onChange={(e) => setForm({ ...form, date: e.target.value })} /></label>
+                <span className="inline-flex overflow-hidden rounded-lg border border-line">
+                  {(txTab === "fill" ? [["buy", "매수"], ["sell", "매도"]] : [["deposit", "입금"], ["withdraw", "출금"]]).map(([k, label]) => (
+                    <button key={k} className={`px-3 py-2 text-[13px] ${form.kind === k ? "bg-ink text-white" : "bg-surface text-muted hover:text-ink"}`}
+                      onClick={() => setForm({ ...form, kind: k })}>{label}</button>
+                  ))}
+                </span>
+                {txTab === "fill" ? (<>
+                  <label className="grid gap-1 text-xs text-faint">종목
+                    <select className="input" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })}>
+                      {MARKET_CODES[market].map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="grid gap-1 text-xs text-faint">수량
+                    <input className="input w-24" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></label>
+                  <label className="grid gap-1 text-xs text-faint">단가({unit})
+                    <input className="input w-32" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} /></label>
+                </>) : (
+                  <label className="grid gap-1 text-xs text-faint">금액({unit})
+                    <input className="input w-40" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></label>
+                )}
+                <label className="grid gap-1 text-xs text-faint">메모
+                  <input className="input w-44" value={form.memo} onChange={(e) => setForm({ ...form, memo: e.target.value })} /></label>
+                <button className="btn btn-primary" onClick={() => void submit()}>등록</button>
+              </div>
+            )}
+            {msg && <p className="mt-2 text-[13px] text-muted">{msg}</p>}
             {(() => {
               const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
               const rows = (bo?.items ?? []).filter((i) => i.plan_date === today).slice().reverse();
-              if (!rows.length) return <p className="mt-3 text-[13px] text-faint">오늘 낸 주문이 없습니다. 09:01 무인 주문도 여기에 함께 보입니다.</p>;
+              if (!rows.length) return null;
               return (
                 <div className="mt-3 overflow-x-auto">
+                  <div className="mb-1 text-[12.5px] font-semibold text-muted">오늘 낸 주문 <span className="font-normal text-faint">· 증권사에 접수된 것만 (기록은 아래 일지)</span></div>
                   <table className="w-full text-left text-[13px]">
                     <thead className="border-b border-line text-[12px] text-faint"><tr>
                       <th className="pb-1.5 font-medium">경로</th><th className="pb-1.5 font-medium">종목·구분</th>
@@ -1377,9 +1432,8 @@ function PortfolioPage() {
                 </div>
               );
             })()}
-            <p className="mt-2 text-[11.5px] leading-relaxed text-faint">직접 주문은 앱이 기록하므로 취소·체결 확인이 무인 주문과 같습니다. 체결분은 15:45 동기화가 원장에 넣습니다(장중에는 30초마다 상태 갱신).
-              HTS 에서 낸 주문은 앱이 알지 못해 여기에 보이지 않습니다.</p>
           </Card>
+          </div>
         )}
 
         {/* 실시간 현재가 vs 주문선 (2026-09-09 지시) — 기존 10초 폴링 시계열 + WS, KIS 호출 추가 없음. 국내·주문표 있을 때만 */}
@@ -1397,46 +1451,6 @@ function PortfolioPage() {
         );
       })()}
 
-      {/* 체결 입력 — 장 마감 후 실제 체결만 등록. 주문 행의 '체결 등록'이 값을 채워줌 (2026-08-29 일지 개편) */}
-        <details id="fill-entry" className="mt-3 rounded-xl border border-line bg-inset px-4 py-3" open={entryOpen}
-          onToggle={(e) => setEntryOpen((e.target as HTMLDetailsElement).open)}>
-          <summary className="cursor-pointer text-[13.5px] font-semibold text-accent">
-            체결·입출금 등록 <span className="font-normal text-faint">— 장 마감 후 실제 체결된 것만 입력하면 다음 주문표에 반영됩니다</span>
-          </summary>
-          <div className="mt-3">
-            <div className="flex flex-wrap items-end gap-3">
-          <label className="grid gap-1 text-xs text-faint">체결일
-            <input type="date" className="input" value={form.date}
-              onChange={(e) => setForm({ ...form, date: e.target.value })} /></label>
-          <label className="grid gap-1 text-xs text-faint">구분
-            <select className="input" value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
-              <option value="buy">매수</option><option value="sell">매도</option>
-              <option value="deposit">입금</option><option value="withdraw">출금</option>
-            </select>
-          </label>
-          {(form.kind === "buy" || form.kind === "sell") ? (
-            <>
-              <label className="grid gap-1 text-xs text-faint">종목
-                <select className="input" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })}>
-                  {MARKET_CODES[market].map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
-                </select>
-              </label>
-              <label className="grid gap-1 text-xs text-faint">수량
-                <input className="input w-24" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></label>
-              <label className="grid gap-1 text-xs text-faint">wontouch
-                <input className="input w-32" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} /></label>
-            </>
-          ) : (
-            <label className="grid gap-1 text-xs text-faint">금액({unit})
-              <input className="input w-40" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></label>
-          )}
-          <label className="grid gap-1 text-xs text-faint">메모
-            <input className="input w-44" value={form.memo} onChange={(e) => setForm({ ...form, memo: e.target.value })} /></label>
-          <button className="btn btn-primary" onClick={() => void submit()}>등록</button>
-          {msg && <span className="text-[13px] text-muted">{msg}</span>}
-        </div>
-          </div>
-        </details>
       </Card>
 
       {/* 일자별 매매 일지 — 그날의 주문표 + 체결 + 수익률 (시뮬레이터 저널과 동일 구성, 2026-08-29 지시) */}
