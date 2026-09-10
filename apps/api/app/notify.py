@@ -45,7 +45,7 @@ CATEGORIES: list[tuple[str, str, str, bool]] = [
     ("cash_check", "예수금 대조", "원장 현금 vs 계좌 D+2 예수금 경고, 차액 보정 등록", True),
     ("orders", "주문 접수 · 취소 · 설정", "예약주문 접수, 무인 승인, 개별 취소, 완전 무인 설정 변경", False),
     ("trades", "체결 등록", "실전매매에 수동 등록한 매수·매도·입출금, 거래 삭제", False),
-    ("daily_status", "일일 현황", "16:40 총자산·전일 대비·주식/현금 구성·포트별 평가액", True),
+    ("daily_status", "일일 현황", "16:40 총자산·전일 대비·주식/현금 구성·포트별 평가액 + 애프터마켓 체결이 있으면 20:20 최종값 한 번 더", True),
 ]
 DEFAULT_EVENTS = {k: d for k, _l, _d, d in CATEGORIES}
 # 활동 로그 이벤트 종류 → 카테고리. 없는 종류(줄 단위 사전 갭 취소 등)는 보내지 않는다 — 요약 한 건이 대신한다
@@ -287,7 +287,10 @@ def notify_trade(session: Session, user_id: int, pf: TradePortfolio, kind: str, 
 
 # ── 일일 현황 (16:40 스냅샷 뒤) ────────────────────────────────────────────────────
 
-def daily_status_text(session: Session, user_id: int, today: date) -> str | None:
+PHASE_TITLE = {"close": "📊 일일 현황", "after": "🌙 애프터마켓 마감 반영"}
+
+
+def daily_status_text(session: Session, user_id: int, today: date, phase: str = "close") -> str | None:
     from app.models import AssetSnapshot, PortfolioSnapshot
 
     snap = session.scalar(select(AssetSnapshot).where(AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date == today))
@@ -296,7 +299,7 @@ def daily_status_text(session: Session, user_id: int, today: date) -> str | None
     prev = session.scalars(select(AssetSnapshot).where(AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date < today)
                            .order_by(AssetSnapshot.snap_date.desc()).limit(1)).first()
     total = int(snap.total or 0)
-    line = f"📊 일일 현황 {today.isoformat()} — 총자산 {total:,}원"
+    line = f"{PHASE_TITLE.get(phase, PHASE_TITLE['close'])} {today.isoformat()} — 총자산 {total:,}원"
     if prev is not None and int(prev.total or 0) > 0:
         # 대시보드와 같은 식 — 입출금은 자산 이동이라 빼고 본다 (단순 Dietz, dashboard.compute_user_snapshot; 2026-09-09 통일)
         from app.dashboard import user_flows_between
@@ -322,18 +325,27 @@ def daily_status_text(session: Session, user_id: int, today: date) -> str | None
     return line
 
 
-def send_daily_status(session: Session, user_id: int, today: date | None = None) -> bool:
-    """일일 현황 발송 — 같은 날 두 번 보내지 않는다 (2026-09-09: 스케줄러 따라잡기로 16:40 스냅샷 배치가 재실행돼 중복 발송). 기록은 notify.daily_status_sent."""
+# 단계별 발송 기록 키 — close(정규장 마감 16:40) / after(애프터마켓 마감 20:20, 저녁 체결이 있을 때만)
+PHASE_KEY = {"close": "daily_status_sent", "after": "daily_status_after"}
+
+
+def send_daily_status(session: Session, user_id: int, today: date | None = None, phase: str = "close") -> bool:
+    """일일 현황 발송 — 같은 날 같은 단계는 두 번 보내지 않는다 (2026-09-09: 스케줄러 따라잡기로 16:40 배치가 재실행돼 중복 발송).
+
+    phase="after" 는 애프터마켓(16:00~20:00) 체결이 있은 사용자에게 20:20 에 한 번 더 보내는 그날의 최종값 (2026-09-14 대응).
+    기록은 notify.daily_status_sent / notify.daily_status_after.
+    """
     today = today or datetime.now(KST).date()
     row = _row(session, user_id)
-    if row is not None and (row.notify or {}).get("daily_status_sent") == today.isoformat():
+    key = PHASE_KEY.get(phase, PHASE_KEY["close"])
+    if row is not None and (row.notify or {}).get(key) == today.isoformat():
         return False
-    text = daily_status_text(session, user_id, today)
+    text = daily_status_text(session, user_id, today, phase)
     if not text:
         return False
     ok = maybe_notify(session, user_id, "daily_status", text)
     if ok and row is not None:
         cfg = dict(row.notify or {})   # maybe_notify 가 last 를 갱신했으므로 다시 읽어 덧붙인다 (JSONB 재할당)
-        cfg["daily_status_sent"] = today.isoformat()
+        cfg[key] = today.isoformat()
         row.notify = cfg
     return ok

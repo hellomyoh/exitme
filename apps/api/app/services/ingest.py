@@ -39,18 +39,33 @@ MARKET_CLOSE = {          # 시장 → (타임존, 정규장 마감 시각)
     "NYSE": ("America/New_York", _time(16, 0)),
 }
 KR_CLOSE = ("Asia/Seoul", _time(15, 30))
+# KRX 애프터마켓 (2026-09-14~, 16:00~20:00 실시간 접속매매): **주식·DR 만** 대상이고 ETF·ETN 은 제외된다.
+# 주식의 그날 봉은 20:00 이 지나야 확정이라, 16:05 에 받은 값을 넣으면 ON CONFLICT DO NOTHING 때문에
+# 저녁 거래가 반영되지 못한 채 굳는다. 그래서 종목 종류로 마감 시각을 나눈다 (KR ETF 15:30 / KR 주식 20:00).
+KR_STOCK_CLOSE = ("Asia/Seoul", _time(20, 0))
+AFTER_MARKET_TYPES = ("STOCK",)   # 애프터마켓 대상 — ETF·ETN 은 제외(정규장 마감이 그날의 끝)
 
 
-def market_session_state(market: str) -> tuple[date, bool]:
-    """(그 시장 기준 오늘 날짜, 정규장 마감 여부). 미지정 시장은 국내로 본다."""
-    tz_name, close_at = MARKET_CLOSE.get((market or "").upper(), KR_CLOSE)
+def market_session_state(market: str, type_: str | None = None) -> tuple[date, bool]:
+    """(그 시장 기준 오늘 날짜, 그날 거래가 끝났는지). 미지정 시장은 국내로 본다.
+
+    국내 주식은 애프터마켓(~20:00)까지가 그날의 거래다. type_ 를 주지 않으면 정규장(15:30) 기준 —
+    주문표 판정처럼 정규장만 보는 곳은 그대로 쓴다.
+    """
+    key = (market or "").upper()
+    if key in MARKET_CLOSE:
+        tz_name, close_at = MARKET_CLOSE[key]
+    elif (type_ or "").upper() in AFTER_MARKET_TYPES:
+        tz_name, close_at = KR_STOCK_CLOSE
+    else:
+        tz_name, close_at = KR_CLOSE
     now = datetime.now(ZoneInfo(tz_name))
     return now.date(), now.time() >= close_at
 
 
-def bar_is_final(trade_date: date, market: str) -> bool:
-    """그 봉이 '확정된 과거 봉'인가 — 미래 날짜이거나, 오늘인데 아직 장중이면 False."""
-    today, closed = market_session_state(market)
+def bar_is_final(trade_date: date, market: str, type_: str | None = None) -> bool:
+    """그 봉이 '확정된 과거 봉'인가 — 미래 날짜이거나, 오늘인데 아직 거래 중이면 False."""
+    today, closed = market_session_state(market, type_)
     if trade_date > today:
         return False
     if trade_date == today and not closed:
@@ -68,10 +83,11 @@ def upsert_daily_bars(
     result = IngestResult()
     inst = session.get(Instrument, instrument_id)
     market = inst.market if inst is not None else "KOSPI"
+    type_ = inst.type if inst is not None else None   # 국내 주식은 애프터마켓 종료(20:00) 후에야 확정 (2026-09-14)
     rows = []
     for b in bars:
         # 확정봉 가드 — 장중/장 시작 전에 받은 '오늘 봉'은 저장하지 않는다 (2026-09-07)
-        if not bar_is_final(b["trade_date"], market):
+        if not bar_is_final(b["trade_date"], market, type_):
             result.rejected += 1
             logger.warning("reject unfinished bar instrument=%s(%s) date=%s volume=%s — 장 마감 전 수신",
                            instrument_id, market, b["trade_date"], b.get("volume"))

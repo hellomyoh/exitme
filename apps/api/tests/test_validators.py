@@ -77,7 +77,7 @@ def test_upsert_rejects_unfinished_today_bar(monkeypatch):
         s.commit()
         iid = inst.id
 
-        monkeypatch.setattr(ing, "market_session_state", lambda market: (day, False))  # 장중
+        monkeypatch.setattr(ing, "market_session_state", lambda market, type_=None: (day, False))  # 장중
         r1 = ing.upsert_daily_bars(s, iid, [{"trade_date": day, "open": 100, "high": 100,
                                              "low": 100, "close": 105_880, "volume": 0}], source="kis")
         s.commit()
@@ -85,7 +85,7 @@ def test_upsert_rejects_unfinished_today_bar(monkeypatch):
         assert s.scalar(select(OhlcvDaily).where(OhlcvDaily.instrument_id == iid,
                                                  OhlcvDaily.trade_date == day)) is None
 
-        monkeypatch.setattr(ing, "market_session_state", lambda market: (day, True))   # 마감 후
+        monkeypatch.setattr(ing, "market_session_state", lambda market, type_=None: (day, True))   # 마감 후
         r2 = ing.upsert_daily_bars(s, iid, [{"trade_date": day, "open": 100_000, "high": 106_000,
                                              "low": 99_000, "close": 103_000, "volume": 12_000_000}], source="kis")
         s.commit()

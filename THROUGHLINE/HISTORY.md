@@ -783,3 +783,13 @@
 - 특이사항: 같은 유형(시계 의존 테스트)이 오늘 아침에도 있었다 — 확정봉 가드로 오늘 봉 평가 테스트 4건이 15:30 전에 실패(#178). 시각에 걸리는 규칙이 늘어난 만큼 새 테스트는 시계를 고정하는 것을 기본으로 한다.
 - Git commit: fix: cancel path re-checks fills on one clock so tests are not wall-clock dependent
 
+## [2026-09-10] feat | KRX 애프터마켓(9/14) 대응 — 저녁 배치 3종: 주식 일봉 20:10 · 동기화 20:15 · 스냅샷 20:20(조건부 알림)
+
+- 검토(사용자 질문 "9/14 시장 시간 변경에 대응돼 있나"): 기사·기존 문서 재확인 — 정규장 09:00~15:30 불변, 애프터마켓 16:00~20:00 신설(주식·DR 만, **ETF·ETN 제외**), 전일 종가 ±30%, T+2 유지. 따라서 **매매 공식·09:01 무인 실행은 영향 없음**(우리 한국 전략은 전부 ETF, 신호 앵커는 KRX 정규장 종가). 남는 구멍은 매매일지에 담은 **주식** 쪽 3가지 — ① 16:00~20:00 체결이 그날 동기화에 안 잡힘 ② 16:05 에 받은 주식 일봉이 저녁 거래를 놓친 채 굳음(ON CONFLICT DO NOTHING) ③ 16:40 스냅샷이 애프터마켓 한복판 값.
+- 사용자 결정: "주문표 생성을 21:00 으로 옮기는 것"은 입력(ETF 종가)이 같아 이득 없음을 확인하고 기각. 대신 "장 마감 후 1회 보내고, 애프터마켓이 끝나면 **추가 거래가 있을 경우에만** 한 번 더". 가격만 움직인 경우는 보내지 않는다(임계값 알림은 후속 후보).
+- 작업 내용: (1) `ingest.market_session_state(market, type_)`·`bar_is_final(..., type_)` — 마감 시각을 종목 종류로 분기(국내 ETF·ETN 15:30 / 국내 주식 `KR_STOCK_CLOSE` 20:00 / 미국 16:00 ET). `upsert_daily_bars` 가 `Instrument.type` 을 넘긴다. 종류 미지정 호출(주문표 `_plan_pending` 등)은 정규장 기준 그대로. (2) `worker.ingest_targets(session, scope)` + `daily_ingest(scope=)` — 16:05 `regular`(국내 ETF·미국), **20:10 `stocks`**(국내 주식). (3) **20:15** `broker_post_close_sync(retry=True)` — 저녁 체결 가져오기, 변경 없으면 알림 없음(17:10 규칙 재사용). (4) **20:20** 신규 `evening_asset_snapshot` — 전 사용자 스냅샷 재계산(같은 키 덮어쓰기 → 그날 최종값)하고 `users_with_evening_fills`(실전 원장 `TradeTransaction.created_at ≥ 16:45` + 매매일지 항목)에 해당하는 사용자에게만 일일 현황 재발송. (5) `notify.send_daily_status(phase=)` — 단계별 잠금(`daily_status_sent`/`daily_status_after`), 저녁 제목 "🌙 애프터마켓 마감 반영".
+- 테스트 결과: 신규 `tests/test_after_market.py` 4건 — 종류별 확정 시각(15:29/15:30/16:05/19:59/20:00/20:10 × ETF·주식·미지정, 과거·미래) / 장중 주식 봉 거부 후 20:00 뒤 값이 자리 차지 / `ingest_targets` 3범위 분리 / 저녁 스냅샷·조건부 발송(입금은 대상 아님·체결 등록 후 대상·최종값 반영·단계별 하루 1회). 기존 `test_validators` 스텁 시그니처 갱신. 전체 `pytest -q tests/` → **279 passed**. 로컬 워커·스케줄러 재기동 후 beat 4항목(16:05 regular·20:10 stocks·20:15 evening·20:20 snapshot) 확인.
+- 문서: 9/14 검토 문서 §3-5(조치 표), operator-guide 저녁 블록, user-guide 알림 절, feature-market-data 확정봉 절, ASSUMPTIONS 2건.
+- 남은 것: 9/14 첫 주에 ① 주식 일봉이 저녁에 실제로 갱신되는지(16:05 vs 20:10 값 비교) ② 예약주문 접수 창 변경 여부 ③ KIS 가 애프터마켓 주문 TR 을 지원하는지(직접 주문 창 09:00~15:20 확장 여부) 확인.
+- Git commit: feat: evening batches for the KRX after-market — stock bars 20:10, sync 20:15, snapshot 20:20 with conditional daily status
+
