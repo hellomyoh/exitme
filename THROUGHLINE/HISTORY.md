@@ -810,3 +810,11 @@
 - 문서: feature-dashboard §5.
 - Git commit: ui: total-assets card shows today and cumulative; market cards gain today's P&L
 
+## [2026-09-10] ui | 한국·미국 주식 카드도 오늘이 위, 누적이 아래 (사용자 지시)
+
+- 지시: "한국 주식도 오늘이 위에 누적이 아래에 위치하도록". 총자산 카드는 이미 오늘 → 누적 순서인데 시장 카드만 반대였다.
+- 작업 내용: `dashboard/page.tsx` 두 카드의 보조 줄 순서를 바꿨다(값·색·툴팁 불변, 표시 순서만). 웹만 변경.
+- 테스트 결과: `tsc --noEmit` 무오류, 서버 변경 없음(직전 283 passed 유지). 로컬 dev 계정은 국내 주식 보유가 0 이라 카드 보조 줄이 렌더되지 않아 눈으로는 서버에서 확인한다.
+- 버전: **올리지 않음** — 같은 화면 작업의 후속 표시 변경이라 v0.22.0 에 포함해 배포한다 (2026-09-10 사용자 지적 "버전이 이렇게 막 올라갈 일인가" 이후 규칙: 버전은 배포 단위로만, 테스트·문서·후속 표시 수정은 올리지 않는다).
+- Git commit: ui: market cards list today above cumulative, matching the total card
+
