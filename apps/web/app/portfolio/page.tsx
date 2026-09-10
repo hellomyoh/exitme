@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createChart, IChartApi, LineSeries, LineStyle } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
+import { useFieldErrors } from "../../lib/form";
 import { fmtMoneyM, fmtPriceM, MARKET_CODES, MARKET_LABEL, marketOf, priceToApi } from "../../lib/market";
 import { Badge, Card, CardTitle, EmptyState, fmtPct, GaugeBar, PageTitle, pnlTone, Stat, Tip } from "../../components/ui";
 import MarketSwitch from "../../components/marketswitch";
@@ -192,6 +193,7 @@ function PortfolioPage() {
   const [editColor, setEditColor] = useState("");
   // 거래 입력 탭 (2026-09-10 지시 "한 섹션에서 주문유형으로 구분") — 체결 기록 · 입출금 · 증권사 주문
   const [txTab, setTxTab] = useState<"fill" | "cash" | "order">("fill");
+  const fe = useFieldErrors();   // 입력 누락 표시 — 칸별 붉은 테두리·사유 (2026-09-10, lib/form)
   const [signal, setSignal] = useState<Signal | null>(null);
   execDayRef.current = signal?.exec_day ?? null;
   const [curve, setCurve] = useState<{ date: string; equity: number; index: number; pnl?: number }[]>([]);
@@ -315,8 +317,14 @@ function PortfolioPage() {
     if (!sum) return;
     const code = moCode.trim().toUpperCase();
     const qty = Number(moQty), price = moPrice.trim() ? Number(moPrice) : null;
-    if (!code || !Number.isFinite(qty) || qty <= 0) { setBoMsg("종목코드와 수량을 확인하세요"); return; }
-    if (price !== null && (!Number.isFinite(price) || price <= 0)) { setBoMsg("지정가를 확인하세요 (비우면 시장가)"); return; }
+    // 어느 칸이 비었는지 그 자리에서 보이게 (2026-09-10 지시) — 종전에는 카드 밖 메시지라 보이지 않았다
+    const bad = fe.validate({
+      moCode: !code ? "종목코드를 넣으세요" : (/^[0-9A-Z]{4,12}$/.test(code) ? "" : "종목코드 형식이 아닙니다"),
+      moQty: !moQty.trim() ? "수량을 넣으세요" : (Number.isInteger(qty) && qty > 0 ? "" : "1 이상의 정수"),
+      moPrice: moPrice.trim() && !((price as number) > 0) ? "0보다 큰 값 (비우면 시장가)" : "",
+    });
+    if (bad) { setMsg(`입력을 확인하세요 — ${bad}`); return; }
+    setMsg("");
     const acct = ae?.account ? `${ae.account.label}${ae.account.env === "vps" ? " (모의)" : " (실전)"}` : "연결 계좌";
     const what = `${code} ${moSide === "buy" ? "매수" : "매도"} ${qty.toLocaleString()}주${price ? ` @${fpx(price)}` : " 시장가"}`;
     const warn = price ? "" : "\n\n⚠️ 시장가는 접수 즉시 체결되어 취소할 수 없습니다.";
@@ -326,8 +334,8 @@ function PortfolioPage() {
       method: "POST", body: JSON.stringify({ code, side: moSide, qty, price }) });
     const j = (await r.json().catch(() => ({}))) as { order_no?: string | null; detail?: string };
     setMoBusy(false);
-    if (!r.ok) { setBoMsg(`직접 주문 실패 — ${j.detail ?? r.status}`); return; }
-    setBoMsg(`👤 직접 주문 접수 — ${what} · 주문번호 ${j.order_no ?? "-"}`);
+    if (!r.ok) { setMsg(`직접 주문 실패 — ${j.detail ?? r.status}`); return; }
+    setMsg(`👤 직접 주문 접수 — ${what} · 주문번호 ${j.order_no ?? "-"}`);
     setMoQty(""); setMoPrice("");
     void load(pid);
   }
@@ -447,6 +455,15 @@ function PortfolioPage() {
   }
 
   async function submit() {
+    // 칸별 검증 (2026-09-10) — 종전에는 빈 칸이면 서버 422 문구만 떴다
+    const fill = form.kind === "buy" || form.kind === "sell";
+    const bad = fe.validate({
+      date: form.date ? "" : "일자를 넣으세요",
+      qty: fill ? (!String(form.qty).trim() ? "수량을 넣으세요" : (Number(form.qty) > 0 ? "" : "0보다 큰 수")) : "",
+      price: fill ? (!String(form.price).trim() ? "단가를 넣으세요" : (Number(form.price) > 0 ? "" : "0보다 큰 수")) : "",
+      amount: fill ? "" : (!String(form.amount).trim() ? "금액을 넣으세요" : (Number(form.amount) > 0 ? "" : "0보다 큰 수")),
+    });
+    if (bad) { setMsg(`입력을 확인하세요 — ${bad}`); return; }
     setMsg("");
     const today = new Date().toISOString().slice(0, 10);
     const body: Record<string, unknown> = {
@@ -1328,7 +1345,7 @@ function PortfolioPage() {
                   return (
                     <button key={k} disabled={off}
                       title={off ? "국내 포트에 증권사 계좌를 연결하면 쓸 수 있습니다" : undefined}
-                      onClick={() => { setTxTab(k); if (k === "fill" && !["buy", "sell"].includes(form.kind)) setForm({ ...form, kind: "buy" });
+                      onClick={() => { setTxTab(k); fe.reset(); setMsg(""); if (k === "fill" && !["buy", "sell"].includes(form.kind)) setForm({ ...form, kind: "buy" });
                         if (k === "cash" && !["deposit", "withdraw"].includes(form.kind)) setForm({ ...form, kind: "deposit" }); }}
                       className={`px-3 py-2 text-[13px] font-semibold disabled:opacity-40 ${txTab === k
                         ? (k === "order" ? "bg-down text-white" : "bg-ink text-white") : "bg-surface text-muted hover:text-ink"}`}>
@@ -1343,8 +1360,8 @@ function PortfolioPage() {
             {txTab === "order" ? (
               <div className="flex flex-wrap items-end gap-2 rounded-xl border border-down/40 bg-down/5 p-3 text-[13.5px]">
                 <label className="grid gap-1 text-[12.5px] text-faint">종목코드
-                  <input className="input !w-36 !py-2" placeholder={signal?.code_200 ?? "102110"} value={moCode}
-                    onChange={(e) => setMoCode(e.target.value)} /></label>
+                  <input className={`input !w-36 !py-2${fe.cls("moCode")}`} placeholder={signal?.code_200 ?? "102110"} value={moCode}
+                    onChange={(e) => { setMoCode(e.target.value); fe.clear("moCode"); }} />{fe.msg("moCode")}</label>
                 <span className="inline-flex overflow-hidden rounded-lg border border-line">
                   {(["buy", "sell"] as const).map((sd) => (
                     <button key={sd} className={`px-3 py-2 text-[13px] ${moSide === sd ? (sd === "buy" ? "bg-down text-white" : "bg-accent text-white") : "bg-surface text-muted hover:text-ink"}`}
@@ -1352,10 +1369,11 @@ function PortfolioPage() {
                   ))}
                 </span>
                 <label className="grid gap-1 text-[12.5px] text-faint">수량
-                  <input className="input !w-24 !py-2" inputMode="numeric" value={moQty} onChange={(e) => setMoQty(e.target.value)} /></label>
+                  <input className={`input !w-24 !py-2${fe.cls("moQty")}`} inputMode="numeric" value={moQty}
+                    onChange={(e) => { setMoQty(e.target.value); fe.clear("moQty"); }} />{fe.msg("moQty")}</label>
                 <label className="grid gap-1 text-[12.5px] text-faint">지정가 (비우면 시장가)
-                  <input className="input !w-32 !py-2" inputMode="numeric" placeholder="시장가" value={moPrice}
-                    onChange={(e) => setMoPrice(e.target.value)} /></label>
+                  <input className={`input !w-32 !py-2${fe.cls("moPrice")}`} inputMode="numeric" placeholder="시장가" value={moPrice}
+                    onChange={(e) => { setMoPrice(e.target.value); fe.clear("moPrice"); }} />{fe.msg("moPrice")}</label>
                 <button className="btn !bg-down !py-2 !text-white" disabled={moBusy || !krMarketOpen()}
                   onClick={() => void submitManualOrder()}>{moBusy ? "접수 중…" : "증권사에 주문 넣기"}</button>
                 {!krMarketOpen() && <span className="text-[12.5px] text-faint">장중(09:00~15:20)에만 낼 수 있습니다</span>}
@@ -1367,8 +1385,8 @@ function PortfolioPage() {
             ) : (
               <div className="flex flex-wrap items-end gap-3">
                 <label className="grid gap-1 text-xs text-faint">{txTab === "fill" ? "체결일" : "일자"}
-                  <input type="date" className="input" value={form.date}
-                    onChange={(e) => setForm({ ...form, date: e.target.value })} /></label>
+                  <input type="date" className={`input${fe.cls("date")}`} value={form.date}
+                    onChange={(e) => { setForm({ ...form, date: e.target.value }); fe.clear("date"); }} />{fe.msg("date")}</label>
                 <span className="inline-flex overflow-hidden rounded-lg border border-line">
                   {(txTab === "fill" ? [["buy", "매수"], ["sell", "매도"]] : [["deposit", "입금"], ["withdraw", "출금"]]).map(([k, label]) => (
                     <button key={k} className={`px-3 py-2 text-[13px] ${form.kind === k ? "bg-ink text-white" : "bg-surface text-muted hover:text-ink"}`}
@@ -1382,19 +1400,22 @@ function PortfolioPage() {
                     </select>
                   </label>
                   <label className="grid gap-1 text-xs text-faint">수량
-                    <input className="input w-24" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></label>
+                    <input className={`input w-24${fe.cls("qty")}`} value={form.qty}
+                      onChange={(e) => { setForm({ ...form, qty: e.target.value }); fe.clear("qty"); }} />{fe.msg("qty")}</label>
                   <label className="grid gap-1 text-xs text-faint">단가({unit})
-                    <input className="input w-32" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} /></label>
+                    <input className={`input w-32${fe.cls("price")}`} value={form.price}
+                      onChange={(e) => { setForm({ ...form, price: e.target.value }); fe.clear("price"); }} />{fe.msg("price")}</label>
                 </>) : (
                   <label className="grid gap-1 text-xs text-faint">금액({unit})
-                    <input className="input w-40" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></label>
+                    <input className={`input w-40${fe.cls("amount")}`} value={form.amount}
+                      onChange={(e) => { setForm({ ...form, amount: e.target.value }); fe.clear("amount"); }} />{fe.msg("amount")}</label>
                 )}
                 <label className="grid gap-1 text-xs text-faint">메모
                   <input className="input w-44" value={form.memo} onChange={(e) => setForm({ ...form, memo: e.target.value })} /></label>
                 <button className="btn btn-primary" onClick={() => void submit()}>등록</button>
               </div>
             )}
-            {msg && <p className="mt-2 text-[13px] text-muted">{msg}</p>}
+            {msg && <p className={`mt-2 text-[13px] ${fe.has || msg.includes("실패") ? "font-medium text-down" : "text-muted"}`}>{msg}</p>}
             {(() => {
               const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
               const rows = (bo?.items ?? []).filter((i) => i.plan_date === today).slice().reverse();

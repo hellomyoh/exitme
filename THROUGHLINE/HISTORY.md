@@ -756,3 +756,10 @@
 - 함께 고침: 실전매매 체결 폼의 단가 라벨이 `wontouch` 로 깨져 있던 것(d60ecd9 의 일괄 치환 흔적)을 `단가({unit})` 로 복구.
 - 테스트 결과: 서버 변경이 없어 기존 스위트 그대로 — `pytest -q tests/` **275 passed**(`test_ws_quotes` 1건은 알려진 간헐 실패, 단독 재실행 2 passed), `tsc --noEmit` 무오류. 화면 확인은 배포 후.
 - Git commit: refactor: one trade-entry section with order-type tabs (portfolio 3 tabs, journal 2)
+
+## [2026-09-10] fix | 입력 누락을 칸에 붉게 — 모든 폼 공통 (사용자 지적 "주문 넣기가 안 먹는데 뭘 빠뜨렸는지 모른다")
+
+- 원인 2가지: ① 직접 주문의 검증 문구를 `boMsg` 로 넣었는데 그 자리가 주문표 위쪽이라 거래 입력 카드를 보는 사용자 눈에 들어오지 않았다. ② 여러 폼이 **버튼을 조용히 비활성**으로 두어(매매일지 기록·새 일지, 설정 계좌 등록·조회) 왜 안 눌리는지 알 수 없었다. 실전매매 체결·입출금 폼은 검증 자체가 없어 서버 422 문구만 떴다.
+- 작업 내용: 공통 훅 `apps/web/lib/form.tsx` `useFieldErrors()` 신설 — `validate({칸: 사유|""})` 로 표시를 켜고 사유 요약을 돌려주며 `cls`(붉은 테두리)·`msg`(칸 아래 사유)·`clear`(입력 시 해제)·`has`. 규칙: **비활성 대신 눌러 보면 알려 준다**. 적용: 실전매매 거래 입력 3탭(체결·입출금·증권사 주문, 메시지도 카드 안으로) · 매매일지 기록 폼·주문 폼·새 일지 · 설정 증권사 계좌 등록/조회(`CredentialInput` 에 `invalid` 지원)·알림 봇 토큰 · 시뮬레이터 기간·자본금 · 로그인 아이디·비밀번호. 서버 변경 없음. VERSION 0.19.1.
+- 테스트 결과: 서버 변경 없음 — `pytest -q tests/` **275 passed**, `tsc --noEmit` 무오류. 화면 확인은 배포 후.
+- Git commit: fix: show which field is missing on every form (shared useFieldErrors)

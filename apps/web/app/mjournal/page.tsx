@@ -11,6 +11,7 @@ import { createChart, IChartApi, LineSeries, LineStyle } from "lightweight-chart
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch, ensureSession } from "../../lib/api";
+import { useFieldErrors } from "../../lib/form";
 import { Card, CardTitle, EmptyState, PageTitle, Stat } from "../../components/ui";
 
 type JournalMeta = { id: number; name: string; symbol: string; broker: string; closed_at?: string | null };
@@ -72,6 +73,7 @@ function JournalTradeCard({ jid, linked, closed, onChanged, right, meta, recordF
   const [price, setPrice] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const fe = useFieldErrors();   // 입력 누락 표시 (2026-09-10, lib/form)
   const open = krMarketOpen();
   const reload = useCallback(async (refresh = false) => {
     const r = await apiFetch(`/mjournals/${jid}/orders${refresh ? "?refresh=1" : ""}`);
@@ -87,7 +89,12 @@ function JournalTradeCard({ jid, linked, closed, onChanged, right, meta, recordF
   }, [live, reload]);
   async function submit() {
     const c = code.trim().toUpperCase(), q = Number(qty), px = price.trim() ? Number(price) : null;
-    if (!c || !Number.isFinite(q) || q <= 0) { setMsg("종목코드와 수량을 확인하세요"); return; }
+    const bad = fe.validate({
+      code: !c ? "종목코드를 넣으세요" : (/^[0-9A-Z]{4,12}$/.test(c) ? "" : "종목코드 형식이 아닙니다"),
+      qty: !qty.trim() ? "수량을 넣으세요" : (Number.isInteger(q) && q > 0 ? "" : "1 이상의 정수"),
+      price: price.trim() && !((px as number) > 0) ? "0보다 큰 값 (비우면 시장가)" : "",
+    });
+    if (bad) { setMsg(`입력을 확인하세요 — ${bad}`); return; }
     const what = `${c} ${side === "buy" ? "매수" : "매도"} ${q.toLocaleString()}주${px ? ` @${px.toLocaleString()}원` : " 시장가"}`;
     const warn = px ? "" : "\n\n⚠️ 시장가는 접수 즉시 체결되어 취소할 수 없습니다.";
     if (!window.confirm(`${linked?.label ?? "연결 계좌"}${linked?.env === "vps" ? " (모의)" : " (실전)"} 계좌에 실제 주문을 냅니다.\n\n${what}${warn}\n\n계속할까요?`)) return;
@@ -144,7 +151,8 @@ function JournalTradeCard({ jid, linked, closed, onChanged, right, meta, recordF
         {tab === "record" ? recordForm : (
           <div className="flex flex-wrap items-end gap-2 rounded-xl border border-down/40 bg-down/5 p-3 text-[13.5px]">
             <label className="grid gap-1 text-[12.5px] text-faint">종목코드
-              <input className="input !w-36 !py-2" placeholder="005930" value={code} onChange={(e) => setCode(e.target.value)} /></label>
+              <input className={`input !w-36 !py-2${fe.cls("code")}`} placeholder="005930" value={code}
+                onChange={(e) => { setCode(e.target.value); fe.clear("code"); }} />{fe.msg("code")}</label>
             <span className="inline-flex overflow-hidden rounded-lg border border-line">
               {(["buy", "sell"] as const).map((sd) => (
                 <button key={sd} className={`px-3 py-2 text-[13px] ${side === sd ? (sd === "buy" ? "bg-up text-white" : "bg-down text-white") : "bg-surface text-muted hover:text-ink"}`}
@@ -152,16 +160,18 @@ function JournalTradeCard({ jid, linked, closed, onChanged, right, meta, recordF
               ))}
             </span>
             <label className="grid gap-1 text-[12.5px] text-faint">수량
-              <input className="input !w-24 !py-2" inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value)} /></label>
+              <input className={`input !w-24 !py-2${fe.cls("qty")}`} inputMode="numeric" value={qty}
+                onChange={(e) => { setQty(e.target.value); fe.clear("qty"); }} />{fe.msg("qty")}</label>
             <label className="grid gap-1 text-[12.5px] text-faint">지정가 (비우면 시장가)
-              <input className="input !w-32 !py-2" inputMode="numeric" placeholder="시장가" value={price} onChange={(e) => setPrice(e.target.value)} /></label>
+              <input className={`input !w-32 !py-2${fe.cls("price")}`} inputMode="numeric" placeholder="시장가" value={price}
+                onChange={(e) => { setPrice(e.target.value); fe.clear("price"); }} />{fe.msg("price")}</label>
             <button className="btn !bg-down !py-2 !text-white" disabled={busy || !open} onClick={() => void submit()}>
               {busy ? "접수 중…" : "증권사에 주문 넣기"}</button>
             {!open && <span className="text-[12.5px] text-faint">장중(09:00~15:20)에만 낼 수 있습니다</span>}
           </div>
         )}
       </>)}
-      {tab === "record" ? recordMsg : (msg && <p className="mt-2 text-[13px] text-muted">{msg}</p>)}
+      {tab === "record" ? recordMsg : (msg && <p className={`mt-2 text-[13px] ${fe.has || msg.includes("실패") ? "font-medium text-down" : "text-muted"}`}>{msg}</p>)}
       {rows.length > 0 && (
         <div className="mt-3 overflow-x-auto">
           <div className="mb-1 text-[12.5px] font-semibold text-muted">낸 주문 <span className="font-normal text-faint">· 증권사에 접수된 것만 (기록은 아래 표)</span></div>
@@ -630,6 +640,8 @@ function MJournalPage() {
   const [ef, setEf] = useState({ side: "buy", symbol: "", newSymbol: "", code: "", qty: "", price: "",
     date: new Date().toISOString().slice(0, 10), reason: "" });  // code: 새 종목의 종목코드(선택) — 시세·수익률 라인 연결 (2026-09-06)
   const [msg, setMsg] = useState("");
+  const efe = useFieldErrors();   // 기록 폼 입력 누락 표시 (2026-09-10)
+  const nfe = useFieldErrors();   // 새 일지 폼
   const [accts, setAccts] = useState<Acct[]>([]);          // 설정에 등록된 증권사 계좌 (0018)
   const [showImport, setShowImport] = useState(false);
 
@@ -679,6 +691,11 @@ function MJournalPage() {
   }, [load, router, spJid, spNew]);
 
   async function createJournal() {
+    const bad = nfe.validate({
+      name: nf.name.trim() ? "" : "일지 이름을 넣으세요",
+      symbol: nf.symbol.trim() ? "" : "기본 종목명을 넣으세요",
+    });
+    if (bad) { setMsg(`입력을 확인하세요 — ${bad}`); return; }
     setMsg("");
     const r = await apiFetch("/mjournals", { method: "POST", body: JSON.stringify({
       name: nf.name.trim(), symbol: nf.symbol.trim(), broker: nf.broker.trim(),
@@ -694,7 +711,13 @@ function MJournalPage() {
     if (jid === null) return;
     setMsg("");
     const symbol = ef.symbol === NEW_SYM ? ef.newSymbol.trim() : ef.symbol;
-    if (!symbol) { setMsg("종목명을 입력하세요"); return; }
+    const bad = efe.validate({
+      newSymbol: symbol ? "" : "종목명을 넣으세요",
+      qty: !String(ef.qty).trim() ? "수량을 넣으세요" : (Number(ef.qty) > 0 ? "" : "0보다 큰 수"),
+      price: !String(ef.price).trim() ? "단가를 넣으세요" : (Number(ef.price) > 0 ? "" : "0보다 큰 수"),
+      date: ef.date ? "" : "일자를 넣으세요",
+    });
+    if (bad) { setMsg(`입력을 확인하세요 — ${bad}`); return; }
     const r = await apiFetch(`/mjournals/${jid}/entries`, { method: "POST", body: JSON.stringify({
       side: ef.side, qty: Number(ef.qty), price: Number(ef.price), symbol,
       trade_date: ef.date, reason: ef.reason.trim() || undefined,
@@ -726,9 +749,11 @@ function MJournalPage() {
           <CardTitle>새 매매일지 — 여기서 정한 값은 이후 자동 적용됩니다</CardTitle>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="grid gap-1 text-[13px] text-faint">일지 이름
-              <input className="input" placeholder="예: 대원제약 스윙" value={nf.name} onChange={(e) => setNf({ ...nf, name: e.target.value })} /></label>
+              <input className={`input${nfe.cls("name")}`} placeholder="예: 대원제약 스윙" value={nf.name}
+                onChange={(e) => { setNf({ ...nf, name: e.target.value }); nfe.clear("name"); }} />{nfe.msg("name")}</label>
             <label className="grid gap-1 text-[13px] text-faint">기본 종목명 (입력 시 종목 추가 가능)
-              <input className="input" placeholder="예: 대원제약" value={nf.symbol} onChange={(e) => setNf({ ...nf, symbol: e.target.value })} /></label>
+              <input className={`input${nfe.cls("symbol")}`} placeholder="예: 대원제약" value={nf.symbol}
+                onChange={(e) => { setNf({ ...nf, symbol: e.target.value }); nfe.clear("symbol"); }} />{nfe.msg("symbol")}</label>
             <label className="grid gap-1 text-[13px] text-faint">증권사
               <input className="input" placeholder="예: NH투자증권" value={nf.broker} onChange={(e) => setNf({ ...nf, broker: e.target.value })} /></label>
             <div className="grid grid-cols-2 gap-3">
@@ -741,7 +766,7 @@ function MJournalPage() {
           </div>
           <div className="mt-3 flex items-center gap-3">
             <button className="btn btn-primary" onClick={() => void createJournal()}
-              disabled={!nf.name.trim() || !nf.symbol.trim()}>생성</button>
+              >생성</button>
             <button className="btn" onClick={() => setShowNew(false)}>취소</button>
             {msg && <span className="text-[13.5px] text-up">{msg}</span>}
           </div>
@@ -920,23 +945,26 @@ function MJournalPage() {
                 </select></label>
               {ef.symbol === NEW_SYM && (<>
                 <label className="grid gap-1 text-[12.5px] text-faint">새 종목명
-                  <input className="input w-36 !py-2" placeholder="예: 휴메딕스" value={ef.newSymbol}
-                    onChange={(e) => setEf({ ...ef, newSymbol: e.target.value })} /></label>
+                  <input className={`input w-36 !py-2${efe.cls("newSymbol")}`} placeholder="예: 휴메딕스" value={ef.newSymbol}
+                    onChange={(e) => { setEf({ ...ef, newSymbol: e.target.value }); efe.clear("newSymbol"); }} />{efe.msg("newSymbol")}</label>
                 <label className="grid gap-1 text-[12.5px] text-faint" title="6자리 종목코드를 넣으면 시세를 붙여 보유 수익률 라인이 그려집니다">종목코드 (선택)
                   <input className="input w-24 !py-2" placeholder="005930" maxLength={6} value={ef.code}
                     onChange={(e) => setEf({ ...ef, code: e.target.value })} /></label>
               </>)}
               <label className="grid gap-1 text-[12.5px] text-faint">수량(주)
-                <input className="input w-24 !py-2" value={ef.qty} onChange={(e) => setEf({ ...ef, qty: e.target.value })} /></label>
+                <input className={`input w-24 !py-2${efe.cls("qty")}`} value={ef.qty}
+                  onChange={(e) => { setEf({ ...ef, qty: e.target.value }); efe.clear("qty"); }} />{efe.msg("qty")}</label>
               <label className="grid gap-1 text-[12.5px] text-faint">단가(원)
-                <input className="input w-32 !py-2" value={ef.price} onChange={(e) => setEf({ ...ef, price: e.target.value })} /></label>
+                <input className={`input w-32 !py-2${efe.cls("price")}`} value={ef.price}
+                  onChange={(e) => { setEf({ ...ef, price: e.target.value }); efe.clear("price"); }} />{efe.msg("price")}</label>
               <label className="grid gap-1 text-[12.5px] text-faint">일자
-                <input type="date" className="input !py-2" value={ef.date} onChange={(e) => setEf({ ...ef, date: e.target.value })} /></label>
+                <input type="date" className={`input !py-2${efe.cls("date")}`} value={ef.date}
+                  onChange={(e) => { setEf({ ...ef, date: e.target.value }); efe.clear("date"); }} />{efe.msg("date")}</label>
               <label className="grid min-w-36 flex-1 gap-1 text-[12.5px] text-faint">매매 이유 (선택)
                 <input className="input !py-2" placeholder="예: 코로나 테마주로 묶여 매도" value={ef.reason}
                   onChange={(e) => setEf({ ...ef, reason: e.target.value })} /></label>
-              <button className="btn btn-primary !py-2.5" disabled={!(Number(ef.qty) > 0 && Number(ef.price) > 0)}
-                onClick={() => void addEntry()}>등록</button>
+              {/* 비활성 대신 눌러 보면 어느 칸이 빈지 알려 준다 (2026-09-10 지시) */}
+              <button className="btn btn-primary !py-2.5" onClick={() => void addEntry()}>등록</button>
             </div>
             </>} />
 

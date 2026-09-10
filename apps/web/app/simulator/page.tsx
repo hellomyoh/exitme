@@ -5,6 +5,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AreaSeries, createChart, IChartApi, LineSeries } from "lightweight-charts";
 import { apiFetch, ensureSession } from "../../lib/api";
+import { useFieldErrors } from "../../lib/form";
 import { DEFAULT_CAPITAL, fmtMoneyM, fmtPriceM, MARKET_LABEL, marketOf } from "../../lib/market";
 import { Badge, Callout, Card, CardTitle, fmtPct, GaugeBar, PageTitle, Stat, Tip } from "../../components/ui";
 import MarketSwitch from "../../components/marketswitch";
@@ -68,6 +69,7 @@ function SimulatorPage() {
   const [etf, setEtf] = useState<EtfKey>(market === "US" ? "LTM_QLD" : "TIGER");  // KR 기본 TIGER (2026-09-01) · US 기본 LTM (2026-09-06)
   // 자본 입력은 표기 통화 (미국: 달러) — 전송 시 API 단위(센트)로 변환
   const [capital, setCapital] = useState(market === "US" ? String(DEFAULT_CAPITAL.US / 100) : "100000000");
+  const fe = useFieldErrors();   // 입력 누락 표시 (2026-09-10, lib/form)
   const [dateFrom, setDateFrom] = useState(new Date(Date.now() - 365 * 86400e3).toISOString().slice(0, 10)); // 기본 1년 전 (2026-08-28 지시)
   const [dateTo, setDateTo] = useState(new Date().toISOString().slice(0, 10));
   const [flags, setFlags] = useState<Flags>(Object.fromEntries(FLAG_LABELS.map(([k]) => [k, true])));
@@ -125,6 +127,13 @@ function SimulatorPage() {
   }
 
   async function start() {
+    // 입력 누락을 그 칸에 표시 (2026-09-10 지시) — 종전에는 빈 값이면 서버 422 문구만 떴다
+    const bad = fe.validate({
+      dateFrom: dateFrom ? "" : "시작일을 넣으세요",
+      dateTo: !dateTo ? "종료일을 넣으세요" : (dateFrom && dateTo < dateFrom ? "시작일보다 뒤여야 합니다" : ""),
+      capital: !String(capital).trim() ? "자본금을 넣으세요" : (Number(capital) > 0 ? "" : "0보다 큰 수"),
+    });
+    if (bad) { setError(`입력을 확인하세요 — ${bad}`); return; }
     setError("");
     const res = await apiFetch("/backtests", {
       method: "POST",
@@ -324,11 +333,14 @@ function SimulatorPage() {
             <CardTitle>기간 · 자본</CardTitle>
             <div className="grid gap-3 sm:grid-cols-3">
               <label className="grid gap-1 text-xs text-faint">시작일
-                <input type="date" className="input" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} /></label>
+                <input type="date" className={`input${fe.cls("dateFrom")}`} value={dateFrom}
+                  onChange={(e) => { setDateFrom(e.target.value); fe.clear("dateFrom"); }} />{fe.msg("dateFrom")}</label>
               <label className="grid gap-1 text-xs text-faint">종료일
-                <input type="date" className="input" value={dateTo} onChange={(e) => setDateTo(e.target.value)} /></label>
+                <input type="date" className={`input${fe.cls("dateTo")}`} value={dateTo}
+                  onChange={(e) => { setDateTo(e.target.value); fe.clear("dateTo"); }} />{fe.msg("dateTo")}</label>
               <label className="grid gap-1 text-xs text-faint">자본금({market === "US" ? "$" : "원"})
-                <input className="input" value={capital} onChange={(e) => setCapital(e.target.value)} /></label>
+                <input className={`input${fe.cls("capital")}`} value={capital}
+                  onChange={(e) => { setCapital(e.target.value); fe.clear("capital"); }} />{fe.msg("capital")}</label>
             </div>
           </Card>
 
