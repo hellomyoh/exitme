@@ -247,29 +247,32 @@ export default function DashboardPage() {
               ) : <span className="text-faint">누적 — 기록 이틀째부터</span>}
             </span>
           </>) : undefined} />
+        {/* 시장 카드도 총자산 카드와 같은 순서 — 오늘이 위, 누적이 아래 (2026-09-10 지시) */}
         <Stat className="md:col-span-1" label={<><MarketFlag market="KR" /> 한국 주식</>} value={dash ? fmtWon(dash.kr_stock.value) : "—"}
           spark={dash?.kr_trend ?? null} sparkColor="#2a78d6"
           tip={<span>국내 실전매매가 보유한 주식의 평가액입니다(현금 제외).<br /><b>누적</b>은 보유 원가 대비, <b>오늘</b>은 전일 종가 평가액 대비 — 분모가 다릅니다.</span>}
-          sub={dash && dash.kr_stock.cost > 0 ? (
-            <span className={`font-semibold ${toneCls[pnlTone(dash.kr_stock.pnl)]}`}>
+          sub={dash && dash.kr_stock.cost > 0 ? (<>
+            <span className="block font-semibold">
+              {dayCell(dash.kr_stock.day_change, dash.kr_stock.day_change_pct, fmtWon, true)}
+            </span>
+            <span className={`mt-0.5 block font-semibold ${toneCls[pnlTone(dash.kr_stock.pnl)]}`}>
               누적 {dash.kr_stock.pnl >= 0 ? "+" : ""}{fmtWon(dash.kr_stock.pnl)}
               {dash.kr_stock.pnl_pct != null && ` (${fmtPct(dash.kr_stock.pnl_pct, 2)})`}
-              <span className={`mt-0.5 block font-semibold ${toneCls[pnlTone(dash.kr_stock.day_change ?? 0)]}`}>
-                {dayCell(dash.kr_stock.day_change, dash.kr_stock.day_change_pct, fmtWon, true)}
-              </span>
-            </span>) : undefined} />
+            </span>
+          </>) : undefined} />
         <Stat className="md:col-span-1" label={<><MarketFlag market="US" /> 미국 주식 ($)</>}
           value={dash ? `$${(dash.us_stock.value / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "—"}
           spark={dash?.us_trend ?? null} sparkColor="#1baf7a"
           tip={<span>미국 실전매매가 보유한 주식의 평가액입니다(달러).<br /><b>누적</b>은 보유 원가 대비, <b>오늘</b>은 전일 종가 평가액 대비 — 분모가 다릅니다.</span>}
-          sub={dash && dash.us_stock.cost > 0 ? (
-            <span className={`font-semibold ${toneCls[pnlTone(dash.us_stock.pnl)]}`}>
+          sub={dash && dash.us_stock.cost > 0 ? (<>
+            <span className="block font-semibold">
+              {dayCell(dash.us_stock.day_change, dash.us_stock.day_change_pct, usd, true)}
+            </span>
+            <span className={`mt-0.5 block font-semibold ${toneCls[pnlTone(dash.us_stock.pnl)]}`}>
               누적 {dash.us_stock.pnl >= 0 ? "+" : ""}${(dash.us_stock.pnl / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}
               {dash.us_stock.pnl_pct != null && ` (${fmtPct(dash.us_stock.pnl_pct, 2)})`}
-              <span className={`mt-0.5 block font-semibold ${toneCls[pnlTone(dash.us_stock.day_change ?? 0)]}`}>
-                {dayCell(dash.us_stock.day_change, dash.us_stock.day_change_pct, usd, true)}
-              </span>
-            </span>) : undefined} />
+            </span>
+          </>) : undefined} />
         <Card className="px-4 py-3.5 md:col-span-2">
           <CardTitle>RAVG v2.5 레짐</CardTitle>
           {signal?.status === "OK" ? (
