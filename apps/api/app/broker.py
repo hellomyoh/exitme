@@ -757,11 +757,26 @@ def cancel_broker_order(pid: int, oid: int, user_id: int = Depends(current_user_
         if row.status not in ("submitted", "partial"):
             raise HTTPException(status_code=409, detail=f"취소할 수 없는 상태입니다 ({STATUS_KO.get(row.status, row.status)})")
         cred = _cred(session, pid, user_id)
+        # 취소 직전 체결 재확인 (2026-09-10 지시 "체결된 거래는 취소가 안 되어야 한다") — 상태는 15:45 동기화가 확정하므로
+        # 장중에는 '발주됨' 이 낡은 값일 수 있다. 당일 체결조회로 먼저 맞춘 뒤, 전량 체결이면 취소 요청을 보내지 않는다
+        from app.autoexec import sync_auto_orders
+        from app.dashboard import kst_today as _today
+
+        if sync_auto_orders(session, cred, [row], _today()):
+            session.commit()
+        if row.status == "filled":
+            log_event(session, user_id, "order.cancel", f"취소 불가(이미 체결) — {what} · {int(row.filled_qty or 0):,}주 체결",
+                      level="warn", portfolio_id=pid, data={"order_id": row.id, "order_no": row.order_no})
+            session.commit()
+            raise HTTPException(status_code=409,
+                                detail=f"이미 전량 체결되어 취소할 수 없습니다 ({int(row.filled_qty or 0):,}주 체결) — 정리하려면 반대 매매로 하세요")
+        if row.status not in ("submitted", "partial"):
+            raise HTTPException(status_code=409, detail=f"취소할 수 없는 상태입니다 ({STATUS_KO.get(row.status, row.status)})")
         try:
             r = _client(cred).cancel_order(row.order_no or "", orgno=str(((row.response or {}).get("order") or {}).get("KRX_FWDG_ORD_ORGNO") or ""))
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"주문 취소 실패 — {humanize_kis_error(str(exc)[:200])}")
-        row.status, row.message = "cancelled", r["msg"] or "취소됨"
+        row.status, row.message = "cancelled", (r["msg"] or "취소됨") + (f" · 체결 {int(row.filled_qty):,}주는 유지" if row.filled_qty else "")
         log_event(session, user_id, "order.cancel", f"무인 발주 취소 — {what} (주문 {row.order_no})", level="warn", portfolio_id=pid, data={"order_id": row.id, "order_no": row.order_no})
         session.commit()
         return _order_out(row)
