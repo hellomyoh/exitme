@@ -13,12 +13,13 @@ import LiveChart, { type OrderLine } from "../../components/livechart";
 
 type Position = {
   code: string; name: string; qty: number; avg_price: number; price: number; value: number;
-  return: number; unrealized: number; held_days: number; annualized: number | null;
+  return: number; unrealized: number; held_days: number; annualized: number | null; price_source?: string;
   best_return: number; worst_return: number; target_price: number | null; stop_price: number | null;
 };
 type Summary = {
   portfolio: { id: number; name: string; kind: string; backtest_id: number | null };
   as_of: string | null; cash: number; stock_value: number; total_equity: number;
+  delayed?: boolean; live_at?: string | null; live_count?: number;   // 10초 폴링 시세로 평가했으면 live_at 이 그 시각 (2026-09-10)
   realized_pnl: number; unrealized_pnl: number; estimated_costs: number;
   principal: number; invested_cost: number;
   net_pnl: number; net_pnl_pct: number | null; unrealized_pnl_pct: number | null;
@@ -120,6 +121,8 @@ function PortfolioPage() {
     return q ? Number(q) : null;
   });
   const [sum, setSum] = useState<Summary | null>(null);
+  const sumRef = useRef<Summary | null>(null);   // 실시간 갱신 타이머가 최신 포트를 보게 (2026-09-10)
+  sumRef.current = sum;
   const [includeCosts, setIncludeCosts] = useState(true);
   const [form, setForm] = useState({ kind: "buy", code: market === "US" ? "QQQ" : "069500", qty: "", price: "", amount: "", memo: "",
     date: new Date().toISOString().slice(0, 10) });
@@ -258,6 +261,25 @@ function PortfolioPage() {
     setBoMsg(t ? `재시도 ${t.n}줄 — 발주 ${t.submitted}건${t.skipped_gap ? ` · 갭 생략 ${t.skipped_gap}` : ""}${t.skipped ? ` · 생략 ${t.skipped}` : ""}${t.failed ? ` · 실패 ${t.failed} — 표의 메시지를 확인하세요` : ""}` : "재시도했습니다");
     void load(pid);
   }
+  // 줄별 무인 주문 취소 (2026-09-10 지시) — 증권사에 남아 있는 잔량을 취소한다. 이미 체결됐으면 증권사가 거부하고 그 사유를 그대로 보여준다
+  async function cancelOrderLine(oid: number, label: string, qty: number, price: number | null) {
+    if (!sum) return;
+    const what = `${label} ${qty.toLocaleString()}주${price ? ` @${fpx(price)}` : " 시장가"}`;
+    if (!window.confirm(`${what} 주문을 취소합니다.\n\n증권사에 남아 있는 잔량이 취소됩니다. 이미 체결된 수량은 취소되지 않습니다.\n\n계속할까요?`)) return;
+    setBoBusy(true); setBoMsg("");
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/orders/${oid}/cancel`, { method: "POST" });
+    const j = (await r.json().catch(() => ({}))) as { detail?: string };
+    setBoBusy(false);
+    if (!r.ok) {
+      setBoMsg(`${what} 취소 실패 — ${j.detail ?? r.status}`);
+      // 그 사이 체결됐을 수 있으니 증권사 상태를 한 번 갱신해 표에 반영한다
+      if (signal?.exec_day) await apiFetch(`/portfolio/${sum.portfolio.id}/orders?date=${signal.exec_day}&refresh=1`);
+      void load(pid);
+      return;
+    }
+    setBoMsg(`${what} 주문을 취소했습니다`);
+    void load(pid);
+  }
   async function unskipAutoExec() {
     if (!sum) return;
     setBoBusy(true); setBoMsg("");
@@ -267,6 +289,21 @@ function PortfolioPage() {
     setBoMsg("무인 취소를 되돌렸습니다 — 09:01 에 발주됩니다");
     void load(pid);
   }
+
+  // 실시간 시세 반영 (2026-09-10 지시) — 10초마다 요약만 다시 읽어 현재가·평가액·수익률을 갱신한다.
+  // 서버가 live_at 을 주지 않으면(장외·휴장·시세 없음) 멈춘다. 화면이 숨겨져 있으면 건너뛴다 → 불필요한 호출 없음
+  const liveTick = useCallback(async () => {
+    if (typeof document !== "undefined" && document.hidden) return;
+    const cur = sumRef.current;
+    if (!cur) return;
+    const r = await apiFetch(`/portfolio/summary?portfolio_id=${cur.portfolio.id}`);
+    if (r.ok) setSum((await r.json()) as Summary);
+  }, []);
+  useEffect(() => {
+    if (!sum?.live_at) return;
+    const t = setInterval(() => { void liveTick(); }, 10_000);
+    return () => clearInterval(t);
+  }, [sum?.live_at, liveTick]);
 
   const load = useCallback(async (id: number | null) => {
     let sid: number | null = id;
@@ -555,7 +592,9 @@ function PortfolioPage() {
             <input type="checkbox" className="accent-[#f97316]" checked={includeCosts} onChange={(e) => setIncludeCosts(e.target.checked)} />
             비용 포함 (추정 수수료)
           </label>
-          {sum?.as_of && <span className="text-xs text-faint">기준일 {sum.as_of} · 지연 시세</span>}
+          {sum?.live_at
+            ? <span className="rounded bg-ok/10 px-1.5 py-0.5 text-xs text-ok" title={`10초 간격 현재가로 평가 — ${sum.live_count ?? 0}개 종목 · 나머지는 종가`}>● 실시간 {sum.live_at.slice(11, 16)}</span>
+            : sum?.as_of && <span className="text-xs text-faint">기준일 {sum.as_of} · 지연 시세</span>}
           {/* 미국 포트 공식 배지 — 이 포트의 주문표 규칙 (2026-09-06 지시) */}
           {market === "US" && sum && (() => {
             const f = formulaOf(portfolios.find((p) => p.id === sum.portfolio.id)?.etf);
@@ -1109,9 +1148,20 @@ function PortfolioPage() {
                           }
                           const clip = b.message && /→\s*[\d,]+주/.test(b.message) ? " · 축소" : "";
                           const rt = b.retry_of ? " · 재시도" : "";
-                          if (b.status === "submitted") return <span className="font-semibold text-ok" title={b.message ?? ""}>🤖 발주됨 #{b.order_no}{clip}{rt}</span>;
+                          const kindKo = ORDER_KIND_KO[o.kind] ?? o.kind;
+                          const cancelBtn = b.id != null && (
+                            <button className="text-[12px] font-normal text-down hover:underline disabled:opacity-50" disabled={boBusy}
+                              title="증권사에 남아 있는 잔량을 취소합니다 (체결분은 취소되지 않음)"
+                              onClick={() => void cancelOrderLine(b.id as number, kindKo, b.qty, b.price)}>취소</button>);
+                          if (b.status === "submitted") return (
+                            <span className="inline-flex flex-wrap items-center gap-1.5">
+                              <span className="font-semibold text-ok" title={b.message ?? ""}>🤖 발주됨 #{b.order_no}{clip}{rt}</span>{cancelBtn}
+                            </span>);
                           if (b.status === "filled") return <span className="font-semibold text-ok" title={b.message ?? ""}>✓ 체결 {b.filled_qty.toLocaleString()}주</span>;
-                          if (b.status === "partial") return <span className="font-semibold text-warn" title={b.message ?? ""}>◐ 일부 체결 {b.filled_qty}/{b.qty}</span>;
+                          if (b.status === "partial") return (
+                            <span className="inline-flex flex-wrap items-center gap-1.5">
+                              <span className="font-semibold text-warn" title={b.message ?? ""}>◐ 일부 체결 {b.filled_qty}/{b.qty}</span>{cancelBtn}
+                            </span>);
                           if (b.status === "unfilled") return <span className="text-faint" title={b.message ?? ""}>○ 미체결</span>;
                           if (b.status === "skipped_gap") return <span className="text-warn" title={b.message ?? ""}>⤫ 갭 취소 생략</span>;
                           if (b.status === "skipped") return <span className="text-faint" title={b.message ?? ""}>생략{b.message ? ` — ${b.message.slice(0, 60)}${b.message.length > 60 ? "…" : ""}` : ""}</span>;

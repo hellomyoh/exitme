@@ -719,3 +719,10 @@
 - 테스트 결과: 4건 통과 후 전체 `pytest -q tests/` → **268 passed** (08:00 KST, 오전 실행).
 - Git commit: test: seed today's bars under a closed-market patch so valuation tests pass before 15:30 KST
 
+
+## [2026-09-10] feat | 실시간 시세(10초) 반영 + 주문표 줄별 취소 버튼 (사용자 지시)
+
+- 배경: 종목 카드의 "현재가 112,400원"이 실은 전일 종가였다(오늘 봉은 15:30 뒤에만 적재 — 확정봉 가드). 검토 결과 10초 실시간은 주문표 아래 그래프뿐이었고, 실전매매 요약·대시보드 총자산은 일봉 종가, 매매일지는 증권사 잔고(120초 캐시)라 **한 화면 안에서 기준 시각이 섞여** 있었다. 사용자 지시로 전부 10초 실시간으로 통일.
+- 작업 내용: `quotes.live_quotes(codes)` — 워커 10초 폴링이 남긴 `quotes:last:{code}`(TTL 300)를 MGET 으로 읽는다(KIS 호출 없음, Redis 장애·장외면 빈 dict). `portfolio_summary` 가 실시간 우선·종가 폴백으로 평가하고 `price_source`·`live_at`·`live_count`·`delayed` 를 돌려준다. 하루 변동 기준일을 '평가에 쓴 종가일' → **오늘**로 고정해 장중 실시간과 장 마감 종가가 같은 뜻이 되게 했다. `mjournal.enrich_valuation` 은 실시간 → 증권사 잔고 → 종가 순, `summary.live_at` 추가. 대시보드는 `live_kr_stock()` 로 **표시 전용** 덮어쓰기(적재 스냅샷은 종가 유지 — 2026-09-09 반쪽 스냅샷 사고 재발 방지)하고, 10초 주기 호출용 `GET /dashboard/live`(방문 기록·적재 없음)를 신설. 웹 3화면(실전매매·대시보드·매매일지)이 `live_at` 이 있을 때만 10초 타이머를 돌리고 탭이 숨겨지면 건너뛴다 + `● 실시간 HH:MM` 배지. 주문표 '무인' 열의 `발주됨`·`일부 체결` 줄에 **취소** 링크(기존 취소 엔드포인트 재사용, 확인창, 거부 시 사유 표시 후 상태 갱신). 테스트 오염 방지로 conftest 에 `_no_live_quotes` autouse 픽스처. VERSION 0.16.0(마이너 — 새 동작·새 엔드포인트).
+- 테스트 결과: 신규 `tests/test_live_prices.py` 4건 — 캐시 파싱(없음·0원·깨진 JSON·중복 코드) / 요약 실시간 우선·종가 폴백·하루 변동·`live_count` / `/dashboard/live` 덮어쓰기와 **적재 스냅샷은 종가 유지** / 매매일지 실시간 평가. 전체 `pytest -q tests/` **272 passed**, `tsc --noEmit` 무오류. 작업 중 발견해 함께 고침: ① `live_quotes` 가 호출마다 Redis 연결을 새로 열어 소켓이 새던 것 → 모듈 단위 풀 재사용(10초 주기 호출이라 치명적) ② `test_post_close_sync_records_cash_check` 가 공유 CI DB 의 전 포트를 돌아 파일 디스크립터가 고갈되던 것 → `only_portfolio_ids` 로 자기 포트만.
+- Git commit: feat: real-time (10s) prices across portfolio, journal and dashboard; per-line order cancel

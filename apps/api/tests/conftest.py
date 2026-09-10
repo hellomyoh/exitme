@@ -68,3 +68,12 @@ from app.services.kis_auth import KisAuth
 @pytest.fixture(autouse=True)
 def _no_shared_token_cache(monkeypatch):
     monkeypatch.setattr(KisAuth, "_redis", lambda self: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_quotes(monkeypatch):
+    """실시간 시세 캐시 차단 (2026-09-10) — 개발 Redis 에 장중 폴링 값이 남아 있으면 종가 기준으로 단정하는 테스트가
+    시각·장 상태에 따라 흔들린다. 실시간 경로를 검증하는 테스트는 이 자리에 원하는 값을 다시 넣어 쓴다."""
+    import app.quotes as _q
+
+    monkeypatch.setattr(_q, "live_quotes", lambda codes: {})

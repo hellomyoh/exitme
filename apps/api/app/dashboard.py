@@ -133,6 +133,37 @@ def compute_user_snapshot(session: Session, user_id: int, snap_date: date) -> As
     return snap
 
 
+def live_kr_stock(session: Session, user_id: int) -> tuple[str | None, int]:
+    """10초 폴링 캐시로 평가한 국내 포트 주식 평가액 합 — 캐시가 하나도 없으면 (None, 0).
+
+    **표시 전용** (2026-09-10 지시). 스냅샷(asset_snapshots·portfolio_snapshots) 적재는 종가 기준을 그대로 두어야
+    추이·전일 대비의 기준이 흔들리지 않는다 (2026-09-09 반쪽 스냅샷 사고, NOTES).
+    """
+    from app.models import Instrument, PositionLot
+    from app.quotes import live_quotes
+
+    pfs = session.scalars(select(TradePortfolio).where(
+        TradePortfolio.user_id == user_id, TradePortfolio.market == "KR")).all()
+    if not pfs:
+        return None, 0
+    pids = [p.id for p in pfs]
+    inst_ids = {l.instrument_id for l in session.scalars(
+        select(PositionLot).where(PositionLot.portfolio_id.in_(pids))).all() if l.qty_open > 0}
+    if not inst_ids:
+        return None, 0
+    code_of = {i: (session.get(Instrument, i).code if session.get(Instrument, i) else None) for i in inst_ids}
+    live = live_quotes([c for c in code_of.values() if c])
+    if not live:
+        return None, 0
+    prices = dict(latest_closes(session, inst_ids))
+    for iid, code in code_of.items():
+        if code and code in live:
+            prices[iid] = float(live[code]["price"])
+    total = sum(_portfolio_state(session, pf.id, prices)[0] for pf in pfs)
+    at = max((str(v.get("as_of") or "") for v in live.values()), default="")
+    return (at or None), int(total)
+
+
 @router.get("/dashboard")
 def dashboard(user_id: int = Depends(current_user_id), session: Session = Depends(get_session)) -> dict:
     record_event(session, "visit", user_id)
@@ -148,19 +179,24 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
     ).first()
     session.commit()
     manuals = session.scalars(select(ManualAsset).where(ManualAsset.user_id == user_id)).all()
+    # 실시간 표시 (2026-09-10 지시) — 10초 폴링 캐시가 있으면 화면 숫자를 현재가로 바꾼다. 적재된 스냅샷은 종가 그대로,
+    # 전일 대비도 같은 총액(total_now)으로 계산해 "표시된 총자산 − 어제 종가 총액"이 화면과 어긋나지 않게 한다
+    live_at, live_stock = live_kr_stock(session, user_id)
+    total_now = (live_stock + snap.cash + snap.other + (snap.journal or 0)) if live_at else snap.total
+    stock_now = live_stock if live_at else snap.stock
     # 전일 대비·누적 손익은 외부 입출금을 차감한 순수 성과 (단순 Dietz, 검증 C-3·M-6)
     change = 0
     change_pct = None
     if prev:
         f = user_flows_between(session, user_id, prev.snap_date, today)
-        change = snap.total - prev.total - f
+        change = total_now - prev.total - f
         denom = prev.total + f
         change_pct = change / denom if denom > 0 else None
     since_pct = None
     if first and first.snap_date < today:
         f_all = user_flows_between(session, user_id, first.snap_date, today)
         denom = first.total + f_all
-        since_pct = (snap.total - first.total - f_all) / denom if denom > 0 else None
+        since_pct = (total_now - first.total - f_all) / denom if denom > 0 else None
     # 자산 내용 카드 — KR/US 구분 (feature-dashboard §5, 2026-09-02). US 는 센트, $ 표기는 웹 담당.
     from app.models import PositionLot
 
@@ -255,9 +291,10 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
 
     journals = journal_assets(session, user_id)
     return {
-        "total": snap.total, "stock": snap.stock, "cash": snap.cash, "other": snap.other,
+        "total": total_now, "stock": stock_now, "cash": snap.cash, "other": snap.other,
+        "live_at": live_at,   # 10초 폴링 시세로 평가한 시각 (없으면 종가 기준, 2026-09-10)
         # 주식 거래 자산(실전매매 KRW 주식+현금)과 매매일지 종합 자산을 분리 표기 (2026-09-05 지시)
-        "trading_total": snap.stock + snap.cash,
+        "trading_total": stock_now + snap.cash,
         "journal": snap.journal or 0,
         "journals": journals,
         "portfolios": port_rows,
@@ -273,6 +310,40 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
             {"id": m.id, "name": m.name, "category": m.category, "value": m.value} for m in manuals
         ],
     }
+
+
+@router.get("/dashboard/live")
+def dashboard_live(user_id: int = Depends(current_user_id), session: Session = Depends(get_session)) -> dict:
+    """총자산 실시간 표시용 최소 응답 (2026-09-10 지시) — 10초 주기 호출을 전제로 가볍게.
+
+    `/dashboard` 와 달리 **방문 기록·스냅샷 적재를 하지 않는다**. 저장된 오늘 스냅샷의 현금·기타는 그대로 두고 국내 주식과
+    매매일지만 10초 폴링 캐시의 현재가로 다시 평가한다. 캐시가 없으면 `live_at=None` 만 돌려주고 화면은 폴링을 멈춘다.
+    """
+    today = kst_today()
+    snap = session.scalar(select(AssetSnapshot).where(
+        AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date == today))
+    if snap is None:
+        return {"live_at": None}          # 아직 오늘 스냅샷 없음 — /dashboard 한 번 열면 만들어진다
+    live_at, live_stock = live_kr_stock(session, user_id)
+    if live_at is None:
+        return {"live_at": None}          # 장외·휴장·시세 없음
+    from app.mjournal import journal_assets
+
+    journal = int(sum(ja["value"] for ja in journal_assets(session, user_id) if ja["counted"]))
+    cash, other = int(snap.cash), int(snap.other)
+    total = live_stock + cash + other + journal
+    prev = session.scalars(select(AssetSnapshot).where(
+        AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date < today)
+        .order_by(AssetSnapshot.snap_date.desc()).limit(1)).first()
+    change, change_pct = 0, None
+    if prev:
+        f = user_flows_between(session, user_id, prev.snap_date, today)
+        change = total - int(prev.total) - f
+        denom = int(prev.total) + f
+        change_pct = (change / denom) if denom > 0 else None
+    return {"live_at": live_at, "total": total, "stock": live_stock, "cash": cash, "other": other,
+            "journal": journal, "trading_total": live_stock + cash,
+            "change_amount": change, "change_pct": change_pct}
 
 
 @router.get("/portfolio/trend")

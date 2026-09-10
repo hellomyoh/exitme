@@ -528,18 +528,35 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
     for l in lots:
         by_inst.setdefault(l.instrument_id, []).append(l)
     now = datetime.now(timezone.utc)
+    # 실시간 현재가 (2026-09-10 지시) — 10초 폴링이 Redis 에 남긴 값을 먼저 쓰고, 없으면 종가로 폴백. KIS 호출은 늘리지 않는다
+    from app.dashboard import kst_today
+    from app.quotes import live_quotes
+
+    inst_of = {i: session.get(Instrument, i) for i in by_inst}
+    live = live_quotes([x.code for x in inst_of.values() if x is not None])
+    live_at: str | None = None
+    base_day = kst_today()
     for inst_id, ls in by_inst.items():
-        inst = session.get(Instrument, inst_id)
+        inst = inst_of[inst_id]
         qty = sum(l.qty_open for l in ls)
         invested = sum(l.qty_open * l.price for l in ls)
         avg = invested / qty if qty else 0
         px_row = latest_close(session, inst_id)
-        price, px_date = px_row if px_row else (avg, None)
+        lq = live.get(inst.code) if inst is not None else None
+        if lq:
+            price, px_date, px_src = float(lq["price"]), (px_row[1] if px_row else None), "실시간"
+            at = str(lq.get("as_of") or "")
+            live_at = max(live_at, at) if live_at else (at or None)
+        elif px_row:
+            price, px_date, px_src = px_row[0], px_row[1], "종가"
+        else:
+            price, px_date, px_src = avg, None, "취득가"
         as_of = max(as_of, px_date) if (as_of and px_date) else (px_date or as_of)
         value = qty * price
         total_value += value
-        # 하루 변동 — 평가에 쓴 종가(px_date) 바로 전 거래일 종가 대비 (2026-09-09 사용자 결정: 누적 unrealized 와 오늘 day_change 를 필드로 분리)
-        prev_px = prev_close_before(session, inst_id, px_date) if px_date else None
+        # 하루 변동 — 오늘 이전 마지막 확정 종가(= 전일 종가) 대비. 실시간이면 '오늘 등락', 장 마감 뒤 종가면 '그날 등락' 으로 뜻이 같다
+        # (2026-09-09 누적/하루 분리 → 2026-09-10 기준일을 px_date 에서 오늘로 고정: 장중 실시간과 종가가 같은 기준을 쓰게)
+        prev_px = prev_close_before(session, inst_id, base_day)
         day_chg = round(qty * (price - prev_px)) if prev_px else None
         ret = (price - avg) / avg if avg else 0.0
         first_buy = min(l.opened_at for l in ls)
@@ -585,7 +602,7 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
                 worst = min(worst, rr)
         positions.append({
             "code": inst.code, "name": inst.name, "qty": qty, "avg_price": round(avg),
-            "price": round(price), "value": round(value),
+            "price": round(price), "value": round(value), "price_source": px_src,   # 실시간 | 종가 | 취득가
             "return": ret, "unrealized": round(value - invested),          # 누적 평가손익 (매수 이후)
             "prev_close": round(prev_px) if prev_px else None,             # 전 거래일 종가
             "day_change": day_chg,                                         # 오늘(평가 종가일) 하루 손익 = qty × (price − prev_close)
@@ -628,7 +645,9 @@ def portfolio_summary(portfolio_id: int | None = None, include_costs: bool = Tru
     return {
         "portfolio": {"id": pf.id, "name": pf.name, "kind": pf.kind, "backtest_id": pf.backtest_id,
                       "market": pf.market},
-        "as_of": as_of.isoformat() if as_of else None, "delayed": True,
+        "as_of": as_of.isoformat() if as_of else None, "delayed": live_at is None,
+        # 실시간 표기 (2026-09-10) — live_at 이 있으면 그 시각의 10초 폴링 시세로 평가한 값이다
+        "live_at": live_at, "live_count": sum(1 for p in positions if p["price_source"] == "실시간"),
         "cash": cash, "stock_value": round(total_value), "total_equity": round(total_equity),
         "realized_pnl": realized_total,
         "unrealized_pnl": unrealized_total,

@@ -191,7 +191,8 @@ def test_post_close_sync_records_cash_check(monkeypatch):
                                "executed_at": (datetime.now(KST).date() - timedelta(days=2)).isoformat() + "T15:30:00+09:00"}, headers=h)
     monkeypatch.setattr(br, "_client", lambda cred: FakeBal(1_000_000, 980_000, {}))
     with SessionLocal() as s:
-        out = br.run_post_close_sync(s, now=datetime.now(KST))
+        # 이 포트만 — 공유 CI DB 에 누적된 전 포트를 돌면 계좌마다 KIS 세션이 열려 파일 디스크립터가 고갈된다 (2026-09-10)
+        out = br.run_post_close_sync(s, now=datetime.now(KST), only_portfolio_ids={pid})
     rec = next(r for r in out["portfolios"] if r["portfolio_id"] == pid)
     assert rec["cash_check"]["ledger_cash"] == 1_000_000 and rec["cash_check"]["diff"] == -20_000 and rec["cash_check"]["warn"] is True
     bk = c.get(f"/portfolio/{pid}/broker", headers=h).json()
