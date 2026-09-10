@@ -487,6 +487,8 @@ class FillKis(FakeKis):
 def test_cancel_refuses_filled_order_and_reorder_replaces_cancelled_line(monkeypatch):
     """체결된 주문은 취소되지 않는다 (2026-09-10 지시) — 상태가 '발주됨' 으로 낡았어도 취소 직전 체결조회로 맞추고 전량 체결이면 409.
     취소·실패·생략된 줄은 '재등록'(REORDERABLE)으로 그 줄만 다시 발주한다. 갭 생략·체결된 줄은 재등록 대상 외."""
+    from unittest.mock import patch
+
     import app.autoexec as ae
     import app.broker as br
     from app.models import TradePortfolio
@@ -495,6 +497,13 @@ def test_cancel_refuses_filled_order_and_reorder_replaces_cancelled_line(monkeyp
     today = datetime.now(KST).date()
     pid, aid = _setup_portfolio(c, h, today, deposit_krw=9_000_000)
     c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True}, headers=h)
+
+    def cancel(oid, at=(10, 0)):
+        """장중 시각 고정 — 취소 직전 체결 재확인이 이 시계를 쓴다. 15:30 뒤에 돌리면 미체결이 unfilled 로 확정돼
+        취소가 409 가 된다(장 마감 후에는 취소할 것이 없다) — 테스트가 시각에 흔들리지 않게 (2026-09-10 실측)."""
+        with patch("app.broker.datetime") as dt:
+            dt.now.return_value = datetime.combine(today, time(*at), tzinfo=KST)
+            return c.post(f"/portfolio/{pid}/orders/{oid}/cancel", headers=h)
     fake = FillKis(open_px=100_000, deposit=9_000_000, holdings={}, psbl_cash=9_000_000)
     rec, _ = _run(fake, aid, today, LINES[:2])
     assert rec["submitted"] == 2 and fake.placed == [("069500", "buy", 5, 99000), ("069500", "buy", 3, 98000)]
@@ -506,7 +515,7 @@ def test_cancel_refuses_filled_order_and_reorder_replaces_cancelled_line(monkeyp
     monkeypatch.setattr(ae, "_client", lambda cred: fake)
     # ① grid1 은 이미 전량 체결 — 화면 상태는 '발주됨' 이지만 취소 요청은 거부되고, 상태가 체결로 바로잡힌다
     fake.fills = {"N0001": 5}
-    r = c.post(f"/portfolio/{pid}/orders/{g1['id']}/cancel", headers=h)
+    r = cancel(g1["id"])
     assert r.status_code == 409 and "이미 전량 체결" in r.json()["detail"] and "5주 체결" in r.json()["detail"]
     assert fake.cancelled == []                                   # 증권사에 취소 요청을 보내지 않았다
     st, _ = _orders(c, h, pid, today)
@@ -514,7 +523,7 @@ def test_cancel_refuses_filled_order_and_reorder_replaces_cancelled_line(monkeyp
     ev = [i for i in c.get("/logs?type=event", headers=h).json()["items"] if i["kind"] == "order.cancel"]
     assert ev and "취소 불가(이미 체결)" in ev[0]["text"]
     # ② grid2 는 미체결 — 취소되고 잔량이 없으므로 메시지에 체결 언급 없음
-    r2 = c.post(f"/portfolio/{pid}/orders/{g2['id']}/cancel", headers=h)
+    r2 = cancel(g2["id"])
     assert r2.status_code == 200 and fake.cancelled == ["N0002"]
     st, _ = _orders(c, h, pid, today)
     assert st["grid2"]["status"] == "cancelled"
@@ -555,6 +564,11 @@ def test_manual_order_places_cancels_and_shows_with_auto(monkeypatch):
             dt.now.return_value = datetime.combine(today, time(*at), tzinfo=KST)
             return c.post(f"/portfolio/{pid}/orders/manual", json=body, headers=h)
 
+    def cancel(oid, at=(10, 0)):                      # 취소 직전 체결 재확인도 같은 시계 (15:30 뒤면 unfilled 로 확정돼 409)
+        with patch("app.broker.datetime") as dt:
+            dt.now.return_value = datetime.combine(today, time(*at), tzinfo=KST)
+            return c.post(f"/portfolio/{pid}/orders/{oid}/cancel", headers=h)
+
     # ① 장 마감 뒤에는 거부
     r = order({"code": "069500", "side": "buy", "qty": 1, "price": 99_000}, at=(16, 0))
     assert r.status_code == 409 and "장중" in r.json()["detail"]
@@ -578,11 +592,11 @@ def test_manual_order_places_cancels_and_shows_with_auto(monkeypatch):
     assert len(mine) == 1 and mine[0]["kind"] == "manual"
     monkeypatch.setattr(ae_mod(), "_client", lambda cred: fake)
     fake.fills = {"N0001": 5}
-    assert c.post(f"/portfolio/{pid}/orders/{mine[0]['id']}/cancel", headers=h).status_code == 409   # 전량 체결 → 취소 불가
+    assert cancel(mine[0]["id"]).status_code == 409   # 전량 체결 → 취소 불가
     fake.fills = {}
     r2 = order({"code": "069500", "side": "sell", "qty": 2, "price": 103_000})
     assert r2.status_code == 200 and fake.placed[-1] == ("069500", "sell", 2, 103000)
-    assert c.post(f"/portfolio/{pid}/orders/{r2.json()['id']}/cancel", headers=h).status_code == 200
+    assert cancel(r2.json()["id"]).status_code == 200
     assert fake.cancelled == ["N0002"]
 
 

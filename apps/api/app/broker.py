@@ -867,7 +867,9 @@ def cancel_regular_order(session: Session, user_id: int, row: BrokerOrder, cred:
         return row
     if row.status not in ("submitted", "partial"):
         raise HTTPException(status_code=409, detail=f"취소할 수 없는 상태입니다 ({STATUS_KO.get(row.status, row.status)})")
-    if sync_auto_orders(session, cred, [row], kst_today()):
+    # 시각은 이 모듈의 시계 하나로 — 직접 주문 창(MANUAL_WINDOW)과 같은 출처라 테스트가 한 곳만 고정하면 된다.
+    # 15:30 이후에는 sync 가 미체결을 unfilled 로 확정하므로 취소가 409 가 된다(장 마감 후에는 취소할 것이 없다).
+    if sync_auto_orders(session, cred, [row], kst_today(), now=datetime.now(KST)):
         session.commit()
     if row.status == "filled":
         log_event(session, user_id, "order.cancel", f"취소 불가(이미 체결) — {what} · {int(row.filled_qty or 0):,}주 체결",

@@ -799,10 +799,17 @@ def test_journal_manual_order_place_list_and_cancel(monkeypatch):
     acct = c.post("/broker/accounts", json={"label": "위탁", "app_key": "PS" + "j" * 34, "app_secret": "S" * 180,
                                             "account_no": "68800037-01"}, headers=h).json()
 
+    # 장중 시각 고정 — 접수 창(MANUAL_WINDOW)과 취소 직전 체결 재확인이 같은 시계를 쓴다.
+    # 15:30 이후 실행하면 미체결이 unfilled 로 확정돼 취소가 409 가 되므로 고정이 필요하다 (2026-09-10 실측).
     def order(body, at=(10, 0)):
         with patch("app.broker.datetime") as dt:
             dt.now.return_value = datetime.combine(today, time(*at), tzinfo=KST)
             return c.post(f"/mjournals/{jid}/orders/manual", json=body, headers=h)
+
+    def cancel(oid, at=(10, 0)):
+        with patch("app.broker.datetime") as dt:
+            dt.now.return_value = datetime.combine(today, time(*at), tzinfo=KST)
+            return c.post(f"/mjournals/{jid}/orders/{oid}/cancel", headers=h)
 
     # ① 계좌 미연결 → 거부
     assert order({"code": "005930", "side": "buy", "qty": 1, "price": 70_000}).status_code in (404, 409)
@@ -826,12 +833,12 @@ def test_journal_manual_order_place_list_and_cancel(monkeypatch):
     assert [i["order_no"] for i in lst["items"]] == ["J0001"] and lst["linked_account"]["id"] == acct["id"]
     # ⑤ 전량 체결이면 취소 거부, 미체결이면 취소 (실전매매와 같은 함수)
     kis.fills = {"J0001": 2}
-    assert c.post(f"/mjournals/{jid}/orders/{row['id']}/cancel", headers=h).status_code == 409
+    assert cancel(row["id"]).status_code == 409
     assert kis.cancelled == []
     kis.fills = {}
     r2 = order({"code": "005930", "side": "sell", "qty": 1, "price": 80_000})
     assert r2.status_code == 200
-    assert c.post(f"/mjournals/{jid}/orders/{r2.json()['id']}/cancel", headers=h).status_code == 200
+    assert cancel(r2.json()["id"]).status_code == 200
     assert kis.cancelled == ["J0002"]
     # ⑥ 다른 일지의 주문은 보이지 않는다
     jid2 = c.post("/mjournals", json={"name": "다른일지", "symbol": "카카오"}, headers=h).json()["id"]

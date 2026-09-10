@@ -773,3 +773,13 @@
 - 남긴 것(경미): 반응형 접두 없는 `grid-cols-2` 4곳(설정 상품코드·환경, 새 일지 요율, 시뮬레이터 옵션, 거리 패널) — 입력은 되고 답답한 정도. 2버튼 토글·마켓 스위치는 좁아도 들어간다.
 - 테스트 결과: 서버 변경 없음 — `pytest -q tests/` **275 passed**, `tsc --noEmit` 무오류. 재점검 스크립트로 스크롤 래퍼 없는 표 0건 확인(남은 3건은 래퍼가 4~5줄 위인 오탐). 실제 화면 확인은 배포 후.
 - Git commit: fix: stop mobile clipping — wrap card-title actions, collapse tab hints, scroll the simulator table
+
+## [2026-09-10] fix | 주문 취소의 체결 재확인이 다른 시계를 쓰던 것 — 15:30 이후 테스트 3건 실패
+
+- 증상: 15:43 KST 전체 스위트에서 `test_autoexec::test_cancel_refuses_filled_order_and_reorder_replaces_cancelled_line`·`test_manual_order_places_cancels_and_shows_with_auto`·`test_mjournal::test_journal_manual_order_place_list_and_cancel` 3건이 취소 200 을 기대한 자리에서 409 를 받았다. 같은 코드가 오전(13~14시) 실행에서는 통과했다.
+- 원인: `cancel_regular_order` 가 취소 직전 `sync_auto_orders` 로 체결을 재확인하는데 그 함수가 인자 없이 실제 시각을 읽는다. 15:30 이 지나면 체결 없는 주문을 `unfilled` 로 확정하므로 취소가 "취소할 수 없는 상태" 409 가 된다. **운영 동작은 옳다**(장 마감 후에는 취소할 것이 없다). 문제는 접수 창(`MANUAL_WINDOW`, `app.broker.datetime`)과 체결 재확인이 서로 다른 시계를 봐서, 테스트가 접수만 고정하고 취소는 실제 시각으로 돌던 것.
+- 작업 내용: `cancel_regular_order` 가 `sync_auto_orders(..., now=datetime.now(KST))` 로 **이 모듈의 시계 하나**를 넘긴다(동작 불변, 출처만 통일). 테스트 3곳에 취소용 헬퍼(`cancel(oid, at=(10, 0))`)를 두어 접수와 같은 방식으로 장중 시각을 고정.
+- 테스트 결과: 3건 통과 후 전체 `pytest -q tests/` → **275 passed** (15:45 KST, 장 마감 후 실행). `tsc --noEmit` 무오류(웹 변경 없음).
+- 특이사항: 같은 유형(시계 의존 테스트)이 오늘 아침에도 있었다 — 확정봉 가드로 오늘 봉 평가 테스트 4건이 15:30 전에 실패(#178). 시각에 걸리는 규칙이 늘어난 만큼 새 테스트는 시계를 고정하는 것을 기본으로 한다.
+- Git commit: fix: cancel path re-checks fills on one clock so tests are not wall-clock dependent
+
