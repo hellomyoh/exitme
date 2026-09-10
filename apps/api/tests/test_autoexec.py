@@ -468,3 +468,71 @@ def test_late_run_limit_blocks_catch_up_execution():
         out = ae.run_auto_execution(s, now=datetime.combine(today, time(11, 0), tzinfo=KST), client_factory=lambda cred: fake2,
                                     sleep_fn=lambda _s: None, plan_fn=_plan(LINES[:2], today), only_credential_ids={aid2}, late_limit=None)
     assert out["portfolios"][0]["submitted"] == 2 and len(fake2.placed) == 2
+
+
+class FillKis(FakeKis):
+    """체결조회 결과를 지정할 수 있는 대역 — {주문번호: 체결수량}."""
+
+    def __init__(self, *a, fills: dict | None = None, **kw):
+        super().__init__(*a, **kw)
+        self.fills = dict(fills or {})
+
+    def fetch_executions(self, start, end, only_filled=True):
+        class E:
+            def __init__(self, no, q):
+                self.order_no, self.filled_qty = no, q
+        return [E(no, q) for no, q in self.fills.items()]
+
+
+def test_cancel_refuses_filled_order_and_reorder_replaces_cancelled_line(monkeypatch):
+    """체결된 주문은 취소되지 않는다 (2026-09-10 지시) — 상태가 '발주됨' 으로 낡았어도 취소 직전 체결조회로 맞추고 전량 체결이면 409.
+    취소·실패·생략된 줄은 '재등록'(REORDERABLE)으로 그 줄만 다시 발주한다. 갭 생략·체결된 줄은 재등록 대상 외."""
+    import app.autoexec as ae
+    import app.broker as br
+    from app.models import TradePortfolio
+
+    c, h = _client()
+    today = datetime.now(KST).date()
+    pid, aid = _setup_portfolio(c, h, today, deposit_krw=9_000_000)
+    c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True}, headers=h)
+    fake = FillKis(open_px=100_000, deposit=9_000_000, holdings={}, psbl_cash=9_000_000)
+    rec, _ = _run(fake, aid, today, LINES[:2])
+    assert rec["submitted"] == 2 and fake.placed == [("069500", "buy", 5, 99000), ("069500", "buy", 3, 98000)]
+    st, _ = _orders(c, h, pid, today)
+    g1, g2 = st["grid1"], st["grid2"]
+    assert g1["status"] == "submitted" and g1["order_no"] == "N0001" and g2["order_no"] == "N0002"
+
+    monkeypatch.setattr(br, "_client", lambda cred: fake)
+    monkeypatch.setattr(ae, "_client", lambda cred: fake)
+    # ① grid1 은 이미 전량 체결 — 화면 상태는 '발주됨' 이지만 취소 요청은 거부되고, 상태가 체결로 바로잡힌다
+    fake.fills = {"N0001": 5}
+    r = c.post(f"/portfolio/{pid}/orders/{g1['id']}/cancel", headers=h)
+    assert r.status_code == 409 and "이미 전량 체결" in r.json()["detail"] and "5주 체결" in r.json()["detail"]
+    assert fake.cancelled == []                                   # 증권사에 취소 요청을 보내지 않았다
+    st, _ = _orders(c, h, pid, today)
+    assert st["grid1"]["status"] == "filled" and st["grid1"]["filled_qty"] == 5
+    ev = [i for i in c.get("/logs?type=event", headers=h).json()["items"] if i["kind"] == "order.cancel"]
+    assert ev and "취소 불가(이미 체결)" in ev[0]["text"]
+    # ② grid2 는 미체결 — 취소되고 잔량이 없으므로 메시지에 체결 언급 없음
+    r2 = c.post(f"/portfolio/{pid}/orders/{g2['id']}/cancel", headers=h)
+    assert r2.status_code == 200 and fake.cancelled == ["N0002"]
+    st, _ = _orders(c, h, pid, today)
+    assert st["grid2"]["status"] == "cancelled"
+    # ③ 체결된 줄은 재등록 대상이 아니다
+    assert c.post(f"/portfolio/{pid}/orders/{st['grid1']['id']}/reorder", headers=h).status_code == 409
+    # ④ 취소된 줄만 재등록 — 같은 절차로 다시 발주(새 행), grid1 은 건드리지 않는다
+    with SessionLocal() as s:
+        pf = s.get(TradePortfolio, pid)
+        res = ae.retry_auto_exec(s, pf, now=datetime.combine(today, time(10, 30), tzinfo=KST), client_factory=lambda cred: fake,
+                                 sleep_fn=lambda _s: None, plan_fn=_plan(LINES[:2], today),
+                                 statuses=ae.REORDERABLE, only_lines={st["grid2"]["line_key"]}, what="재등록")
+        s.commit()
+    assert res["n"] == 1 and res["submitted"] == 1 and fake.placed[-1] == ("069500", "buy", 3, 98000)
+    st2, view = _orders(c, h, pid, today)
+    assert st2["grid2"]["status"] == "submitted" and st2["grid2"]["order_no"] == "N0003"
+    assert st2["grid1"]["status"] == "filled" and st2["grid1"]["order_no"] == "N0001"
+    items = c.get(f"/portfolio/{pid}/orders?date={today.isoformat()}", headers=h).json()["items"]
+    g2_rows = [i for i in items if i["kind"] == "grid2"]
+    assert [i["status"] for i in g2_rows] == ["cancelled", "submitted"] and g2_rows[1]["retry_of"] == g2_rows[0]["id"]
+    ev2 = [i for i in c.get("/logs?type=event", headers=h).json()["items"] if i["kind"] == "autoexec.retry"]
+    assert ev2 and "무인 재등록" in ev2[0]["text"]

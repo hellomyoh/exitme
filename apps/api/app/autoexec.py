@@ -52,6 +52,7 @@ RUNNING_TTL = 180
 PORTFOLIO_GAP_SEC = 1.0                          # 포트 사이 간격 — 계좌가 같은 앱키를 쓰면 연속 호출이 한 초에 몰린다
 RETRY_WINDOW = (time(9, 0), time(15, 20))        # 장중 재시도 허용 구간 (2026-09-09 지시 "API 실패 시 취소 대신 재시도") — 동시호가 전까지
 RETRYABLE = ("failed", "skipped")                # 재시도 대상 상태. skipped_gap(그날의 전략 판정)·발주됨·체결은 대상 외
+REORDERABLE = ("failed", "skipped", "cancelled")  # 줄별 '재등록' 대상 — 사용자가 그 줄을 직접 취소한 경우 포함 (2026-09-10 지시)
 RETRY_LOCK_TTL = 60
 
 SIDE_KO = {"buy": "매수", "sell": "매도"}
@@ -828,15 +829,21 @@ def _place_lines(session: Session, pf: TradePortfolio, client, keep: list[Broker
 
 # ── 장중 재시도 (2026-09-09 지시 "API 실패 시 취소 대신 재시도") ─────────────────────
 
-def retryable_rows(session: Session, pf: TradePortfolio, plan_date: date, allowed: dict) -> list[BrokerOrder]:
-    """재시도 대상 — 이 실행일 줄(line_key)별 **최신** 무인 행이 실패(failed)·생략(skipped)이고 그 방향이 지금 켜져 있는 줄.
-    갭 취소 생략(skipped_gap)은 그날의 전략 판정이라 제외. 꺼진 방향은 제외(켜면 대상이 된다 — '꺼짐 — 수동 처리' 행 포함)."""
+def retryable_rows(session: Session, pf: TradePortfolio, plan_date: date, allowed: dict,
+                   statuses: tuple[str, ...] = RETRYABLE, only_lines: set[str] | None = None) -> list[BrokerOrder]:
+    """재시도·재등록 대상 — 이 실행일 줄(line_key)별 **최신** 무인 행이 `statuses` 이고 그 방향이 지금 켜져 있는 줄.
+
+    기본(RETRYABLE) = 실패(failed)·생략(skipped). 갭 취소 생략(skipped_gap)은 그날의 전략 판정이라 늘 제외하고,
+    꺼진 방향도 제외한다(켜면 대상이 된다 — '꺼짐 — 수동 처리' 행 포함). 줄별 재등록은 statuses 에 cancelled 를 더해
+    `only_lines` 로 그 줄만 고른다 (2026-09-10 지시 "취소 후 다시 입력").
+    """
     rows = session.scalars(select(BrokerOrder).where(BrokerOrder.portfolio_id == pf.id, BrokerOrder.plan_date == plan_date,
                                                      BrokerOrder.mode == "auto").order_by(BrokerOrder.id)).all()
     latest: dict[str, BrokerOrder] = {}
     for r in rows:
         latest[r.line_key] = r
-    return [r for r in latest.values() if r.status in RETRYABLE and allowed.get(r.side, False)]
+    return [r for k, r in latest.items() if r.status in statuses and allowed.get(r.side, False)
+            and (only_lines is None or k in only_lines)]
 
 
 def _acquire_retry_lock(pf_id: int) -> bool:
@@ -860,7 +867,8 @@ def _default_plan_view(session: Session, pf: TradePortfolio, now: datetime) -> d
 
 
 def retry_auto_exec(session: Session, pf: TradePortfolio, now: datetime | None = None, client_factory=None,
-                    sleep_fn=_time.sleep, plan_fn=None) -> dict:
+                    sleep_fn=_time.sleep, plan_fn=None, statuses: tuple[str, ...] = RETRYABLE,
+                    only_lines: set[str] | None = None, what: str = "재시도") -> dict:
     """오늘 09:01 결과가 실패·생략인 줄만 같은 절차로 다시 발주한다 (통제 10). 이전 행은 기록으로 남고 줄마다 새 행이 생긴다.
 
     막는 조건(409): 국내 아님 · 계좌 없음 · 플래그 모두 꺼짐 · 정지 · 오늘 무인 취소 · 오늘 실행 기록 없음 · 장중(09:00~15:20) 밖 ·
@@ -885,17 +893,17 @@ def retry_auto_exec(session: Session, pf: TradePortfolio, now: datetime | None =
         raise HTTPException(status_code=409, detail="오늘은 무인 취소(수동) 상태입니다")
     last = state.get("last_run") or {}
     if last.get("date") != today.isoformat():
-        raise HTTPException(status_code=409, detail="오늘 09:01 실행 기록이 없습니다 — 재시도할 결과가 없습니다")
+        raise HTTPException(status_code=409, detail=f"오늘 09:01 실행 기록이 없습니다 — {what}할 결과가 없습니다")
     if not (RETRY_WINDOW[0] <= now.time() <= RETRY_WINDOW[1]):
-        raise HTTPException(status_code=409, detail="재시도는 장중(09:00~15:20)에만 가능합니다")
-    rows = retryable_rows(session, pf, today, allowed)
+        raise HTTPException(status_code=409, detail=f"{what}는 장중(09:00~15:20)에만 가능합니다")
+    rows = retryable_rows(session, pf, today, allowed, statuses=statuses, only_lines=only_lines)
     if not rows:
-        raise HTTPException(status_code=409, detail="재시도할 줄이 없습니다 — 실패·생략된 줄이 없거나 그 방향이 꺼져 있습니다")
+        raise HTTPException(status_code=409, detail=f"{what}할 줄이 없습니다 — 대상 상태가 아니거나 그 방향이 꺼져 있습니다")
     plan = (plan_fn or _default_plan_view)(session, pf, now)
     if str(plan.get("exec_day")) != today.isoformat():
         raise HTTPException(status_code=409, detail=f"주문표 실행일 {plan.get('exec_day')} 이 오늘과 다릅니다")
     if not _acquire_retry_lock(pf.id):
-        raise HTTPException(status_code=409, detail="재시도가 이미 진행 중입니다 — 잠시 뒤 새로고침하세요")
+        raise HTTPException(status_code=409, detail=f"{what}가 이미 진행 중입니다 — 잠시 뒤 새로고침하세요")
     code_200, code_lev = _resolve_codes(session, pf)
     rec: dict = {"portfolio_id": pf.id, "name": pf.name, "exec_day": today.isoformat(), "submitted": 0, "skipped_gap": 0,
                  "skipped": 0, "failed": 0, "note": "retry"}
@@ -926,10 +934,32 @@ def retry_auto_exec(session: Session, pf: TradePortfolio, now: datetime | None =
             parts.append(f"{ko} {rec[k]}건")
     if res["clipped"]:
         parts.append(f"축소 {res['clipped']}건")
-    log_event(session, pf.user_id, "autoexec.retry", f"무인 재시도 {now:%H:%M} — 대상 {len(new)}줄: " + " · ".join(parts),
+    log_event(session, pf.user_id, "autoexec.retry", f"무인 {what} {now:%H:%M} — 대상 {len(new)}줄: " + " · ".join(parts),
               level="error" if rec["failed"] else ("warn" if rec["skipped"] or rec["skipped_gap"] else "info"),
               portfolio_id=pf.id, data={k: v for k, v in rec.items() if k != "name"} | {"retry": retry}, at=now)
     return {**retry, "items": [_order_out(r) for r in new]}
+
+
+@router.post("/portfolio/{pid}/orders/{oid}/reorder")
+def reorder_auto_line(pid: int, oid: int, user_id: int = Depends(current_user_id),
+                      session: Session = Depends(get_session)) -> dict:
+    """줄별 재등록 (2026-09-10 지시 "취소 후 거래 가능한 금액은 재등록 버튼으로 다시 입력") — 취소·실패·생략된 그 줄 하나만
+    09:01 과 같은 절차(시가·갭 → 잔고 대조 → 상한·매수가능 → 발주)로 다시 낸다. 수량은 취소로 풀린 현금까지 반영해
+    매수가능조회로 다시 계산되므로 처음보다 줄거나 늘 수 있다. 갭 취소 생략(skipped_gap)·이미 발주·체결된 줄은 대상 외."""
+    pf = _owned(session, pid, user_id)
+    row = session.get(BrokerOrder, oid)
+    if row is None or row.portfolio_id != pid:
+        raise HTTPException(status_code=404, detail="order not found")
+    if (getattr(row, "mode", "") or "") != "auto":
+        raise HTTPException(status_code=409, detail="무인 실행이 낸 줄만 재등록할 수 있습니다")
+    if row.status not in REORDERABLE:
+        from app.broker import STATUS_KO
+
+        raise HTTPException(status_code=409, detail=f"재등록할 수 없는 상태입니다 ({STATUS_KO.get(row.status, row.status)})")
+    now = datetime.now(KST)
+    res = retry_auto_exec(session, pf, now=now, statuses=REORDERABLE, only_lines={row.line_key}, what="재등록")
+    session.commit()
+    return {**auto_exec_view(session, pf, now.date(), now), "retry": res}
 
 
 @router.post("/portfolio/{pid}/auto-exec/retry")

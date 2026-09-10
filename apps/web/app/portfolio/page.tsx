@@ -51,6 +51,13 @@ type Signal = { status: string; exec_day?: string; pending?: boolean; pending_no
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
+// 국내 장중(평일 09:00~15:40 KST) — 주문 상태를 증권사와 맞출지 판단 (2026-09-10)
+const krMarketOpen = () => {
+  const k = new Date(Date.now() + 9 * 3600e3);
+  const d = k.getUTCDay(), m = k.getUTCHours() * 60 + k.getUTCMinutes();
+  return d >= 1 && d <= 5 && m >= 9 * 60 && m <= 15 * 60 + 40;
+};
+
 const ORDER_KIND_KO: Record<string, string> = {
   boot: "초기 진입", grid1: "그리드 1차", grid2: "그리드 2차", grid3: "그리드 3차", tp: "익절", reduce: "축소",
   lev_strat: "레버 전략", lev_tact1: "레버 전술1", lev_tact2: "레버 전술2", lev_tact_exit: "전술 이탈", lev_liq: "레버 청산",
@@ -123,6 +130,7 @@ function PortfolioPage() {
   const [sum, setSum] = useState<Summary | null>(null);
   const sumRef = useRef<Summary | null>(null);   // 실시간 갱신 타이머가 최신 포트를 보게 (2026-09-10)
   sumRef.current = sum;
+  const execDayRef = useRef<string | null>(null);
   const [includeCosts, setIncludeCosts] = useState(true);
   const [form, setForm] = useState({ kind: "buy", code: market === "US" ? "QQQ" : "069500", qty: "", price: "", amount: "", memo: "",
     date: new Date().toISOString().slice(0, 10) });
@@ -178,6 +186,7 @@ function PortfolioPage() {
   const [editColor, setEditColor] = useState("");
   const [entryOpen, setEntryOpen] = useState(false);  // 체결 입력 폼 펼침 (2026-08-29 일지 개편)
   const [signal, setSignal] = useState<Signal | null>(null);
+  execDayRef.current = signal?.exec_day ?? null;
   const [curve, setCurve] = useState<{ date: string; equity: number; index: number; pnl?: number }[]>([]);
   const eqRef = useRef<HTMLDivElement>(null);
   const eqApi = useRef<IChartApi | null>(null);
@@ -280,6 +289,20 @@ function PortfolioPage() {
     setBoMsg(`${what} 주문을 취소했습니다`);
     void load(pid);
   }
+  // 줄별 재등록 (2026-09-10 지시 "취소 후 거래 가능한 금액은 재등록 버튼으로") — 그 줄만 09:01 과 같은 절차로 다시 발주.
+  // 수량은 취소로 풀린 현금까지 반영해 매수가능조회로 다시 계산되므로 처음과 다를 수 있다
+  async function reorderLine(oid: number, label: string) {
+    if (!sum) return;
+    if (!window.confirm(`${label} 줄을 다시 발주합니다.\n\n09:01 과 같은 절차(시가·갭 확인 → 잔고 대조 → 상한·주문가능 수량 → 발주)로 냅니다. 취소로 풀린 현금까지 반영해 수량이 다시 계산되므로 처음과 다를 수 있습니다.\n\n계속할까요?`)) return;
+    setBoBusy(true); setBoMsg("");
+    const r = await apiFetch(`/portfolio/${sum.portfolio.id}/orders/${oid}/reorder`, { method: "POST" });
+    const j = (await r.json().catch(() => ({}))) as { retry?: { submitted: number; skipped: number; failed: number }; detail?: string };
+    setBoBusy(false);
+    if (!r.ok) { setBoMsg(`${label} 재등록 실패 — ${j.detail ?? r.status}`); return; }
+    const t = j.retry;
+    setBoMsg(t ? `${label} 재등록 — 발주 ${t.submitted}건${t.skipped ? ` · 생략 ${t.skipped}` : ""}${t.failed ? ` · 실패 ${t.failed}` : ""}` : `${label} 재등록했습니다`);
+    void load(pid);
+  }
   async function unskipAutoExec() {
     if (!sum) return;
     setBoBusy(true); setBoMsg("");
@@ -304,6 +327,22 @@ function PortfolioPage() {
     const t = setInterval(() => { void liveTick(); }, 10_000);
     return () => clearInterval(t);
   }, [sum?.live_at, liveTick]);
+
+  // 주문 상태 자동 갱신 (2026-09-10 지시 "체결된 거래는 취소가 안 되어야 한다") — 상태는 15:45 동기화가 확정하므로 장중에는
+  // '발주됨' 이 낡은 값일 수 있고, 그러면 이미 체결된 줄에 취소 버튼이 남는다. 살아 있는 무인 주문이 있으면 30초마다 체결조회로 맞춘다
+  const orderTick = useCallback(async () => {
+    if (typeof document !== "undefined" && document.hidden) return;
+    const cur = sumRef.current, ed = execDayRef.current;
+    if (!cur || !ed) return;
+    const r = await apiFetch(`/portfolio/${cur.portfolio.id}/orders?date=${ed}&refresh=1`);
+    if (r.ok) setBo((await r.json()) as BrokerOrders);
+  }, []);
+  const hasLiveAutoOrders = (bo?.items ?? []).some((i) => i.mode === "auto" && ["submitted", "partial"].includes(i.status));
+  useEffect(() => {
+    if (!hasLiveAutoOrders || !krMarketOpen()) return;
+    const t = setInterval(() => { void orderTick(); }, 30_000);
+    return () => clearInterval(t);
+  }, [hasLiveAutoOrders, orderTick]);
 
   const load = useCallback(async (id: number | null) => {
     let sid: number | null = id;
@@ -335,7 +374,10 @@ function PortfolioPage() {
     if (sid) {
       const bk = await apiFetch(`/portfolio/${sid}/broker`);
       if (bk.ok) setBroker((await bk.json()) as BrokerInfo);
-      const bor = await apiFetch(`/portfolio/${sid}/orders${sgj?.exec_day ? `?date=${sgj.exec_day}` : ""}`);
+      const oq = new URLSearchParams();
+      if (sgj?.exec_day) oq.set("date", sgj.exec_day);
+      if (krMarketOpen()) oq.set("refresh", "1");   // 장중에는 증권사 체결 상태를 맞춰 받는다 (2026-09-10)
+      const bor = await apiFetch(`/portfolio/${sid}/orders${oq.toString() ? `?${oq}` : ""}`);
       setBo(bor.ok ? ((await bor.json()) as BrokerOrders) : null);
     }
     // 계좌 목록은 시작 패널(포트가 하나도 없을 때 포함)에서도 쓴다 (2026-09-06)
@@ -620,7 +662,9 @@ function PortfolioPage() {
         </span>
       </div>
 
-      {sum && (
+      {/* 새 실전매매를 시작하는 동안에는 기존 포트의 연동 카드를 감춘다 — 잠긴 '연결됨' 이 새 포트의 계좌 선택처럼 보여
+          "새 계좌를 연결할 수 없다"는 오해를 낳았다 (2026-09-10 지적). 새 포트의 계좌는 아래 시작 폼에서 고른다 */}
+      {sum && !showStart && (
         <Card className="mb-4">
           <CardTitle right={
             <Link href="/settings" className="text-[12.5px] font-normal normal-case text-accent">
@@ -713,7 +757,7 @@ function PortfolioPage() {
         </Card>
       )}
 
-      {editOpen && sum && (
+      {editOpen && sum && !showStart && (
         <Card className="mb-4 max-w-xl border-accent">
           <CardTitle>포트 이름 · 탭 배경색{market === "US" ? " · 매매 공식" : ""}</CardTitle>
           <div className="grid gap-3">
@@ -765,7 +809,7 @@ function PortfolioPage() {
 
       {showStart && (
         <Card className="mb-4 border-accent">
-          <CardTitle>새 실전매매 시작</CardTitle>
+          <CardTitle>새 실전매매 시작 <span className="normal-case text-faint">· 증권사 계좌는 아래에서 고릅니다 (기존 포트의 연동과 별개)</span></CardTitle>
           <div className="mb-4 grid gap-2 sm:grid-cols-2">
             <button onClick={() => setStartMode("fresh")}
               className={`rounded-xl border p-4 text-left transition-colors ${startMode === "fresh" ? "border-accent bg-accent-dim" : "border-line bg-inset hover:border-line-strong"}`}>
@@ -1149,6 +1193,10 @@ function PortfolioPage() {
                           const clip = b.message && /→\s*[\d,]+주/.test(b.message) ? " · 축소" : "";
                           const rt = b.retry_of ? " · 재시도" : "";
                           const kindKo = ORDER_KIND_KO[o.kind] ?? o.kind;
+                          const reorderBtn = b.id != null && krMarketOpen() && (
+                            <button className="text-[12px] font-normal text-accent hover:underline disabled:opacity-50" disabled={boBusy}
+                              title="이 줄만 09:01 과 같은 절차로 다시 발주합니다 — 취소로 풀린 현금까지 반영해 수량을 다시 계산합니다"
+                              onClick={() => void reorderLine(b.id as number, kindKo)}>재등록</button>);
                           const cancelBtn = b.id != null && (
                             <button className="text-[12px] font-normal text-down hover:underline disabled:opacity-50" disabled={boBusy}
                               title="증권사에 남아 있는 잔량을 취소합니다 (체결분은 취소되지 않음)"
@@ -1161,14 +1209,24 @@ function PortfolioPage() {
                           if (b.status === "partial") return (
                             <span className="inline-flex flex-wrap items-center gap-1.5">
                               <span className="font-semibold text-warn" title={b.message ?? ""}>◐ 일부 체결 {b.filled_qty}/{b.qty}</span>{cancelBtn}
+                              <span className="text-faint">(잔량)</span>
                             </span>);
                           if (b.status === "unfilled") return <span className="text-faint" title={b.message ?? ""}>○ 미체결</span>;
                           if (b.status === "skipped_gap") return <span className="text-warn" title={b.message ?? ""}>⤫ 갭 취소 생략</span>;
-                          if (b.status === "skipped") return <span className="text-faint" title={b.message ?? ""}>생략{b.message ? ` — ${b.message.slice(0, 60)}${b.message.length > 60 ? "…" : ""}` : ""}</span>;
-                          if (b.status === "cancelled") return <span className="text-faint" title={b.message ?? ""}>취소됨</span>;
+                          if (b.status === "skipped") return (
+                            <span className="inline-flex flex-wrap items-center gap-1.5">
+                              <span className="text-faint" title={b.message ?? ""}>생략{b.message ? ` — ${b.message.slice(0, 60)}${b.message.length > 60 ? "…" : ""}` : ""}</span>{reorderBtn}
+                            </span>);
+                          if (b.status === "cancelled") return (
+                            <span className="inline-flex flex-wrap items-center gap-1.5">
+                              <span className="text-faint" title={b.message ?? ""}>취소됨</span>{reorderBtn}
+                            </span>);
                           if (b.status === "reserved") return <span className="text-muted" title={b.message ?? ""}>예약(구) #{b.rsvn_ord_seq}</span>;
                           if (b.status === "approved") return <span className="text-muted" title={b.message ?? ""}>승인(구)</span>;
-                          return <span className="text-down" title={b.message ?? ""}>✗ {b.status_ko}{b.message ? ` — ${b.message.slice(0, 80)}${b.message.length > 80 ? "…" : ""}` : ""}</span>;
+                          return (
+                            <span className="inline-flex flex-wrap items-center gap-1.5">
+                              <span className="text-down" title={b.message ?? ""}>✗ {b.status_ko}{b.message ? ` — ${b.message.slice(0, 80)}${b.message.length > 80 ? "…" : ""}` : ""}</span>{reorderBtn}
+                            </span>);
                         })()}
                       </td>
                     )}
