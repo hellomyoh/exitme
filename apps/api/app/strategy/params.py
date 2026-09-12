@@ -62,7 +62,10 @@ class Params:
     boot_market_slippage: float = 0.0   # 연구용: 시가 시장가 매수의 체결가 가산율 (0 = 시가 그대로, 0.001 = +0.1%)
     # 레버리지 (정본 §7)
     lev_multiple: float = 2.0       # 레버리지 ETF 배율 — 국내 2배 기본, 해외 3배(TQQQ) 검토용 (2026-08-31)
-    lev_strategic_ratio: float = 0.7
+    # 2026-09-12 사용자 지시 0.7 → 0.85 (정본 §10 튜닝표 '레버리지 트랙 비율' ○ 범위 내 값 조정).
+    # 전술 트랙(눌림목 왕복)은 8.6년 비용 후 −88만원, 같은 예산을 전략 트랙에 두면 +2,000만원.
+    # 대가는 MDD — 노출이 커져 89개 1년 창 중 73창에서 낙폭이 깊어진다. docs/lev-split-8515-20260912.md
+    lev_strategic_ratio: float = 0.85
     lev_tact1_mult: float = 0.75
     lev_tact2_mult: float = 1.5
     sigma20_liquidate: float = 0.35  # 2026-08-31 사용자 승인 상향(25→35%) — 스윕: 10년 +140→+150%, MDD 불변, 위기 방어는 레짐 이탈이 선행
