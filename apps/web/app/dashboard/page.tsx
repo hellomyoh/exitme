@@ -13,11 +13,11 @@ import { Badge, Card, CardTitle, fmtPct, fmtWon, GaugeBar, PageTitle, pnlTone, S
 
 // 시장 카드: 누적(pnl, 보유 원가 대비)과 오늘(day_change, 전일 종가 평가액 대비) — 2026-09-10 지시
 type Breakdown = { value: number; cost: number; pnl: number; pnl_pct: number | null;
-  day_change?: number | null; day_change_pct?: number | null };
+  day_change?: number | null; day_change_pct?: number | null; day_change_asof?: string | null };
 type PortPosition = { code: string; name: string; qty: number; value: number };
 // 오늘 손익 (2026-09-10 지시): 누적(pnl)은 보유 원가 대비, 오늘(day_change)은 **전일 종가 평가액 대비**.
 // day_missing = 전일 종가가 없어 오늘 손익에서 뺀 종목(오늘 신규 매수·시세 미확보)
-type PortRow = { trend?: number[]; day_change?: number; day_change_pct?: number | null; day_missing?: string[]; price_source?: string;  id: number; name: string; market: string; equity: number; stock_value: number; cash: number; pnl: number; pnl_pct: number | null; color?: string | null; positions?: PortPosition[] };
+type PortRow = { trend?: number[]; day_change?: number; day_change_pct?: number | null; day_missing?: string[]; price_source?: string; day_change_asof?: string | null;  id: number; name: string; market: string; equity: number; stock_value: number; cash: number; pnl: number; pnl_pct: number | null; color?: string | null; positions?: PortPosition[] };
 
 /** 계좌별 도넛 (2026-09-05 지시) — 계좌마다 도넛 하나, 조각 = 보유 종목(+현금).
  *  같은 종목은 모든 도넛에서 같은 색(색은 엔티티를 따른다). hover 에 종목/수량/평가액. */
@@ -90,6 +90,7 @@ type Dash = { portfolios?: PortRow[]; total_trend?: number[]; kr_trend?: number[
   total: number; stock: number; cash: number; other: number;
   trading_total?: number; journal?: number; journals?: JournalAsset[];   // 주식 거래 자산 / 매매일지 자산 분리 (2026-09-05)
   change_amount: number; change_pct: number | null; since_inception_pct: number | null;
+  change_asof?: string | null;   // 오늘 손익의 기준일 — null=오늘, 날짜=그날 종가 기준 (주말·휴장·장 시작 전·적재 지연, 2026-09-12)
   since_inception_amount?: number | null;   // 누적 금액 (최초 스냅샷 대비, 입출금 제외) — 2026-09-10
   live_at?: string | null;   // 10초 폴링 시세로 평가한 시각 (없으면 종가 기준, 2026-09-10)
   kr_stock: Breakdown; us_stock: Breakdown;  // us_stock 값 단위: 센트
@@ -97,7 +98,7 @@ type Dash = { portfolios?: PortRow[]; total_trend?: number[]; kr_trend?: number[
 };
 type JournalAsset = { excluded?: { symbol: string; code: string | null; value: number }[]; id: number; name: string; symbol: string; cost: number; realized: number; return_pct: number | null;
   value?: number; priced?: boolean; unrealized?: number | null; unrealized_pct?: number | null;   // 현재가 평가 (2026-09-06)
-  day_change?: number | null; day_change_pct?: number | null; day_missing?: string[];              // 오늘 손익 (2026-09-10)
+  day_change?: number | null; day_change_pct?: number | null; day_missing?: string[]; day_change_asof?: string | null;  // 오늘 손익 (2026-09-10)·기준일 (2026-09-12)
   holdings: { symbol: string; qty: number; cost: number; price?: number | null; eval?: number | null }[]; entries: number; counted: boolean; note: string | null };
 type TrendSeries = { portfolio_id: number | null; name: string; market: string; currency: string;
   kind?: string;   // "portfolio" | "journal" (2026-09-10) — 매매일지는 합계 한 줄
@@ -116,10 +117,20 @@ const REGIME_KO: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립�
  *  compact=true 는 좁은 화면에서 누적 손익 아래에 붙는 보조 줄 (2026-09-10 지시). */
 const dayTone = (v?: number | null) => ((v ?? 0) > 0 ? "text-up" : (v ?? 0) < 0 ? "text-down" : "text-faint");
 const usd = (v: number) => `$${(v / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
-function dayCell(v: number | null | undefined, pct: number | null | undefined, money: (n: number) => string, compact = false) {
-  if (v == null) return <span className="text-faint">{compact ? "오늘 —" : "—"}</span>;
+// 오늘 손익의 라벨 — 기준일이 오면 '오늘' 대신 그 날짜를 쓴다 (2026-09-12).
+// 주말·휴장·장 시작 전·일봉 적재 지연에는 마지막 거래일의 변동을 보여주므로, 오늘 것으로 오해하지 않게 날짜를 앞에 둔다.
+const dayLabel = (asof?: string | null) => (asof ? `${Number(asof.slice(5, 7))}/${Number(asof.slice(8, 10))}` : "오늘");
+function dayCell(v: number | null | undefined, pct: number | null | undefined, money: (n: number) => string,
+                 compact = false, asof?: string | null) {
+  const label = dayLabel(asof);
+  if (v == null) return <span className="text-faint">{compact ? `${label} —` : "—"}</span>;
   const body = `${v >= 0 ? "+" : ""}${money(v)}${pct != null ? ` (${(pct * 100).toFixed(2)}%)` : ""}`;
-  return <span className={compact ? dayTone(v) : undefined}>{compact ? `오늘 ${body}` : body}</span>;
+  // 표 안(비compact)에서는 값만 보이므로, 오늘이 아닌 기준일이면 날짜를 앞에 붙여 열 머리글('오늘 손익')과 어긋나지 않게 한다
+  return (
+    <span className={compact ? dayTone(v) : undefined}>
+      {compact ? `${label} ${body}` : (asof ? <><span className="text-faint">{label}</span> {body}</> : body)}
+    </span>
+  );
 }
 const REGIME_COLOR: Record<string, string> = { BULL: "var(--color-up)", NEUTRAL: "var(--color-accent)", BEAR: "var(--color-down)" };
 const toneCls = { up: "text-up", down: "text-down", default: "text-muted" };
@@ -301,7 +312,8 @@ export default function DashboardPage() {
             {/* 오늘·누적 두 줄 (2026-09-10 지시) — 종전의 실전매매·매매일지 구성 줄은 자산 구성 카드와 계좌별 표에 있다 */}
             <span className="flex flex-wrap gap-x-3">
               <span className={`font-semibold ${toneCls[ct]}`}>
-                {dash.change_amount >= 0 ? "▲" : "▼"} 오늘 {fmtWon(Math.abs(dash.change_amount))} ({fmtPct(dash.change_pct, 2)})
+                {dash.change_amount >= 0 ? "▲" : "▼"} {dayLabel(dash.change_asof)} {fmtWon(Math.abs(dash.change_amount))} ({fmtPct(dash.change_pct, 2)})
+                {dash.change_asof && <span className="ml-1 font-normal text-faint">종가 기준</span>}
               </span>
               {dash.live_at && <span className="text-ok" title="10초 간격 현재가로 평가 — 시세가 없는 종목은 종가 기준">● 실시간 {dash.live_at.slice(11, 16)}</span>}
             </span>
@@ -319,7 +331,7 @@ export default function DashboardPage() {
           tip={<span>국내 실전매매가 보유한 주식의 평가액입니다(현금 제외).<br /><b>누적</b>은 보유 원가 대비, <b>오늘</b>은 전일 종가 평가액 대비 — 분모가 다릅니다.</span>}
           sub={dash && dash.kr_stock.cost > 0 ? (<>
             <span className="block font-semibold">
-              {dayCell(dash.kr_stock.day_change, dash.kr_stock.day_change_pct, fmtWon, true)}
+              {dayCell(dash.kr_stock.day_change, dash.kr_stock.day_change_pct, fmtWon, true, dash.kr_stock.day_change_asof)}
             </span>
             <span className={`mt-0.5 block font-semibold ${toneCls[pnlTone(dash.kr_stock.pnl)]}`}>
               누적 {dash.kr_stock.pnl >= 0 ? "+" : ""}{fmtWon(dash.kr_stock.pnl)}
@@ -332,7 +344,7 @@ export default function DashboardPage() {
           tip={<span>미국 실전매매가 보유한 주식의 평가액입니다(달러).<br /><b>누적</b>은 보유 원가 대비, <b>오늘</b>은 전일 종가 평가액 대비 — 분모가 다릅니다.</span>}
           sub={dash && dash.us_stock.cost > 0 ? (<>
             <span className="block font-semibold">
-              {dayCell(dash.us_stock.day_change, dash.us_stock.day_change_pct, usd, true)}
+              {dayCell(dash.us_stock.day_change, dash.us_stock.day_change_pct, usd, true, dash.us_stock.day_change_asof)}
             </span>
             <span className={`mt-0.5 block font-semibold ${toneCls[pnlTone(dash.us_stock.pnl)]}`}>
               누적 {dash.us_stock.pnl >= 0 ? "+" : ""}${(dash.us_stock.pnl / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}
@@ -474,11 +486,11 @@ export default function DashboardPage() {
                             {p.pnl !== 0 ? `${p.pnl >= 0 ? "+" : ""}${money(p.pnl)}` : "—"}
                             {p.pnl_pct !== null && p.pnl !== 0 && ` (${(p.pnl_pct * 100).toFixed(2)}%)`}
                             {/* 좁은 화면에서는 오늘 손익을 아랫줄로 (열을 늘리면 잘린다, 2026-09-10) */}
-                            <div className="text-[12px] font-normal sm:hidden">{dayCell(p.day_change, p.day_change_pct, money, true)}</div>
+                            <div className="text-[12px] font-normal sm:hidden">{dayCell(p.day_change, p.day_change_pct, money, true, p.day_change_asof)}</div>
                           </td>
                           <td className={`hidden table-num py-2.5 font-semibold sm:table-cell ${dayTone(p.day_change)}`}
                             title={(p.day_missing?.length ?? 0) > 0 ? `전일 종가가 없어 제외: ${p.day_missing!.join(", ")}` : undefined}>
-                            {dayCell(p.day_change, p.day_change_pct, money)}
+                            {dayCell(p.day_change, p.day_change_pct, money, false, p.day_change_asof)}
                             {(p.day_missing?.length ?? 0) > 0 && <span className="text-[11.5px] font-normal text-faint"> *</span>}
                           </td>
                           <td className="py-1 pl-6">
@@ -532,10 +544,10 @@ export default function DashboardPage() {
                       <td className={`table-num py-2.5 font-semibold ${(j.unrealized ?? 0) > 0 ? "text-up" : (j.unrealized ?? 0) < 0 ? "text-down" : "text-faint"}`}>
                         {j.priced && j.unrealized != null ? `${j.unrealized >= 0 ? "+" : ""}${fmtWon(j.unrealized)}${j.unrealized_pct != null ? ` (${(j.unrealized_pct * 100).toFixed(1)}%)` : ""}` : "—"}
                         {/* 좁은 화면에서는 오늘 손익을 아랫줄로 (2026-09-10) */}
-                        <div className="text-[12px] font-normal sm:hidden">{dayCell(j.day_change, j.day_change_pct, fmtWon, true)}</div></td>
+                        <div className="text-[12px] font-normal sm:hidden">{dayCell(j.day_change, j.day_change_pct, fmtWon, true, j.day_change_asof)}</div></td>
                       <td className={`hidden table-num py-2.5 font-semibold sm:table-cell ${dayTone(j.day_change)}`}
                         title={(j.day_missing?.length ?? 0) > 0 ? `전일 종가가 없어 제외: ${j.day_missing!.join(", ")}` : undefined}>
-                        {dayCell(j.day_change, j.day_change_pct, fmtWon)}
+                        {dayCell(j.day_change, j.day_change_pct, fmtWon, false, j.day_change_asof)}
                         {(j.day_missing?.length ?? 0) > 0 && <span className="text-[11.5px] font-normal text-faint"> *</span>}</td>
                       <td className={`table-num py-2.5 font-semibold ${j.realized > 0 ? "text-up" : j.realized < 0 ? "text-down" : "text-faint"}`}>
                         {j.realized !== 0 ? `${j.realized >= 0 ? "+" : ""}${fmtWon(j.realized)}` : "—"}
