@@ -127,6 +127,14 @@ def run_signal_batch(session: Session, target: date | None = None) -> SignalSnap
         # 대상일 시세 미확보 → 발행 보류 (feature-strategy-engine §5.8)
         return _record(session, target, "MISSING",
                        detail={"last_bar": bars_200[-1]["date"], "reason": "market data not ingested yet"})
+    as_of = None
+    if target is not None and signal_date > target:
+        # as-of 재생 (감사 A11): target 뒤에 들어온 봉은 쓰지 않고 target 까지만으로 계산한다 — 종전에는 최신일로 조용히 바뀌었다.
+        # is_current 는 '그 날짜의 현재 버전'이라 과거 날짜 재생이 최신 날짜 스냅샷을 밀어내지 않는다.
+        cut = sum(1 for b in bars_200 if date.fromisoformat(b["date"]) <= target)
+        bars_200, bars_lev = bars_200[:cut], bars_lev[:cut]
+        signal_date = date.fromisoformat(bars_200[-1]["date"])
+        as_of = target.isoformat()
     try:
         result = run_backtest(bars_200, bars_lev, MODEL_CAPITAL, Params(),
                               collect_plans=True, plan_final=True)
@@ -146,6 +154,7 @@ def run_signal_batch(session: Session, target: date | None = None) -> SignalSnap
             "model_qty_200": result.qty_200[-1] if result.qty_200 else 0,
             "model_qty_lev": result.qty_lev[-1] if result.qty_lev else 0,
             "plans": len(result.plans),
+            **({"as_of": as_of} if as_of else {}),   # 과거 target 재생 표시 (감사 A11)
         },
     )
     for od in last_plan.orders:
@@ -320,6 +329,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
         "pending": _plan_pending(exec_day)[0], "pending_note": _plan_pending(exec_day)[1],
         # 배치 스냅샷이 없어도 화면이 그릴 수 있게 레짐·노출·기준일·지표를 함께 준다 (2026-09-05: 챗봇과 화면 불일치)
         "signal_date": base_day.isoformat(), "regime": regime.value, "e_target": p.e_target,
+        "w_200": p.w_200, "w_lev": p.w_lev, "trade_date": base_day.isoformat(),   # 같은 계획에서 (감사 A12) — 공용 모델 값 덮어씀
         "indicators": {k: v for k, v in (p.indicators or {}).items() if v is not None},
         # 어떤 공식으로 계산했는지 표시용 (2026-09-05): portfolio = 전환 시 동결 변수, settings = 설정 추종
         "algo_source": algo_source, "algo_overrides": algo, "algo_detail": algo_detail,
