@@ -1,5 +1,7 @@
 # ASSUMPTIONS.md
 
+- 2026-09-12 | 독립 전략 연구 | 동일 목표를 KODEX200·레버리지·현금, 목표노출상한1.3, 표본MDD25% 제한하 비용 후 CAGR 최대화로 임시 수치화. 후보16개와 시간분할 선택 절차를 결과 열람 전 고정 | 사용자 요청은 RAVG 비의존 공식 설계·검증. 제품 정본·투자 한도 변경이 아닌 연구 한정 가정이며 손실 허용을 사용자 대신 확정하지 않음. [연구 규약](docs/independent-strategy-study-20260912.md) | research-only
+
 포맷: `YYYY-MM-DD | 영역 | 결정 | 이유 | 상태(active/confirmed/superseded)`
 
 - 2026-09-08 | 전략 | 소량 진입 부트스트랩 신설 — 시작 후 10거래일, 목표 미달분 15%(하락장 7.5%)를 종가 지정가로. days_since_start 는 백테스트 첫 OK 계획일 / 실전 max(생성일, 첫 거래일) 뒤 봉 수 | ADR-010, fast-entry-study(234개 조합·3 표본). 사용자 승인 | confirmed
