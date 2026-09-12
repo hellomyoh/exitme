@@ -973,3 +973,16 @@
 - 헤드리스 확인(실제 개발 DB, 2026-09-12 토): 총자산 `▼ 9/11 113,285원 (-0.30%) 종가 기준`, 매매일지 행 `9/11 -104,500원 (-3.53%)` — 종전 0원에서 정정. 콘솔 오류 없음.
 - 문서: feature-dashboard.md 에 규칙·응답 필드 추가.
 - Git commit: fix: show the last trading day's move when today has no bar yet
+
+## [2026-09-12] feat | 자산 추이의 매매일지를 일지별 선으로 (사용자 지시)
+
+- 지적: "스샷에서 매매일지는 라인 하나로 했는데 이유는 뭐야?" — 포트는 `portfolio_snapshots` 로 일별 값을 남기는데 매매일지는 사용자 합계 한 칸(`asset_snapshots.journal`)뿐이라 일지별 과거 값이 없었다.
+- 작업 내용
+  - 마이그레이션 **0028** `journal_snapshots`(journal_id·snap_date·value🔒·cost🔒·counted·approx, 유니크 (journal_id, snap_date), FK CASCADE) + `JournalSnapshot` 모델.
+  - `compute_user_snapshot` 이 `journal_assets` 결과로 일지별 행을 함께 upsert — 사용자 합계는 그대로 두고 같은 값의 구성 요소를 남긴다.
+  - `GET /portfolio/trend` 이 일지별 계열(`kind="journal"`, `journal_id`, `approx`)을 돌려준다. 일지 스냅샷이 하나도 없으면 종전 합계 한 줄로 폴백 — 적재 전 사용자도 화면이 비지 않는다. ALL 구간 주 단위 샘플은 포트 계열과 동일.
+  - 소급 스크립트 `scripts/backfill_journal_snapshots.py`: 기록의 일자·수량·단가·종목코드와 그날 종가로 일별 값을 되살리고 `approx=True`. 되살리지 못하는 둘(당시 중복 제외 상태·시세 없는 종목)은 문서와 화면에 명시. 기존 배치분은 덮지 않는다.
+  - 웹: 일지별 파선 + 전용 팔레트(회청·장미·자홍·황토·청록 — 실전매매 팔레트와 갈리도록), 범례 아래 "매매일지 과거 구간은 기록·종가로 되살린 근사치" 안내.
+- 테스트 결과: **335 passed**(신규 4 — 배치가 일지별 행을 남김·값이 화면 평가액과 일치, 추이가 일지별 계열을 돌려줌, 스냅샷 없으면 합계 폴백, 소급이 과거를 되살리고 approx 표시·배치분 보존). `tsc --noEmit` 무오류. 개발 DB `alembic upgrade head` → 0028.
+- 실측(개발 DB): 소급 적재 `journals=2 dates=144 written=144 unpriced=0` — 연금저축 23일(2026-08-21~09-12), 한투-삼성 121일(2026-05-15~09-12). 헤드리스 확인: 범례가 5개(총자산·일지 계좌·한투-자금운영1·연금저축·한투-삼성)로 늘고 호버에 일지별 금액이 각각 표시, 콘솔 오류 없음.
+- Git commit: feat: per-journal lines on the asset trend chart

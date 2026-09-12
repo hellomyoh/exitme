@@ -121,7 +121,21 @@ def compute_user_snapshot(session: Session, user_id: int, snap_date: date) -> As
     # 매매일지 자산 (0020, 2026-09-05 지시) — 진행 중 일지의 보유 취득원가 합. 실전매매와 같은 계좌면 제외(중복 방지)
     from app.mjournal import journal_assets
 
-    journal = sum(ja["value"] for ja in journal_assets(session, user_id) if ja["counted"])  # 평가액(시세 없으면 원가)
+    jas = journal_assets(session, user_id)
+    journal = sum(ja["value"] for ja in jas if ja["counted"])  # 평가액(시세 없으면 원가)
+    # 일지별 스냅샷 (0028, 2026-09-12) — 자산 추이에서 일지를 하나씩 선으로 그리기 위한 원천.
+    # 사용자 합계(snap.journal)는 그대로 두고 같은 값의 구성 요소를 일지 단위로 남긴다.
+    from app.models import JournalSnapshot
+
+    for ja in jas:
+        jstmt = pg_insert(JournalSnapshot.__table__).values(
+            journal_id=ja["id"], snap_date=snap_date, value=ja["value"], cost=ja["cost"],
+            counted=bool(ja["counted"]), approx=False)
+        jstmt = jstmt.on_conflict_do_update(
+            constraint="uq_journal_snapshots_jid_date",
+            set_={"value": jstmt.excluded.value, "cost": jstmt.excluded.cost,
+                  "counted": jstmt.excluded.counted, "approx": jstmt.excluded.approx})
+        session.execute(jstmt)
     snap = session.scalar(select(AssetSnapshot).where(
         AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date == snap_date))
     if snap is None:
@@ -548,19 +562,39 @@ def trend(range_: str = "3M", user_id: int = Depends(current_user_id),
             "points": [{"date": r.snap_date.isoformat(), "equity": r.equity} for r in ps],
         })
 
-    # 매매일지 자산 추이 (2026-09-10 지시) — 일지 단위 스냅샷은 없고 사용자 합계(AssetSnapshot.journal)만
-    # 남으므로 한 줄로 그린다. journal 은 0020 이전 행에서 NULL(집계 자체가 없던 날)이라
-    # 0 으로 그리면 없던 급락이 생긴다 — 그 날짜는 점을 찍지 않는다.
-    jpts = [{"date": r.snap_date.isoformat(), "equity": int(r.journal)}
-            for r in rows if r.journal is not None]
-    if key == "ALL" and len(jpts) > 366:
-        jweek: dict[tuple[int, int], dict] = {}
-        for p in jpts:
-            jweek[date.fromisoformat(p["date"]).isocalendar()[:2]] = p
-        jpts = sorted(jweek.values(), key=lambda p: p["date"])
-    if len(jpts) >= 2 and any(p["equity"] > 0 for p in jpts):
-        series.append({"portfolio_id": None, "name": "매매일지", "market": "KR",
-                       "currency": "KRW", "kind": "journal", "points": jpts})
+    # 매매일지 자산 추이 — 일지별 한 줄씩 (0028, 2026-09-12 지시). 일지 스냅샷이 하나도 없으면(적재 전)
+    # 종전처럼 사용자 합계(AssetSnapshot.journal) 한 줄로 폴백한다.
+    from app.models import JournalSnapshot, ManualJournal
+
+    def _weekly(pts: list[dict]) -> list[dict]:
+        if key != "ALL" or len(pts) <= 366:
+            return pts
+        wk: dict[tuple[int, int], dict] = {}
+        for p in pts:
+            wk[date.fromisoformat(p["date"]).isocalendar()[:2]] = p
+        return sorted(wk.values(), key=lambda p: p["date"])
+
+    jrs = session.scalars(select(ManualJournal).where(ManualJournal.user_id == user_id)
+                          .order_by(ManualJournal.id)).all()
+    any_journal_series = False
+    for j in jrs:
+        js = session.scalars(
+            select(JournalSnapshot).where(JournalSnapshot.journal_id == j.id,
+                                          JournalSnapshot.snap_date >= since)
+            .order_by(JournalSnapshot.snap_date)).all()
+        pts = _weekly([{"date": r.snap_date.isoformat(), "equity": int(r.value)} for r in js if r.counted])
+        if len(pts) >= 2 and any(p["equity"] > 0 for p in pts):
+            series.append({"portfolio_id": None, "journal_id": j.id, "name": j.name, "market": "KR",
+                           "currency": "KRW", "kind": "journal", "points": pts,
+                           # 소급 재계산분이 섞여 있으면 화면에 근사임을 알린다
+                           "approx": any(r.approx for r in js)})
+            any_journal_series = True
+    if not any_journal_series:
+        jpts = _weekly([{"date": r.snap_date.isoformat(), "equity": int(r.journal)}
+                        for r in rows if r.journal is not None])
+        if len(jpts) >= 2 and any(p["equity"] > 0 for p in jpts):
+            series.append({"portfolio_id": None, "name": "매매일지", "market": "KR",
+                           "currency": "KRW", "kind": "journal", "points": jpts})
 
     return {"items": [
         {"date": r.snap_date.isoformat(), "total": r.total, "stock": r.stock,
