@@ -916,3 +916,12 @@
 - 문서: feature-backtest §12(결측 규칙 상세), feature-strategy-engine §5.4(초기 상태 문구).
 - Git commit: fix: audit hygiene — explicit data gaps, content fingerprint, cost bounds, as-of replay, consistent weights
 
+## [2026-09-12] docs | 감사 보고서 검토 의견 + A4·A7·A9 명세 확정 + QA 체크리스트 갱신 (사용자 지시 "권고 모두 진행" 마무리)
+
+- 검토 의견 `docs/kodex-linkage-audit-review-20260912.md`: 12개 발견 대조표(전부 사실 확인, A3 는 오류 아닌 정본 공백·A8 은 중간으로 재분류), 보탠 정량(실전 재구성 규칙을 백테스트에 적용 — 전술 이탈 18→0, 진입 35→81, 누적 −6.8%p), 후속 조치 PR 표(#201~#204), 명세 확정 결정, 남은 것(성과 검증·수동 QA·기존 로트 재태깅).
+- A4 명세 확정(feature-backtest §5.2): 운용보수 추가 차감 **유지** — 뜻은 '미모델 비용(스프레드·미체결·재투자 지연)의 보수적 대리치', 값만 TER 과 동일. 시장가격에 TER 이 반영돼 엄밀히 이중 계상이라는 감사 지적은 타당하나, 벤치마크 동일 차감으로 상대 비교 불변·회귀 KPI 규약 유지·수익률을 부풀리지 않는 방향이라 유지. 영향 8.6년 +3.6%p.
+- A7 명세 확정: 분배금 미모델(보수적)·레버리지 과세 단순화 유지, 실계좌 세후 인증에 사용 금지 명시. A9: 초기 prior Neutral·첫 평가일 전이 가능으로 확정(ASSUMPTIONS 2건 추가).
+- QA 체크리스트(`qa/kodex-linkage-audit-20260912.md`): A1·A2·A3·A4·A5·A6·A7·A8·A9·A10·A11·A12·테스트 공백 13항목 완료 표시(PR 번호), 미완 2항목(성과·수동 QA) 명시.
+- 테스트 결과: 문서만 — 직전 #204 기준 309 passed 유지.
+- Git commit: docs: audit review, spec decisions for fees/distributions/initial regime, QA checklist
+
