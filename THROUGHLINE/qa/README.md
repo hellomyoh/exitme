@@ -26,6 +26,8 @@
 
 ## QA 결과 기록 위치
 
+- [KODEX 연동 감사 후속 QA (2026-09-12)](kodex-linkage-audit-20260912.md): 실제 실행 명령과 미해결 실패 조건 A1~A12.
+
 - 실행 결과: [HISTORY.md](../HISTORY.md) (명령·통과/실패 요약). 진행 상태: [PROGRESS.md](../PROGRESS.md).
 
 ## 릴리즈 전 QA 절차

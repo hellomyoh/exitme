@@ -1,5 +1,14 @@
 # HISTORY.md
 
+## [2026-09-12] audit | KODEX 200·레버리지 연동 전략 검증
+
+- 기준: `45eb373` / v0.25.0. [감사 보고서](docs/kodex-linkage-audit-20260912.md), [명령·후속 QA](qa/kodex-linkage-audit-20260912.md). 앱 코드·전략·운영 데이터 변경 없음.
+- 주 에이전트 실행: `docker compose exec -T api python -m pytest -q tests/test_strategy_planner.py tests/test_strategy_backtest.py tests/test_indicators.py tests/test_bootstrap_entry.py` → **62 passed in 2.34s**.
+- 독립 Quant 실행: 같은 범위 + `tests/test_signals.py::test_truncated_backtest_final_plan_equals_full_run_plan` → **63 passed, 2 warnings in 2.93s**. 중복 포함으로 두 수를 합산하지 않음.
+- READ ONLY 실제 시세 백테스트: 2017-01-02~2026-09-10 각 2,374봉, 1억원. FULL 누적 +262.49%/CAGR 16.68%/MDD −21.67%, 레버리지 OFF +209.30%/14.48%/−18.58%. 비용·분배금 모델 한계 때문에 미래 수익·실전 세후 성과를 보증하지 않음.
+- 별도 반례: E 목표 1.10·실제 근사 노출 1.16·기존 전술 보유에서 주문 0건 재현. 실전 트랙 소실·익절 스냅샷·현금 예약·데이터 무결성 후속 조건 기록.
+- QA: 전체 API·브로커·UI·실계좌 검수 미수행. 감사만 완료, 결함 수정 미착수. 배포·실제 주문·push 없음.
+
 ## [2026-08-28] init | THROUGHLINE 프로젝트 초기화 (KICKOFF)
 
 - 작업 내용: SOURCES/REQUIREMENTS.md(+참고자료 3종) 기반 초기화. 횡단 계약·기능명세 6종·QA·docs·페르소나·ADR 6종 생성. 핵심 기능 2종은 병렬 서브에이전트 4기로 검토(증거: discussion/ 로그), 나머지는 역할극 검토.
