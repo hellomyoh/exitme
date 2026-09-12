@@ -404,3 +404,36 @@ def test_leverage_buys_respect_the_shared_cash_buffer():
     lev_buys_total = sum(20000 * o.qty for o in p1.orders if o.instrument == LEV and o.side == "buy")
     assert 0 < lev_buys_total and all_buys <= avail
 
+
+def test_total_leverage_cap_reduces_tactical_excess_when_e_falls():
+    """ADR-012 (감사 A3 반례): 총자산 1억, K200 8,400만, 레버 전략 700만·전술 450만+450만, E 1.30→1.10.
+    종전엔 목표 10% vs 보유 16% 인데 전략 트랙만 보느라 주문 0 — 이제 초과분(6%p > 밴드 5%p)을 목표까지 축소한다."""
+    m = mk_market(sigma_down=0.15, sigma_ref=0.13, sigma20=0.2)          # E = 0.5×0.2/0.15 + 0.5×0.13/0.15 = 1.10
+    lots = [Lot(K200, 1200, 70000, "core", None, 0), Lot(LEV, 350, 20000, "lev_strat", None, 0),
+            Lot(LEV, 225, 20000, "lev_tact1", None, 0), Lot(LEV, 225, 20000, "lev_tact2", None, 0)]
+    p = plan(I, m, mk_lev(), Regime.BULL, pf_with(0, lots), P)             # 레버 종가 20000 < EMA 21000 → 전술 이탈 아님
+    assert p.e_target == pytest.approx(1.10) and p.w_lev == pytest.approx(0.10)
+    cap = [o for o in p.orders if o.kind == "lev_cap"]
+    assert len(cap) == 1 and cap[0].side == "sell" and cap[0].otype == "market"
+    # 초과 6,000,000원 ÷ 20,000 = 300주 → 남는 보유 ≈ 500주 = 목표 1,000만원. E=1.10 이 부동소수라 floor 가 299 로 떨어질 수 있다
+    # (K200 축소 `int(excess/close)` 와 같은 내림 규약) — 1주 차이는 허용
+    assert abs(cap[0].qty - 300) <= 1
+    # 초과가 밴드 안이면 그대로 둔다 (E 1.30, 보유 30% = 목표)
+    m2 = mk_market()                                                        # E cap 1.30 → w_lev 0.30 → 목표 3,000만
+    lots2 = [Lot(K200, 1000, 70000, "core", None, 0), Lot(LEV, 1050, 20000, "lev_strat", None, 0),
+             Lot(LEV, 225, 20000, "lev_tact1", None, 0), Lot(LEV, 225, 20000, "lev_tact2", None, 0)]
+    p2 = plan(I, m2, mk_lev(), Regime.BULL, pf_with(0, lots2), P)
+    assert not [o for o in p2.orders if o.kind == "lev_cap"]
+
+
+def test_total_leverage_cap_counts_same_day_tactical_exit_and_strategic_sell():
+    """같은 날 계획된 전술 이탈·전략 매도를 먼저 반영한 뒤 남는 초과만 축소한다 — 매도 중복 금지 (QA A3)."""
+    m = mk_market(sigma_down=0.15, sigma_ref=0.13, sigma20=0.2)          # E 1.10 → 목표 레버 10%
+    lots = [Lot(K200, 1200, 70000, "core", None, 0), Lot(LEV, 350, 20000, "lev_strat", None, 0),
+            Lot(LEV, 225, 20000, "lev_tact1", None, 0), Lot(LEV, 225, 20000, "lev_tact2", None, 0)]
+    # 레버 종가가 EMA 위 → 전술 450주 이탈 매도가 먼저 계획됨 → 남는 전략 350주 = 700만 = 목표 → 상한 축소 없음
+    p = plan(I, m, mk_lev(close=21500.0, ema20=21000.0), Regime.BULL, pf_with(0, lots), P)
+    kinds = [o.kind for o in p.orders if o.instrument == LEV and o.side == "sell"]
+    assert "lev_tact_exit" in kinds and "lev_cap" not in kinds
+    assert sum(o.qty for o in p.orders if o.instrument == LEV and o.side == "sell") == 450
+

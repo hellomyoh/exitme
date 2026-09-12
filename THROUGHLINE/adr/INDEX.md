@@ -14,3 +14,4 @@
 | [ADR-009](009-unattended-single-execution.md) | 무인 매매 단일 실행 — 계좌 플래그만 참조, 09:01 계산·발주·동결, 취소 버튼, 감시 | Accepted | 외부 연동·상태관리·배포(헬스체크) | feature-portfolio.md, docs/auto-execution-20260906.md |
 | [ADR-010](010-bootstrap-entry.md) | 소량 진입 부트스트랩 — 시작 후 10거래일, 목표 미달분 15%(하락장 7.5%) 종가 지정가 | Accepted | 전략·도메인 | feature-strategy-engine.md, feature-portfolio.md |
 | [ADR-011](011-manual-order.md) | 앱에서 직접 주문 — 발주 경로에 수동(API) 주문 추가, mode=manual 로 무인과 같은 취소·체결 확정 | Accepted | 외부 연동·상태 기계 | feature-portfolio.md |
+| [ADR-012](012-leverage-total-cap.md) | 총 레버리지 상한 — 전술 트랙도 목표 노출에 종속(정본 §7 개정, 감사 A3). 역사 표본 발동 0회의 안전 경계 | Accepted | 전략·도메인 | feature-strategy-engine.md |

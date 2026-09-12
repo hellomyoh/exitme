@@ -50,7 +50,7 @@ def sell_tag(order_kind: str | None, order_price: int | None) -> tuple[str | Non
         return None, None
     if order_kind == "tp":
         return "tp", int(order_price) if order_price else None
-    if order_kind in ("reduce", "lev_strat", "lev_tact_exit", "lev_liq"):
+    if order_kind in ("reduce", "lev_strat", "lev_tact_exit", "lev_liq", "lev_cap"):
         return order_kind, None
     return None, None
 
@@ -61,7 +61,7 @@ def _prefers(sell_kind: str | None, tp_price: int | None):
         return lambda l: l.get("tp_price") == tp_price
     if sell_kind == "lev_strat":
         return lambda l: l.get("lot_kind") == "lev_strat"
-    if sell_kind == "lev_tact_exit":
+    if sell_kind in ("lev_tact_exit", "lev_cap"):     # 상한 축소도 전술 먼저 (ADR-012) — 나머지는 FIFO(전략)
         return lambda l: l.get("lot_kind") in TACTICAL
     return None
 

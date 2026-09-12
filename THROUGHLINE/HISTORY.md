@@ -894,3 +894,12 @@
 - 문서: feature-strategy-engine §5.5 현금 버퍼 문장 확장.
 - Git commit: fix: leverage buys share the K200 cash reservation
 
+## [2026-09-12] strategy | 총 레버리지 상한 — 전술 트랙도 목표 노출에 종속 (ADR-012, 감사 A3, 사용자 지시 "권고 모두 진행")
+
+- 배경: 정본 §7 전술 트랙은 EMA 회귀로만 이탈해, 전술 로트를 든 채 E 가 내려가면 총 레버리지가 목표(w_LEV)를 밴드 이상 넘어도 주문이 없었다(감사 반례 재현: E 1.30→1.10, 보유 16% vs 목표 10%, 주문 0). 코드는 정본대로였으므로 정본의 공백 — 개정은 ADR-012 와 feature 명세가 가진다(SOURCES 불변).
+- 작업 내용: 플래너 마지막 단계에 총 상한 블록 — 오늘 계획된 레버 매수·매도(전략 조정·전술 이탈)를 반영한 뒤에도 총 보유가 `w_LEV×equity×(2÷배율)` 을 밴드(5%) 이상 넘으면 초과분을 목표까지 시장가 축소(주문 종류 `lev_cap`, 수량 내림). 귀속은 전술 → 전략 순 — 실행기(backtest.py 2단 매도)와 실전 재구성(lots.consume_sell) 동일. 표시 이름(activity·web 2곳)·챗봇 요약 추가.
+- 영향 측정(1억, 2017~2026, 전 구간 + 시작일 89개 1년 창): **발동 0회 — 누적·CAGR·MDD·샤프·89개 창 전부 불변**(+261.68% / 16.65% / −21.86% / 1.027). 전술 예산(≤ 총자산 9%)과 전략 밴드 리밸런싱이 초과를 흡수하고, 초과가 커질 국면엔 전술 이탈·레짐 이탈이 먼저 온다. 성과 개선이 아니라 표본 밖 국면용 안전 경계로 채택.
+- 테스트 결과: **301 passed, 294 warnings in 79.57s (0:01:19)** (신규 3 — 반례 → 299~300주 축소(E=1.10 부동소수 floor 허용), 밴드 안 무발동, 같은 날 전술 이탈 반영 시 무중복 · lots 귀속 순서 1). `tsc --noEmit` 무오류.
+- 문서: ADR-012 신설·INDEX, feature-strategy-engine §5.5 규칙 + §15 이력, chat.py 전략 요약.
+- Git commit: strategy: cap total leverage so tactical lots respect the exposure target (ADR-012)
+

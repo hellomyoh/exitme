@@ -61,7 +61,7 @@ const krMarketOpen = () => {
 
 const ORDER_KIND_KO: Record<string, string> = {
   boot: "초기 진입", grid1: "그리드 1차", grid2: "그리드 2차", grid3: "그리드 3차", tp: "익절", reduce: "축소",
-  lev_strat: "레버 전략", lev_tact1: "레버 전술1", lev_tact2: "레버 전술2", lev_tact_exit: "전술 이탈", lev_liq: "레버 청산",
+  lev_strat: "레버 전략", lev_tact1: "레버 전술1", lev_tact2: "레버 전술2", lev_tact_exit: "전술 이탈", lev_cap: "레버 상한 축소", lev_liq: "레버 청산",
   tf_entry: "추세 진입", tf_exit: "추세 이탈",
   ltm_entry: "LTM 진입", ltm_exit: "LTM 이탈(현금)", ltm_lever_on: "레버리지 ON", ltm_lever_off: "레버리지 OFF", ltm_rebal: "LTM 리밸런스",
 };
@@ -91,6 +91,7 @@ function orderCondDesc(o: OrderRow, ind: Record<string, number> | undefined): st
     lev_tact1: "레버리지 눌림목 1차 (EMA20 −0.75×ATR 이탈)",
     lev_tact2: "레버리지 눌림목 2차 (EMA20 −1.5×ATR 이탈)",
     lev_tact_exit: "레버리지 전술 물량 이탈 (EMA20 회복)",
+    lev_cap: "총 레버리지가 목표+밴드를 넘어 초과분 시장가 축소 (전술 → 전략 순)",
     lev_liq: "레버리지 전량 청산 (레짐 이탈/변동성 초과)",
     tf_entry: "종가가 MA200 위 — 다음날 시가 전량 매수",
     tf_exit: "종가가 MA200 −2% 관통 — 다음날 시가 전량 매도",

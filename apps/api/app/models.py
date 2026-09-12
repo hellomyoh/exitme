@@ -271,7 +271,7 @@ class TradeTransaction(TimestampMixin, Base):
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     broker_ref: Mapped[str | None] = mapped_column(Text)  # 증권사 체결 식별자 — 자동 가져오기 멱등 (0016)
     # 전략 태그 (0027, 감사 A1·A2): 매수 = 로트 종류(grid|core|lev_strat|lev_tact1|lev_tact2) + 익절가 스냅샷,
-    # 매도 = 종류(tp|reduce|lev_strat|lev_tact_exit|lev_liq) + 익절 지정가(귀속 로트 식별). NULL = 태그 없음 → 근사.
+    # 매도 = 종류(tp|reduce|lev_strat|lev_tact_exit|lev_cap|lev_liq) + 익절 지정가(귀속 로트 식별). NULL = 태그 없음 → 근사.
     lot_kind: Mapped[str | None] = mapped_column(Text)
     tp_price: Mapped[int | None] = mapped_column(EncryptedBigInt)     # 🔒
 
