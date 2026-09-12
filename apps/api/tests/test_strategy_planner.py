@@ -378,3 +378,29 @@ def test_grid_cap_moves_ladder_up_on_volatile_days():
     assert [round(70000 * (1 - g_new * k)) for k in (1, 2, 3)] == [68250, 66500, 64750]
     assert [round(70000 * (1 - g_old * k)) for k in (1, 2, 3)] == [67200, 64400, 61600]
 
+
+def test_leverage_buys_respect_the_shared_cash_buffer():
+    """감사 A8 (2026-09-12): 현금 1억·E=1.30·전술 1·2차 동시 — 종전엔 K200 그리드 + 레버리지 매수 명목이 99,910,400원으로
+    버퍼 반영 가용액 99,500,000원을 410,400원 넘었다. 두 종목이 한 지갑(cash_left)을 쓰면 넘지 않는다."""
+    m = mk_market()                                          # BULL, E_raw 1.5 → cap 1.30
+    lev = mk_lev(close=20000.0, ema20=21000.0, atr=500.0)    # 20000 < 21000 − 750 → 전술 1·2차 동시
+    p = plan(I, m, lev, Regime.BULL, pf_with(100_000_000), P)
+    assert p.e_target == pytest.approx(1.30)
+    buys = [o for o in p.orders if o.side == "buy"]
+    total = sum((o.price or 20000) * o.qty for o in buys)
+    assert total <= 100_000_000 * (1 - P.cash_buffer)
+    # 그리드(먼저 계산) 는 그대로 — 줄어드는 건 뒤에 오는 레버리지 매수만
+    assert [o.price for o in buys if o.kind.startswith("grid")] == [68950, 67900, 66850]
+    lev_buys = {o.kind: o.qty for o in buys if o.instrument == LEV}
+    assert set(lev_buys) == {"lev_strat", "lev_tact1", "lev_tact2"} and all(q > 0 for q in lev_buys.values())
+    # 현금이 얇으면 레버리지 매수도 가용 현금 안으로 줄고, 다 쓰면 다음 줄은 나오지 않는다 (종전엔 현금과 무관하게 수량이 나왔다).
+    # K200 은 목표 이하(축소 매도 없음), 전략 트랙은 초과(매도 — 그 대금은 매수 재원으로 세지 않는다: 보수적)
+    lots = [Lot(K200, 700, 70000, "core", None, 0), Lot(LEV, 1050, 20000, "lev_strat", None, 0)]
+    p1 = plan(I, m, lev, Regime.BULL, pf_with(1_000_000, lots), P)
+    eq = 700 * 70000 + 1050 * 20000 + 1_000_000
+    avail = 1_000_000 - eq * P.cash_buffer
+    assert not [o for o in p1.orders if o.kind == "reduce"]
+    all_buys = sum((o.price or 20000) * o.qty for o in p1.orders if o.side == "buy")
+    lev_buys_total = sum(20000 * o.qty for o in p1.orders if o.instrument == LEV and o.side == "buy")
+    assert 0 < lev_buys_total and all_buys <= avail
+
