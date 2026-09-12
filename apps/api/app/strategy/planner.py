@@ -50,7 +50,7 @@ class Order:
     otype: str       # limit | market
     qty: int
     price: int | None   # limit 지정가 (market 은 None)
-    kind: str        # boot | grid1|grid2|grid3 | tp | reduce | lev_strat | lev_tact1 | lev_tact2 | lev_liq
+    kind: str        # boot | grid1|grid2|grid3 | tp | reduce | lev_strat | lev_tact1 | lev_tact2 | lev_tact_exit | lev_cap | lev_liq
     lot_id: int | None = None  # tp 매도의 대상 로트 인덱스
 
 
@@ -330,6 +330,21 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
             qty = sum(l.qty for l in lev_lots if l.kind in ("lev_tact1", "lev_tact2"))
             if qty > 0:
                 orders.append(Order(LEV, "sell", "market", qty, None, "lev_tact_exit"))
+
+    # ── 총 레버리지 상한 (ADR-012, 감사 A3, 2026-09-12): 전술 로트는 EMA 회귀로만 나가므로 E 가 내려가면
+    #    전략 트랙을 목표에 맞춰도 총 보유가 목표(w_lev×equity)를 밴드 이상 넘을 수 있었다(E 1.30→1.10 반례: 16% vs 10%, 주문 0).
+    #    오늘 계획된 레버리지 매수·매도를 반영한 뒤에도 초과분이 밴드를 넘으면 시장가로 목표까지 축소 — 전술 → 전략 순
+    #    (실행기 backtest.py·실전 재구성 lots.py 가 같은 순서로 귀속). E ≤ 1 전량 청산·레짐 이탈 청산(force_liq)과는 별개 경계.
+    if f.f4_leverage and regime is Regime.BULL and not force_liq and w_lev > 0 and lev_lots:
+        lev_scale_cap = 2.0 / params.lev_multiple
+        lev_target_total = w_lev * equity * lev_scale_cap
+        held = sum(l.qty for l in lev_lots)
+        planned = sum((o.qty if o.side == "buy" else -o.qty) for o in orders if o.instrument == LEV)
+        excess = (held + planned) * lev_close - lev_target_total
+        if excess > params.band * equity:
+            qty = min(int(excess / lev_close), held + max(planned, 0))
+            if qty > 0:
+                orders.append(Order(LEV, "sell", "market", qty, None, "lev_cap"))
 
     return Plan(
         "OK", regime, e, w_200, w_lev, tuple(orders), gap_cancel_below,

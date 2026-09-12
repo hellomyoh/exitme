@@ -322,3 +322,15 @@ def test_import_fills_tags_from_matching_broker_order(monkeypatch):
     assert by_ref["G1"] == ("grid", round_tick(68900 * 1.015, 5, up=True))   # 체결가 기준 익절가 (지정가 아닌 실제 체결가)
     assert by_ref["T2"] == ("lev_tact2", None)
     assert by_ref["HTS9"] == (None, None)                                       # 우리 주문이 아님 → 태그 없음
+
+
+def test_consume_sell_cap_reduction_takes_tactical_lots_first():
+    """lev_cap 매도 귀속 (ADR-012): 전술 로트를 먼저, 부족분은 전략 로트 — backtest.py 체결 순서와 동일."""
+    at = datetime(2026, 9, 5, 15, 30, tzinfo=KST)
+    lots = _rows((700, 20500, "lev_strat", None, 0), (225, 20000, "lev_tact1", None, 1), (225, 20000, "lev_tact2", None, 1))
+    assert sell_tag("lev_cap", None) == ("lev_cap", None)
+    consume_sell(lots, 1, 300, at, "lev_cap")
+    assert [(l["lot_kind"], l["qty"]) for l in lots] == [("lev_strat", 700), ("lev_tact1", 0), ("lev_tact2", 150)]
+    consume_sell(lots, 1, 400, at, "lev_cap")            # 전술 150 소진 후 전략 250
+    assert [(l["lot_kind"], l["qty"]) for l in lots] == [("lev_strat", 450), ("lev_tact1", 0), ("lev_tact2", 0)]
+

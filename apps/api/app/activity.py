@@ -30,7 +30,7 @@ TX_KO = {"buy": "매수", "sell": "매도", "deposit": "입금", "withdraw": "�
 SIDE_KO = {"buy": "매수", "sell": "매도"}
 ORDER_KIND_KO = {"grid1": "그리드 1차", "grid2": "그리드 2차", "grid3": "그리드 3차", "tp": "익절", "reduce": "축소",
                  "lev_strat": "레버 전략", "lev_tact1": "레버 전술1", "lev_tact2": "레버 전술2", "lev_tact_exit": "전술 이탈",
-                 "lev_liq": "레버 청산", "tf_entry": "추세 진입", "tf_exit": "추세 이탈", "core": "코어"}
+                 "lev_cap": "레버 상한 축소", "lev_liq": "레버 청산", "tf_entry": "추세 진입", "tf_exit": "추세 이탈", "core": "코어"}
 
 
 def _iso(dt: datetime) -> str:

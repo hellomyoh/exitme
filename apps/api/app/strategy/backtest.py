@@ -221,6 +221,16 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
                 open_px = lo_ if od.instrument == LEV else o_
                 px = _fill_market(open_px, "sell", params.slippage_market)
                 kinds = None
+                if od.kind == "lev_cap":
+                    # 총 레버리지 상한 축소 (ADR-012): 전술 로트 먼저, 부족분은 전략 로트 — 실전 재구성(lots.consume_sell)과 같은 순서
+                    tact_qty = sum(l.qty for l in pf.lots if l.instrument == LEV and l.kind in ("lev_tact1", "lev_tact2"))
+                    q1 = min(od.qty, tact_qty)
+                    if q1 > 0:
+                        pf.cash += ledger.sell(pf, LEV, q1, px, nxt, kinds=("lev_tact1", "lev_tact2"))
+                    if od.qty - q1 > 0:
+                        pf.cash += ledger.sell(pf, LEV, od.qty - q1, px, nxt, kinds=("lev_strat",))
+                    fills.append(Fill(dates[nxt], LEV, "sell", od.kind, round(px), od.qty))
+                    continue
                 if od.kind == "lev_tact_exit":
                     kinds = ("lev_tact1", "lev_tact2")
                 elif od.kind == "lev_strat":
