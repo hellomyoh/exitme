@@ -473,6 +473,27 @@ class PortfolioSnapshot(Base):
     currency: Mapped[str] = mapped_column(Text, nullable=False)                # KRW | USD
 
 
+class JournalSnapshot(Base):
+    """매매일지 단위 일별 스냅샷 (0028, 2026-09-12) — 자산 추이의 일지별 선.
+
+    포트의 portfolio_snapshots 와 같은 자리. value 는 **총자산에 넣는 평가액**(실전매매와 겹쳐 제외된 종목 제외,
+    시세가 없으면 취득원가) 이고 counted 는 그날 총자산 합산 대상이었는지다.
+    approx = 소급 재계산분 — 기록과 종가로 되살린 값이라 당시의 중복 제외 상태까지는 복원하지 못한다.
+    """
+
+    __tablename__ = "journal_snapshots"
+    __table_args__ = (UniqueConstraint("journal_id", "snap_date", name="uq_journal_snapshots_jid_date"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    journal_id: Mapped[int] = mapped_column(
+        ForeignKey("manual_journals.id", ondelete="CASCADE"), nullable=False)
+    snap_date: Mapped[date] = mapped_column(Date, nullable=False)
+    value: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)   # 🔒
+    cost: Mapped[int] = mapped_column(EncryptedBigInt, nullable=False)    # 🔒
+    counted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    approx: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
 class ManualAsset(TimestampMixin, Base):
     """기타 자산 수동 등록 — 채권/펀드/금/코인/부동산 등 (feature-dashboard §5)."""
 

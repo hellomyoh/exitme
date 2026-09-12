@@ -100,8 +100,9 @@ type JournalAsset = { excluded?: { symbol: string; code: string | null; value: n
   value?: number; priced?: boolean; unrealized?: number | null; unrealized_pct?: number | null;   // 현재가 평가 (2026-09-06)
   day_change?: number | null; day_change_pct?: number | null; day_missing?: string[]; day_change_asof?: string | null;  // 오늘 손익 (2026-09-10)·기준일 (2026-09-12)
   holdings: { symbol: string; qty: number; cost: number; price?: number | null; eval?: number | null }[]; entries: number; counted: boolean; note: string | null };
-type TrendSeries = { portfolio_id: number | null; name: string; market: string; currency: string;
-  kind?: string;   // "portfolio" | "journal" (2026-09-10) — 매매일지는 합계 한 줄
+type TrendSeries = { portfolio_id: number | null; journal_id?: number; name: string; market: string; currency: string;
+  kind?: string;   // "portfolio" | "journal" (2026-09-10) — 매매일지는 0028 부터 일지별 한 줄
+  approx?: boolean;   // 소급 재계산분 포함 (기록·종가로 되살린 값, 2026-09-12)
   points: { date: string; equity: number }[] };
 type TrendKind = "total" | "port" | "journal";
 type TrendHandle = { name: string; color: string; kind: TrendKind;
@@ -145,6 +146,7 @@ export default function DashboardPage() {
   // 범례에서 고른 계열 — 그래프에 이름·마지막 값을 띄우고 나머지는 흐리게 (2026-09-10 지시)
   const [trendPick, setTrendPick] = useState<string | null>(null);
   const [trendTip, setTrendTip] = useState<TrendTip | null>(null);
+  const [trendApprox, setTrendApprox] = useState(false);   // 매매일지 소급분 포함 여부 (2026-09-12)
   const trendRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
   const trendSeries = useRef<TrendHandle[]>([]);
@@ -180,7 +182,10 @@ export default function DashboardPage() {
 
   // 포트별 다선 색 — 총자산(주황 면적) 외 KRW 포트 라인 (feature-dashboard §8, ADR-008)
   const SERIES_COLORS = ["#2563eb", "#059669", "#7c3aed", "#db2777", "#0891b2", "#ca8a04"];
-  const JOURNAL_COLOR = "#475569";   // 매매일지는 성격이 달라 회청색 파선 (2026-09-10)
+  // 매매일지는 성격이 달라 파선 (2026-09-10). 일지별 선이 되면서(0028, 2026-09-12) 색도 나눈다 —
+  // 실전매매 팔레트와 겹치지 않는 회청 계열
+  // 앞 두 색이 실전매매 팔레트(파랑·초록)와 확실히 갈리도록 회청→장미 순. 청록은 초록과 붙어 보여 뒤로 뺐다
+  const JOURNAL_COLORS = ["#475569", "#be123c", "#a21caf", "#a16207", "#0f766e"];
 
   const loadTrend = useCallback(async (r: string) => {
     const res = await apiFetch(`/portfolio/trend?range_=${r}`);
@@ -214,10 +219,10 @@ export default function DashboardPage() {
     handles.push({ name: "총자산", color: "#f97316", kind: "total", api: total });
     // 실전매매 포트별 라인 + 매매일지 합계 — KRW 만 (US 는 센트 단위라 환율 도입 전 제외, ASSUMPTIONS 2026-09-02)
     const legend: { name: string; color: string }[] = [{ name: "총자산", color: "#f97316" }];
-    let ci = 0;
+    let ci = 0, ji = 0;
     for (const sr of (body.series ?? []).filter((x) => x.currency === "KRW" && x.points.length >= 2)) {
       const isJournal = sr.kind === "journal";
-      const color = isJournal ? JOURNAL_COLOR : SERIES_COLORS[ci++ % SERIES_COLORS.length];
+      const color = isJournal ? JOURNAL_COLORS[ji++ % JOURNAL_COLORS.length] : SERIES_COLORS[ci++ % SERIES_COLORS.length];
       const line = chart.addSeries(LineSeries, {
         color, lineWidth: isJournal ? 2 : 1, priceLineVisible: false, lastValueVisible: false,
         lineStyle: isJournal ? LineStyle.Dashed : LineStyle.Solid,
@@ -227,6 +232,7 @@ export default function DashboardPage() {
       legend.push({ name: sr.name, color });
     }
     trendSeries.current = handles;
+    setTrendApprox((body.series ?? []).some((x) => x.kind === "journal" && x.approx));
     setTrendPick(null);
     setTrendLegend(legend.length > 1 ? legend : []);
     // 커서가 가리키는 날짜의 계열별 값 (dataviz: 선·면 차트는 크로스헤어 읽기를 기본으로 둔다)
@@ -416,6 +422,7 @@ export default function DashboardPage() {
               })}
               <span className="ml-1 text-[11.5px] text-faint">
                 {trendPick ? "다시 누르면 전체 보기" : "항목을 누르면 그 선만 강조합니다"}
+                {trendApprox && " · 매매일지 과거 구간은 기록·종가로 되살린 근사치"}
               </span>
             </div>
           )}
