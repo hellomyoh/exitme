@@ -319,7 +319,7 @@ def test_core_lot_gets_tp_on_transition_day():
 
 
 def test_strategic_track_enters_at_small_wlev():
-    """검증 ①④: 전략 트랙 신규 진입은 밴드 예외 — 소액 w_lev 에서도 70:30 유지."""
+    """검증 ①④: 전략 트랙 신규 진입은 밴드 예외 — 소액 w_lev 에서도 전략:전술 분할 유지."""
     m = mk_market(sigma_down=0.118181, sigma_ref=0.118181)  # E>1 — 신규 진입 밴드 예외 확인
     p = plan(I, m, mk_lev(close=20000.0, ema20=21000.0, atr=500.0), Regime.BULL, pf_with(1e8), P)
     kinds = {o.kind for o in p.orders if o.instrument == LEV and o.side == "buy"}
