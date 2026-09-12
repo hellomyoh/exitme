@@ -1,5 +1,24 @@
 # HISTORY.md
 
+## [2026-09-12] audit | RAVG v2.5 체결률·수익률 수치 검증
+
+- 기준 `2591efa`(제품 `45eb373`). [보고서](docs/fill-rate-study-20260912.md), [QA](qa/fill-rate-study-20260912.md), [집계 JSON](qa/fill-rate-results-20260912.json), 독립 실행 `apps/api/scripts/fill_rate_audit.py` 추가. 제품 전략·설정·실주문 변경 없음.
+- 실행: `docker compose exec -T api python -m scripts.fill_rate_audit --windows --sensitivity` → 8변형·87개 252거래일 창·비용 민감도 완료(exit 0). 수량/금액 지표 추가 후 옵션 없는 전 구간 재실행(exit 0). 비용 전부 0인 4변형도 별도 실행 완료.
+- 자체 검증: 기본 wrapper 전체 결과 동일, 1,943개 그리드 지정가 일치, 매수 사유 합계 2,046=294+1,702+25+25. READ ONLY 시세 조회만 수행.
+- 독립 QA: `docker compose exec -T api pytest -q tests/test_indicators.py tests/test_strategy_planner.py tests/test_strategy_backtest.py tests/test_bootstrap_entry.py tests/test_signals.py::test_truncated_backtest_final_plan_equals_full_run_plan` → **63 passed, 2 warnings in 3.10s**.
+- 최종 재검증: 주 에이전트가 같은 테스트를 `python -m pytest -q`로 실행 → **63 passed, 2 warnings in 3.21s**(중복). 최종 연구 스크립트 `--sensitivity` 재실행(exit 0), 전 구간·비용 결과 28개 레코드가 저장 JSON과 동일. 87창 루프는 최종 재실행하지 않음(로직 불변).
+- 결론: 체결률 상승이 수익 개선을 보장하지 않음. 현행→전일 종가 지정가 K200 주문선 체결률11.57→73.76%, CAGR16.68→15.87%, MDD−21.67→−28.11%. 비중첩 8창 일부 평균은 반대 방향이므로 보편적 열등·최적성은 주장하지 않음.
+- 범위: 전체 브로커/UI·실계좌 QA 미수행. 신규 미사용 기간·현실 비용/분배금·실전 상태 결함 수정 후 재검증 필요. push·배포 없음.
+
+## [2026-09-12] audit | KODEX 200·레버리지 연동 전략 검증
+
+- 기준: `45eb373` / v0.25.0. [감사 보고서](docs/kodex-linkage-audit-20260912.md), [명령·후속 QA](qa/kodex-linkage-audit-20260912.md). 앱 코드·전략·운영 데이터 변경 없음.
+- 주 에이전트 실행: `docker compose exec -T api python -m pytest -q tests/test_strategy_planner.py tests/test_strategy_backtest.py tests/test_indicators.py tests/test_bootstrap_entry.py` → **62 passed in 2.34s**.
+- 독립 Quant 실행: 같은 범위 + `tests/test_signals.py::test_truncated_backtest_final_plan_equals_full_run_plan` → **63 passed, 2 warnings in 2.93s**. 중복 포함으로 두 수를 합산하지 않음.
+- READ ONLY 실제 시세 백테스트: 2017-01-02~2026-09-10 각 2,374봉, 1억원. FULL 누적 +262.49%/CAGR 16.68%/MDD −21.67%, 레버리지 OFF +209.30%/14.48%/−18.58%. 비용·분배금 모델 한계 때문에 미래 수익·실전 세후 성과를 보증하지 않음.
+- 별도 반례: E 목표 1.10·실제 근사 노출 1.16·기존 전술 보유에서 주문 0건 재현. 실전 트랙 소실·익절 스냅샷·현금 예약·데이터 무결성 후속 조건 기록.
+- QA: 전체 API·브로커·UI·실계좌 검수 미수행. 감사만 완료, 결함 수정 미착수. 배포·실제 주문·push 없음.
+
 ## [2026-08-28] init | THROUGHLINE 프로젝트 초기화 (KICKOFF)
 
 - 작업 내용: SOURCES/REQUIREMENTS.md(+참고자료 3종) 기반 초기화. 횡단 계약·기능명세 6종·QA·docs·페르소나·ADR 6종 생성. 핵심 기능 2종은 병렬 서브에이전트 4기로 검토(증거: discussion/ 로그), 나머지는 역할극 검토.
@@ -852,4 +871,17 @@
 - 적용 범위: 사용자 설정은 기본값과 다른 값만 저장하므로 `grid_max` 를 직접 지정한 사용자가 없으면 전원 즉시 2.5% 로 바뀐다(개발 DB 확인 — 지정한 사용자 0명). 주문표는 요청 시점에 계산돼 배치를 기다리지 않는다. **다만 백테스트에서 전환한 포트는 `params.algo` 에 공식이 동결돼 있어(2026-09-05 결정) 그 포트만 종전 4.0% 를 계속 쓴다** — 서버에 그런 포트가 있으면 별도 처리가 필요하다(개발 DB 에는 없음).
 - 테스트 결과: **288 passed**(신규 2건 — 상한 2.5% 클립·하한 0.8% 불변, 고변동일 사다리가 68,250/66,500/64,750 로 올라옴), `tsc --noEmit` 무오류. 최신 봉(2026-09-10, 종가 112,150) 기준 계산값 3.85% → Grid 2.50% 로 클립되는 것을 실제 DB 로 확인.
 - Git commit: strategy: cap the grid step at 2.5% instead of 4.0%
+
+## [2026-09-12] fix | 실전 로트 전략 태그 — 재구성이 백테스트와 같은 규칙을 따른다 (감사 A1·A2, 사용자 지시 "권고 모두 진행")
+
+- 문제(감사 재현): 실전 주문표는 매일 저녁 원장에서 로트를 다시 만들며 전략 정보를 버렸다. 레버리지 로트는 전부 `lev_strat` 로(A1) — 실전 규칙을 백테스트에 넣으면 전술 진입 35→81건, 전술 이탈 18→0건. K200 익절가는 매일 최근 종가×(1+오늘 Grid) 로 이동(A2) — grid 체결 220건 중 22% 가 다음날 원가 아래 익절가. 명세 §5.6 "체결 시점 스냅샷 고정, 매일 재계산 금지" 위반. 근본 원인은 하나: 원장에 로트 종류·익절가를 저장하지 않음.
+- 작업 내용
+  - 마이그레이션 0027: `trade_transactions.lot_kind·tp_price(🔒)`, `broker_orders.plan_grid·plan_regime`. 기존 행은 NULL → 종전 근사 유지.
+  - `app/lots.py` 신설: `lot_tag`(백테스트 체결 블록과 같은 규칙 — 상승장 계획이면 core, 아니면 grid + 체결가×(1+계획일 Grid) 올림, 레버리지는 주문 종류가 로트 종류), `sell_tag`(익절은 지정가로 로트 귀속), `consume_sell`(익절 → 그 익절가 로트, 전략·전술 매도 → 그 종류 로트 먼저, 나머지 FIFO — `ledger.sell(lot=/kinds=)` 동일), `rebuild_lots`(태그에서 출발해 체결일 이후 레짐 전환만 재생 — `apply_regime_conversion` 동일).
+  - 태그 원천: 무인(`autoexec`)·재등록·예약(`broker.reserve`)·직접 주문(`manual`) 발주 행에 계획 Grid·레짐 저장(주문표 스냅샷 payload 에 `grid` 추가). 체결 가져오기(`import_fills`, 마감 후 배치 포함)가 주문번호로 `broker_orders` 를 찾아 태그. 화면 '체결 등록'은 줄의 종류·Grid·레짐을 기억해 종목·방향이 그대로일 때만 `strategy_kind·plan_grid·plan_regime·plan_price` 를 동봉 → `POST /positions` 가 태그 생성(국내 포트 buy/sell 만).
+  - 재구성(`signals._state_before`·`_portfolio_orders`)이 태그를 쓰고 매도를 귀속대로 소진. `final_lots` 에 kind·tp_price 추가(검증용).
+- 테스트 결과: **297 passed**(신규 9 — 태그 규칙 4, 재구성·전환 재생 2, **동일성 1**: 합성 700봉 백테스트의 체결을 태그 원장으로 넣어 재구성 → 최종 로트(종류·익절가·수량·단가)와 다음 주문표가 백테스트와 비트 동일, 체결 등록 API 태그 저장 1, 체결 가져오기 주문번호 태그 1). `tsc --noEmit` 무오류. 헤드리스: '체결 등록' → 등록 요청을 가로채 확인 — `strategy_kind=boot, plan_grid=0.025, plan_regime=NEUTRAL` 동봉(실제 등록은 하지 않음). 개발 DB `alembic upgrade head` → 0027.
+- 한계: 태그 없는 로트(시딩·HTS 직접 주문·구형 행)는 종전 근사 그대로 — 태그 로트가 쌓일수록 수렴(ASSUMPTIONS 2026-09-12). 실전 체결가(정수)와 백테스트 체결가(실수)의 익절가는 호가 반올림에서 최대 1틱 다를 수 있다.
+- 문서: feature-strategy-engine §5.6, feature-portfolio(API·화면·가져오기), ASSUMPTIONS(2026-08-28 근사 범위 축소 + 2026-09-12 항목).
+- Git commit: fix: persist strategy lot tags so the live order sheet rebuilds the backtest's state
 

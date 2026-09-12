@@ -102,18 +102,13 @@ def _state_before(session: Session, pid: int, cutoff: date | datetime) -> tuple[
         elif t.kind == "buy":
             cash -= t.qty * t.price
             lots.append({"instrument_id": t.instrument_id, "qty": t.qty,
-                         "price": t.price, "opened_at": t.executed_at})
+                         "price": t.price, "opened_at": t.executed_at,
+                         "lot_kind": t.lot_kind, "tp_price": t.tp_price})   # 전략 태그 (0027) — 없으면 None
         elif t.kind == "sell":
             cash += t.qty * t.price
-            remaining = t.qty
-            for l in lots:
-                if remaining <= 0:
-                    break
-                if l["instrument_id"] != t.instrument_id or l["opened_at"] > t.executed_at:
-                    continue
-                take = min(l["qty"], remaining)
-                l["qty"] -= take
-                remaining -= take
+            # 귀속 매도 (감사 A2): 익절은 그 익절가의 로트, 전략·전술 매도는 그 종류의 로트를 먼저 — 나머지 FIFO (lots.py)
+            from app.lots import consume_sell
+            consume_sell(lots, t.instrument_id, t.qty, t.executed_at, t.lot_kind, t.tp_price)
             lots = [l for l in lots if l["qty"] > 0]
     return lots, cash
 
@@ -191,7 +186,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
 
     from app.backtests import load_aligned_bars
     from app.models import Instrument, PositionLot, TradePortfolio, TradeTransaction
-    from app.strategy.planner import K200, LEV, Lot, Portfolio, grid_ratio, plan, prepare
+    from app.strategy.planner import K200, LEV, Portfolio, grid_ratio, plan, prepare
     from app.strategy.params import round_tick
     from app.strategy.regime import Regime
 
@@ -257,29 +252,29 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
     # 09:00 전 등록(입출금·체결)은 즉시 반영, 09:01 실행기가 같은 기준으로 발주하므로 HTS 주문장 = 화면. 이후 등록은 다음 주문표부터.
     cutoff = freeze_at(exec_day) if pf_row.market == "KR" else exec_day
     lot_rows, cash = _state_before(session, pid, cutoff)
-    lots: list[Lot] = []
     qty_200 = qty_lev = 0
     SUPPORTED = ({"QQQ", "QLD", "TQQQ"} if pf_row.market == "US"
                  else {"069500", "102110", "122630"})
     LEV_CODES = {"122630", "QLD", "TQQQ"}
+    leg_by_inst: dict[int, str] = {}
     for l in lot_rows:
         code = session.get(Instrument, l["instrument_id"]).code
         if code not in SUPPORTED:
             from fastapi import HTTPException
             raise HTTPException(status_code=409,
                                 detail=f"전략 대상 외 종목({code}) 보유 — 이 포트 기준 주문표를 계산할 수 없습니다")
+        leg_by_inst[l["instrument_id"]] = LEV if code in LEV_CODES else K200
         if code in LEV_CODES:
-            lots.append(Lot(LEV, l["qty"], l["price"], "lev_strat", None, 0))
             qty_lev += l["qty"]
         else:  # 1배 주력(069500/102110/QQQ) → 200 레그
-            if regime is Regime.BULL and params.flags.f1_no_tp_in_bull:
-                lots.append(Lot(K200, l["qty"], l["price"], "core", None, 0))
-            else:
-                # 익절 기준가 = 최근 종가 × (1+오늘 Grid) — 정본 §5.6 코어 편입 규칙 준용.
-                # 평단 기준으로 하면 과거 매수분이 "이미 목표 도달"로 시작 즉시 전량 매도됨 (2026-08-28 검토)
-                tp = round_tick(m200.closes[last] * (1 + grid_today), params.tick, up=True)
-                lots.append(Lot(K200, l["qty"], l["price"], "grid", tp, 0))
             qty_200 += l["qty"]
+    # 로트 종류·익절가 (감사 A1·A2, 2026-09-12): 태그가 있으면 체결 시점 스냅샷에서 레짐 전환을 재생해 백테스트와 같은 상태로,
+    # 없으면 종전 근사 — 익절 기준가 = 최근 종가 × (1+오늘 Grid) (정본 §5.6 코어 편입 규칙 준용; 평단 기준은 즉시 전량 매도 함정,
+    # 2026-08-28 검토). 태그 로트가 쌓일수록 근사 몫이 줄어 실전이 백테스트로 수렴한다 (lots.py).
+    from app.lots import rebuild_lots
+    approx_tp = round_tick(m200.closes[last] * (1 + grid_today), params.tick, up=True)
+    lots = rebuild_lots(lot_rows, leg_by_inst.__getitem__, [b["date"] for b in bars_200],
+                        dict(zip(result.dates, result.regimes)), m200, params, last, regime.value, approx_tp)
 
     user_pf = Portfolio(cash=float(cash), lots=lots)
     # 소량 진입 부트스트랩 (ADR-010): 시작일 = max(포트 생성일, 첫 거래일) — 시작 패널이 입금을 직전 영업일로 소급 기록해도 생성일이 잡아 준다.
@@ -351,7 +346,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
     from app.models import PortfolioPlan
     row = session.scalar(select(PortfolioPlan).where(
         PortfolioPlan.portfolio_id == pid, PortfolioPlan.trade_date == exec_day))
-    payload = {"regime": regime.value, "signal_date": base_day.isoformat(),
+    payload = {"regime": regime.value, "signal_date": base_day.isoformat(), "grid": grid_today,   # grid: 체결 태그용 (0027)
                "orders": out["orders"], "gap_cancel_below": p.gap_cancel_below,
                "gap_cancel_exact": p.gap_cancel_exact,  # 무인 실행의 시가 판정은 정확값 (2026-09-06)
                "account": out["account"], "e_target": p.e_target}
