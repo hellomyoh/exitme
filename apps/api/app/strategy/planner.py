@@ -295,9 +295,11 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
         strat_value = sum(l.qty * lev_close for l in lev_lots if l.kind == "lev_strat")
         diff = strat_target - strat_value
         # 전략 트랙 신규 진입은 밴드 예외 — "E>1 충족 시 상시 보유" (정본 §7, 검증 ①④)
+        # 매수 금액은 그리드와 같은 가용 현금(cash_left = 현금 + 예정 매도대금 − 버퍼 0.5%) 안에서 — 두 종목이 한 지갑을 쓴다 (감사 A8, 2026-09-12)
         if diff > 0 and (strat_value == 0.0 or diff > params.band * equity):
-            qty = int(diff / lev_close)
+            qty = int(min(diff, cash_left) / lev_close) if cash_left > 0 else 0
             if qty > 0:
+                cash_left -= qty * lev_close
                 orders.append(Order(LEV, "buy", "market", qty, None, "lev_strat"))
         elif diff < 0 and -diff > params.band * equity:
             qty = int(-diff / lev_close)
@@ -311,12 +313,14 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
             has1 = any(l.kind == "lev_tact1" for l in lev_lots)
             has2 = any(l.kind == "lev_tact2" for l in lev_lots)
             if lev_close < lev_ema - params.lev_tact1_mult * lev_atr and not has1:
-                qty = int(tact_budget_each / lev_close)
+                qty = int(min(tact_budget_each, cash_left) / lev_close) if cash_left > 0 else 0
                 if qty > 0:
+                    cash_left -= qty * lev_close
                     orders.append(Order(LEV, "buy", "market", qty, None, "lev_tact1"))
             if lev_close < lev_ema - params.lev_tact2_mult * lev_atr and not has2:
-                qty = int(tact_budget_each / lev_close)
+                qty = int(min(tact_budget_each, cash_left) / lev_close) if cash_left > 0 else 0
                 if qty > 0:
+                    cash_left -= qty * lev_close
                     orders.append(Order(LEV, "buy", "market", qty, None, "lev_tact2"))
 
     # ── 전술 이탈(EMA20 회복)은 w_lev 와 무관하게 평가 (정본 §7 청산 규칙, 검증 ①①)
