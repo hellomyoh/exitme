@@ -903,3 +903,16 @@
 - 문서: ADR-012 신설·INDEX, feature-strategy-engine §5.5 규칙 + §15 이력, chat.py 전략 요약.
 - Git commit: strategy: cap total leverage so tactical lots respect the exposure target (ADR-012)
 
+## [2026-09-12] fix | 감사 위생 5건 + G3 테스트 (A5·A6·A9·A10·A11·A12, 사용자 지시 "권고 모두 진행")
+
+- A5 시세 결측: `load_aligned_bars` 가 두 종목 **공통 구간 안**에서 한쪽에만 있는 거래일을 발견하면 409 로 거부하고 날짜를 알린다(명세 §12 "명시적 오류" 구현). 구간 양끝의 상장·적재 시차(한쪽만 먼저 들어온 최신 봉)는 종전처럼 교집합 — 기준일 = 마지막 공통 봉 규약 유지. 엔진 진입점(`run_backtest`)도 길이가 아니라 날짜 동일성을 검사. 시그널 배치는 이 오류를 MISSING 스냅샷으로 기록(조용한 실패 금지 경로 그대로). 실측: 현재 개발 DB 069500/102110/122630 은 결측 0일.
+- A6 fingerprint: 정렬된 두 시세의 OHLCV 내용 SHA-256 을 포함 — 같은 행 수·같은 적재 시각의 가격 정정도 감지. `max(ingested_at)` 은 요청 기간 안으로 한정 — 기간 밖 자료 추가가 기존 결과를 stale 로 만들지 않는다. 기존 저장 결과는 새 공식으로 한 번 stale 이 된다(재실행하면 해소).
+- A9 초기 상태: 명세 문구를 "초기 prior = Neutral, 첫 평가일 출력은 그날 조건으로 전이 가능"으로 확정(코드 불변). 근거: 진입 조건이 이미 선 날을 하루 미룰 이유가 없고 정본 §4 는 prior 만 다룬다. 사후 정당화가 아니라 의도 판단임을 ASSUMPTIONS 에 남긴다(PR 다음 건).
+- A10 비용 범위: `Costs` 에 ge/le·`allow_inf_nan=False` — 음수 수수료·슬리피지·세금·보수, 비현실 상한 초과는 422.
+- A11 as-of 재생: `run_signal_batch(target)` 에 target 뒤의 봉이 있으면 target 까지만으로 계산하고 `detail.as_of` 를 남긴다 — 종전엔 최신일로 조용히 바뀌었다. `is_current` 는 날짜별 현재 버전이라 과거 재생이 최신 스냅샷을 밀어내지 않는다(테스트로 고정).
+- A12 포트 응답: `_portfolio_orders` 가 같은 계획의 `w_200·w_lev·trade_date` 를 돌려 공용 모델 스냅샷 값과 섞이지 않는다(`w_200 + 2·w_lev = e_target` 불변식 테스트). 웹은 이 키를 쓰지 않아 표시 변화 없음.
+- 테스트 공백: G3 자리표시자(`pass`)를 명세 §12 의 세 점(E=0.35 중립 / 0.90 상승 / 1.30 상승 캡)으로 채움 — (w_LEV, w_200, 현금) = (0,35,65)/(0,90,10)/(30,70,0)% 와 실효노출 항등식.
+- 테스트 결과: **309 passed**(신규 6 — `tests/test_audit_hygiene.py`: 안쪽 결측 409·꼬리 시차 허용, 엔진 날짜 불일치 거부, fingerprint 내용 민감·기간 밖 불변, 비용 4종 422, 과거 target as-of + 최신 스냅샷 보존, 포트 응답 가중치 일관 · G3 3점).
+- 문서: feature-backtest §12(결측 규칙 상세), feature-strategy-engine §5.4(초기 상태 문구).
+- Git commit: fix: audit hygiene — explicit data gaps, content fingerprint, cost bounds, as-of replay, consistent weights
+

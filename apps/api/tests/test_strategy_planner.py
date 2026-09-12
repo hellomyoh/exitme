@@ -80,12 +80,22 @@ def test_no_tp_orders_in_bull_but_tp_in_neutral():
     assert len(tp) == 1 and tp[0].price == 69985 and tp[0].qty == 100
 
 
-# ── G3: 배분 3점 — E=0.35/0.90/1.30 → (w_lev, w_200)
-@pytest.mark.parametrize("sd,e_expect,wlev,w200", [
-    (0.60, 0.35, 0.0, 0.35),   # 0.5×(0.13/0.6) + 0.5×(0.1/0.6) ≈ 0.1917 → 아래 별도 구성
+# ── G3: 배분 3점 — 명세 §12 의 E=0.35/0.90/1.30 → (w_LEV, w_200, 현금) = (0,35,65)/(0,90,10)/(30,70,0)%
+#    E_raw = 0.5×0.20/σd + 0.5×σref/σd (목표σ 0.20). 0.35 는 중립장(cap 0.65 미만), 0.90·1.30 은 상승장.
+@pytest.mark.parametrize("bull,sd,sref,e_expect,wlev,w200", [
+    (False, 0.60, 0.22, 0.35, 0.0, 0.35),   # 0.1667 + 0.1833
+    (True, 0.30, 0.34, 0.90, 0.0, 0.90),    # 0.3333 + 0.5667
+    (True, 0.10, 0.10, 1.30, 0.30, 0.70),   # E_raw 1.5 → 상승장 cap 1.30
 ])
-def test_golden_allocation_formula(sd, e_expect, wlev, w200):
-    pass  # 배분 공식은 아래 명시 케이스로 검증
+def test_golden_allocation_formula(bull, sd, sref, e_expect, wlev, w200):
+    # 중립: 종가 > MA200 이지만 MA20 < MA60 → 상승 진입 아님, 하락 진입 아님 → NEUTRAL 유지
+    m = mk_market(sigma_down=sd, sigma_ref=sref) if bull else mk_market(ma20=68000.0, ma60=69000.0, sigma_down=sd, sigma_ref=sref)
+    p = plan(I, m, mk_lev(), Regime.BULL if bull else Regime.NEUTRAL, pf_with(1e8), P)
+    assert p.regime is (Regime.BULL if bull else Regime.NEUTRAL)
+    assert p.e_target == pytest.approx(e_expect, abs=1e-9)
+    assert (p.w_lev, p.w_200) == (pytest.approx(wlev, abs=1e-9), pytest.approx(w200, abs=1e-9))
+    assert p.w_200 + 2 * p.w_lev == pytest.approx(p.e_target, abs=1e-9)   # 실효노출 항등식
+    assert 1.0 - p.w_200 - p.w_lev == pytest.approx(1.0 - e_expect + (wlev if wlev else 0.0), abs=1e-9)  # 현금 = 1 − w_200 − w_LEV
 
 
 def test_allocation_three_points():

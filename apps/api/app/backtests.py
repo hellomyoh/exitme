@@ -38,11 +38,13 @@ CODE_200, CODE_LEV = ETF_PAIRS["KODEX"]  # 기본값 (전략 정본 기준)
 
 
 class Costs(BaseModel):
-    commission: float = 0.00015
-    slippage_market: float = 0.001
-    lev_tax: float = 0.154
-    fee_200: float = 0.0015
-    fee_lev: float = 0.0064
+    """비용 입력 — 음수·비유한·비현실 값은 거부 (감사 A10). 음수 수수료는 리베이트 모델이 아니라 수익률 부풀리기다."""
+
+    commission: float = Field(default=0.00015, ge=0, le=0.05, allow_inf_nan=False)
+    slippage_market: float = Field(default=0.001, ge=0, le=0.05, allow_inf_nan=False)
+    lev_tax: float = Field(default=0.154, ge=0, le=1.0, allow_inf_nan=False)
+    fee_200: float = Field(default=0.0015, ge=0, le=0.10, allow_inf_nan=False)
+    fee_lev: float = Field(default=0.0064, ge=0, le=0.10, allow_inf_nan=False)
 
 
 class Flags(BaseModel):
@@ -80,8 +82,11 @@ def load_aligned_bars(session: Session, date_from: date, date_to: date,
                    OhlcvDaily.trade_date >= date_from, OhlcvDaily.trade_date <= date_to)
             .order_by(OhlcvDaily.trade_date)
         ).scalars().all()
+        # 요청 기간 안의 최신 적재 시각만 — 기간 밖 자료 추가가 기존 결과를 stale 로 만들지 않게 (감사 A6)
         max_ing = session.scalar(
-            select(func.max(OhlcvDaily.ingested_at)).where(OhlcvDaily.instrument_id == inst.id)
+            select(func.max(OhlcvDaily.ingested_at)).where(
+                OhlcvDaily.instrument_id == inst.id,
+                OhlcvDaily.trade_date >= date_from, OhlcvDaily.trade_date <= date_to)
         )
         fingerprints.append(f"{code}:{len(rows)}:{max_ing}")
         out[code] = {
@@ -95,7 +100,21 @@ def load_aligned_bars(session: Session, date_from: date, date_to: date,
     common = sorted(set(out[code_200]) & set(out[code_lev]))
     if len(common) < 30:
         raise HTTPException(status_code=409, detail=f"not enough aligned bars ({len(common)}) — run seeding first")
-    fp = hashlib.md5(("|".join(fingerprints) + f"|{date_from}|{date_to}").encode()).hexdigest()
+    # 결측 검출 (감사 A5, feature-backtest §12 "시세 결측 시 명시적 오류"): 공통 구간 **안**에서 한 종목에만 있는 거래일은
+    # 수집 누락(또는 미등록 거래정지)이다 — 조용히 교집합으로 버리면 이동평균 창·익일 체결 시점이 어긋난다.
+    # 구간 양끝(상장·적재 시차 — 한쪽만 먼저 들어온 최신 봉)은 종전처럼 교집합으로 맞춘다 (test_signals: 기준일 = 마지막 공통 봉).
+    gaps = sorted(d for d in (set(out[code_200]) ^ set(out[code_lev])) if common[0] <= d <= common[-1])
+    if gaps:
+        shown = ", ".join(gaps[:5]) + (" …" if len(gaps) > 5 else "")
+        raise HTTPException(status_code=409, detail=(
+            f"시세 결측 — 공통 구간 안에서 한 종목에만 있는 거래일 {len(gaps)}일 ({shown}). "
+            "수집 누락을 채우거나 거래정지를 캘린더에 등록한 뒤 다시 실행하세요"))
+    # fingerprint 는 내용까지 대표한다 (감사 A6): 같은 행 수·같은 적재 시각의 정정(가격·수정계수)도 감지
+    digest = hashlib.sha256()
+    for d in common:
+        for r in (out[code_200][d], out[code_lev][d]):
+            digest.update(f"{d}|{r['open']:.6f}|{r['high']:.6f}|{r['low']:.6f}|{r['close']:.6f}|{r['volume']}".encode())
+    fp = hashlib.md5(("|".join(fingerprints) + f"|{date_from}|{date_to}|{digest.hexdigest()}").encode()).hexdigest()
     return [out[code_200][d] for d in common], [out[code_lev][d] for d in common], fp
 
 

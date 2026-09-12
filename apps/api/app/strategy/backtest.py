@@ -139,8 +139,8 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
                  plan_final: bool = False,
                  initial_lots: list[dict] | None = None) -> BacktestResult:
     """bars: [{date, open, high, low, close, volume}] 두 시계열은 날짜 정렬·동일 길이 가정."""
-    if len(bars_200) != len(bars_lev):
-        raise ValueError("bars_200 and bars_lev must be aligned")
+    if len(bars_200) != len(bars_lev) or any(a["date"] != b["date"] for a, b in zip(bars_200, bars_lev)):
+        raise ValueError("bars_200 and bars_lev must be aligned by date")   # 감사 A5: 길이 같아도 날짜가 다르면 거부
     dates = [b["date"] for b in bars_200]
 
     def to_market(bars: list[dict]) -> Market:
