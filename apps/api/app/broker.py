@@ -352,6 +352,15 @@ class BrokerFetchError(RuntimeError):
     """증권사 조회 실패 — 라우트는 502 로, 배치는 기록으로 처리한다."""
 
 
+def _plan_ctx(session: Session, pid: int, day: date) -> tuple[float | None, str | None]:
+    """그날 주문표 스냅샷의 (Grid, 레짐) — 직접 주문 행의 체결 태그 문맥 (0027). 스냅샷이 없으면 (None, None)."""
+    from app.models import PortfolioPlan
+
+    row = session.scalar(select(PortfolioPlan).where(PortfolioPlan.portfolio_id == pid, PortfolioPlan.trade_date == day))
+    pl = (row.payload or {}) if row is not None else {}
+    return pl.get("grid"), pl.get("regime")
+
+
 @router.post("/portfolio/{pid}/import-fills")
 def import_fills(pid: int, days: int = 7, dry_run: bool = True,
                  user_id: int = Depends(current_user_id),
@@ -398,11 +407,25 @@ def import_fills_for_portfolio(session: Session, pid: int, cred: BrokerCredentia
         else:
             row["status"] = "등록 예정" if dry_run else "등록됨"
             if not dry_run:
+                # 전략 태그 (감사 A1·A2, 0027): 주문번호로 우리가 낸 주문을 찾아 로트 종류·익절가를 체결 행에 남긴다.
+                # HTS 에서 직접 낸 주문은 짝이 없어 태그 없음 → 종전 근사.
+                bo = session.scalar(select(BrokerOrder).where(BrokerOrder.portfolio_id == pid,
+                                                              BrokerOrder.order_no == str(e.order_no)))
+                lot_kind = tp_price = None
+                if bo is not None:
+                    from app.lots import lot_tag, sell_tag
+                    from app.strategy.params import Params
+                    if e.side == "buy":
+                        lot_kind, tp_price = lot_tag(bo.kind, "buy", bo.plan_regime,
+                                                     float(bo.plan_grid) if bo.plan_grid is not None else None,
+                                                     e.avg_price, Params())
+                    else:
+                        lot_kind, tp_price = sell_tag(bo.kind, bo.price)
                 session.add(TradeTransaction(
                     portfolio_id=pid, kind=e.side, instrument_id=inst.id,
                     qty=e.filled_qty, price=e.avg_price, broker_ref=ref,
                     executed_at=datetime.combine(e.trade_date, time(15, 30), tzinfo=KST),
-                    memo="증권사 자동 가져오기"))
+                    memo="증권사 자동 가져오기", lot_kind=lot_kind, tp_price=tp_price))
                 added += 1
         items.append(row)
     if not dry_run:
@@ -726,10 +749,12 @@ def place_manual_kis_order(session: Session, user_id: int, cred: BrokerCredentia
         if qty > held.get(code, 0):
             raise HTTPException(status_code=409, detail=f"잔고 부족 — 보유 {held.get(code, 0):,}주, 요청 {qty:,}주")
     what = f"{code} {'매수' if side == 'buy' else '매도'} {qty:,}주" + (f" @{price:,}원" if price else " 시장가")
+    # 주문표 줄에서 낸 직접 주문이면 그날 계획의 Grid·레짐을 붙여 체결 태그가 만들어지게 한다 (0027) — 임의 주문은 태그 없음
+    pctx = _plan_ctx(session, portfolio_id, kst_today()) if (kind and portfolio_id) else (None, None)
     row = BrokerOrder(portfolio_id=portfolio_id, journal_id=journal_id, broker_credential_id=cred.id, plan_date=kst_today(),
                       line_key=line_key or f"manual:{code}:{side}:{otype}:{price or 'mkt'}:{int(now.timestamp())}",
                       code=code, instrument=leg, kind=kind or "manual", side=side, otype=otype,
-                      qty=qty, price=price, mode="manual", status="failed",
+                      qty=qty, price=price, mode="manual", status="failed", plan_grid=pctx[0], plan_regime=pctx[1],
                       response={"manual": True, "at": now.isoformat(timespec="seconds")})
     session.add(row)
     session.flush()
@@ -819,7 +844,8 @@ def reserve_broker_orders(pid: int, body: ReserveIn, user_id: int = Depends(curr
             continue
         row = BrokerOrder(portfolio_id=pid, broker_credential_id=cred.id, plan_date=body.date, line_key=key,
                           code=code, instrument=ln.instrument, kind=ln.kind, side=ln.side, otype=ln.otype,
-                          qty=ln.qty, price=price)
+                          qty=ln.qty, price=price,
+                          plan_grid=(plan.payload or {}).get("grid"), plan_regime=(plan.payload or {}).get("regime"))  # 체결 태그용 (0027)
         try:
             r = client.reserve_order(code, ln.side, ln.qty, price)
             row.rsvn_ord_seq = r["rsvn_ord_seq"] or None

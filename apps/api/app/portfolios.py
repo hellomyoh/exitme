@@ -121,6 +121,11 @@ class TransactionIn(BaseModel):
     executed_at: datetime
     memo: str | None = None
     tags: list[str] = []
+    # 주문표 줄에서 온 체결이면 전략 태그 (감사 A1·A2, 2026-09-12) — 서버가 로트 종류·익절가를 만든다 (lots.py)
+    strategy_kind: str | None = Field(default=None, max_length=40)   # boot|grid1~3|lev_*|tp|reduce|…
+    plan_grid: float | None = None
+    plan_regime: str | None = None
+    plan_price: int | None = Field(default=None, ge=0)               # 매도: 주문표 지정가 (익절 로트 귀속)
 
 
 @router.post("/positions", status_code=201)
@@ -185,11 +190,20 @@ def register_transaction(body: TransactionIn, user_id: int = Depends(current_use
             if l.qty_open == 0:
                 session.delete(l)
 
+    # 전략 태그 (0027) — 국내 RAVG 포트의 주문표 줄에서 채운 체결만. 임의 입력은 태그 없이 종전 근사
+    lot_kind = tp_price = None
+    if body.strategy_kind and pf.market == "KR" and body.kind in ("buy", "sell"):
+        from app.lots import lot_tag, sell_tag
+        from app.strategy.params import Params
+        if body.kind == "buy":
+            lot_kind, tp_price = lot_tag(body.strategy_kind, "buy", body.plan_regime, body.plan_grid, body.price, Params())
+        else:
+            lot_kind, tp_price = sell_tag(body.strategy_kind, body.plan_price or body.price)
     tx = TradeTransaction(portfolio_id=pf.id, kind=body.kind,
                           instrument_id=inst.id if inst else None,
                           qty=body.qty, price=body.price, amount=body.amount,
                           realized_pnl=realized, executed_at=body.executed_at,
-                          memo=body.memo, tags=body.tags)
+                          memo=body.memo, tags=body.tags, lot_kind=lot_kind, tp_price=tp_price)
     session.add(tx)
     # 텔레그램 알림 (2026-09-07) — '체결 등록' 항목을 체크한 사용자에게. 실패해도 등록은 진행
     try:

@@ -270,6 +270,10 @@ class TradeTransaction(TimestampMixin, Base):
     memo: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     broker_ref: Mapped[str | None] = mapped_column(Text)  # 증권사 체결 식별자 — 자동 가져오기 멱등 (0016)
+    # 전략 태그 (0027, 감사 A1·A2): 매수 = 로트 종류(grid|core|lev_strat|lev_tact1|lev_tact2) + 익절가 스냅샷,
+    # 매도 = 종류(tp|reduce|lev_strat|lev_tact_exit|lev_liq) + 익절 지정가(귀속 로트 식별). NULL = 태그 없음 → 근사.
+    lot_kind: Mapped[str | None] = mapped_column(Text)
+    tp_price: Mapped[int | None] = mapped_column(EncryptedBigInt)     # 🔒
 
 
 class BrokerCredential(TimestampMixin, Base):
@@ -351,6 +355,8 @@ class BrokerOrder(TimestampMixin, Base):
     rsvn_ord_seq: Mapped[str | None] = mapped_column(Text, nullable=True)  # KIS 예약주문순번
     order_no: Mapped[str | None] = mapped_column(Text, nullable=True)      # 장 시작 후 실제 주문번호
     filled_qty: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    plan_grid: Mapped[float | None] = mapped_column(Numeric, nullable=True)     # 발주 시점 계획 Grid (0027) — 체결 태그용
+    plan_regime: Mapped[str | None] = mapped_column(Text, nullable=True)        # 발주 시점 레짐 (0027)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="reserved")
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     response: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

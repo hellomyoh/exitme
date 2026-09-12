@@ -696,6 +696,7 @@ def _execute_portfolio(session: Session, pf: TradePortfolio, today: date, now: d
         r = BrokerOrder(portfolio_id=pf.id, broker_credential_id=cred.id, plan_date=today, line_key=line_key(o), code=code,
                         instrument=o["instrument"], kind=o["kind"], side=o["side"], otype=o.get("otype") or ("limit" if o.get("price") else "market"),
                         qty=int(o["qty"]), price=int(o["price"]) if o.get("price") else None, mode="auto", status="skipped",
+                        plan_grid=(plan.get("indicators") or {}).get("grid"), plan_regime=plan.get("regime"),   # 체결 태그용 (0027)
                         response={"plan_qty": int(o["qty"])})
         session.add(r)
         rows.append(r)
@@ -912,7 +913,7 @@ def retry_auto_exec(session: Session, pf: TradePortfolio, now: datetime | None =
         plan_qty = int((old.response or {}).get("plan_qty") or old.qty)   # 축소 전 계획 수량으로 되돌려 다시 판정
         r = BrokerOrder(portfolio_id=pf.id, broker_credential_id=cred.id, plan_date=today, line_key=old.line_key, code=old.code,
                         instrument=old.instrument, kind=old.kind, side=old.side, otype=old.otype, qty=plan_qty, price=old.price,
-                        mode="auto", status="skipped",
+                        mode="auto", status="skipped", plan_grid=old.plan_grid, plan_regime=old.plan_regime,
                         response={"plan_qty": plan_qty, "retry_of": old.id, "retry_at": now.isoformat(timespec="seconds")})
         session.add(r)
         new.append(r)

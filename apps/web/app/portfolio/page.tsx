@@ -136,6 +136,8 @@ function PortfolioPage() {
   const [form, setForm] = useState({ kind: "buy", code: market === "US" ? "QQQ" : "069500", qty: "", price: "", amount: "", memo: "",
     date: new Date().toISOString().slice(0, 10) });
   const [msg, setMsg] = useState("");
+  // 주문표 줄에서 채운 체결의 전략 태그 — 종목·방향이 그대로일 때만 서버에 보내 로트 종류·익절가를 보존한다 (감사 A1·A2, 2026-09-12)
+  const [fillTag, setFillTag] = useState<{ kind: string; code: string; side: string; grid?: number; regime?: string; price?: number | null } | null>(null);
   const [txDays, setTxDays] = useState(15);  // 거래 내역 기본 표시 일수 — 무한 나열 방지 (2026-08-29 검토)
   const [newName, setNewName] = useState("");
   const [showStart, setShowStart] = useState(sp?.get("start") === "1");  // 상단 바 '새 실전매매' 진입 (2026-09-05)
@@ -439,10 +441,12 @@ function PortfolioPage() {
       ?? (market === "US" ? "QQQ" : sum?.positions.find((pp) => pp.code === "102110") ? "102110" : "069500");
     const codeLev = market === "US"
       ? (sum?.positions.find((pp) => pp.code === "TQQQ") ? "TQQQ" : "QLD") : "122630";
-    setForm({ kind: o.side, code: o.instrument === "LEV" ? codeLev : code200,
+    const code = o.instrument === "LEV" ? codeLev : code200;
+    setForm({ kind: o.side, code,
       qty: String(o.qty), price: o.price ? String(market === "US" ? o.price / 100 : o.price) : "", amount: "",
       memo: ORDER_KIND_KO[o.kind] ?? o.kind,
       date: date ?? new Date().toISOString().slice(0, 10) });
+    setFillTag({ kind: o.kind, code, side: o.side, grid: signal?.indicators?.grid, regime: signal?.regime, price: o.price });
     setTxTab("fill");   // '체결 등록' 버튼 → 거래 입력 카드의 체결 탭을 열고 값을 채운다 (2026-09-10)
     setTimeout(() => document.getElementById("fill-entry")?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
   }
@@ -473,6 +477,10 @@ function PortfolioPage() {
     };
     if (form.kind === "buy" || form.kind === "sell") {
       body.code = form.code; body.qty = Number(form.qty); body.price = priceToApi(market, form.price);
+      if (fillTag && fillTag.code === form.code && fillTag.side === form.kind) {
+        body.strategy_kind = fillTag.kind; body.plan_grid = fillTag.grid; body.plan_regime = fillTag.regime;
+        if (fillTag.price) body.plan_price = fillTag.price;
+      }
     } else {
       body.amount = priceToApi(market, form.amount);
     }
@@ -480,6 +488,7 @@ function PortfolioPage() {
     if (res.ok) {
       const out = (await res.json()) as { realized_pnl: number | null };
       setMsg(out.realized_pnl !== null ? `등록됨 — 실현손익 ${fm(out.realized_pnl)}` : "등록됨");
+      setFillTag(null);
       void load(pid);
     } else {
       setMsg(((await res.json()) as { detail?: string }).detail ?? `등록 실패 (${res.status})`);

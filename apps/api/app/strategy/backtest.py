@@ -332,7 +332,8 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
     kpi["open_lots"] = len(pf.lots)  # 미청산 별도 표기 (§5.3, 검증 B6)
     final_lots = [
         {"instrument": l.instrument, "qty": l.qty, "price": l.price,
-         "date": dates[min(l.buy_index, len(dates) - 1)]}
+         "date": dates[min(l.buy_index, len(dates) - 1)],
+         "kind": l.kind, "tp_price": l.tp_price}   # 종류·익절가 — 실전 재구성 동일성 검증용 (0027)
         for l in pf.lots
     ]
     return BacktestResult(out_dates, equity_curve, bench_curve, regimes, exposures,
