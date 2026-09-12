@@ -1,5 +1,15 @@
 # HISTORY.md
 
+## [2026-09-12] audit | RAVG v2.5 체결률·수익률 수치 검증
+
+- 기준 `2591efa`(제품 `45eb373`). [보고서](docs/fill-rate-study-20260912.md), [QA](qa/fill-rate-study-20260912.md), [집계 JSON](qa/fill-rate-results-20260912.json), 독립 실행 `apps/api/scripts/fill_rate_audit.py` 추가. 제품 전략·설정·실주문 변경 없음.
+- 실행: `docker compose exec -T api python -m scripts.fill_rate_audit --windows --sensitivity` → 8변형·87개 252거래일 창·비용 민감도 완료(exit 0). 수량/금액 지표 추가 후 옵션 없는 전 구간 재실행(exit 0). 비용 전부 0인 4변형도 별도 실행 완료.
+- 자체 검증: 기본 wrapper 전체 결과 동일, 1,943개 그리드 지정가 일치, 매수 사유 합계 2,046=294+1,702+25+25. READ ONLY 시세 조회만 수행.
+- 독립 QA: `docker compose exec -T api pytest -q tests/test_indicators.py tests/test_strategy_planner.py tests/test_strategy_backtest.py tests/test_bootstrap_entry.py tests/test_signals.py::test_truncated_backtest_final_plan_equals_full_run_plan` → **63 passed, 2 warnings in 3.10s**.
+- 최종 재검증: 주 에이전트가 같은 테스트를 `python -m pytest -q`로 실행 → **63 passed, 2 warnings in 3.21s**(중복). 최종 연구 스크립트 `--sensitivity` 재실행(exit 0), 전 구간·비용 결과 28개 레코드가 저장 JSON과 동일. 87창 루프는 최종 재실행하지 않음(로직 불변).
+- 결론: 체결률 상승이 수익 개선을 보장하지 않음. 현행→전일 종가 지정가 K200 주문선 체결률11.57→73.76%, CAGR16.68→15.87%, MDD−21.67→−28.11%. 비중첩 8창 일부 평균은 반대 방향이므로 보편적 열등·최적성은 주장하지 않음.
+- 범위: 전체 브로커/UI·실계좌 QA 미수행. 신규 미사용 기간·현실 비용/분배금·실전 상태 결함 수정 후 재검증 필요. push·배포 없음.
+
 ## [2026-09-12] audit | KODEX 200·레버리지 연동 전략 검증
 
 - 기준: `45eb373` / v0.25.0. [감사 보고서](docs/kodex-linkage-audit-20260912.md), [명령·후속 QA](qa/kodex-linkage-audit-20260912.md). 앱 코드·전략·운영 데이터 변경 없음.
