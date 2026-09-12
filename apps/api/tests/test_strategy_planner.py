@@ -351,3 +351,30 @@ def test_ma200_exit_buffer_hysteresis():
     assert next_regime(Regime.BEAR, close=65000 * 1.02 + 1, ma20=68000, ma60=69000, ma200=65000.0, params=P2) is Regime.NEUTRAL
     # 급락 직행(BEAR 진입)은 무완충 — MA200 1원 아래 + MA20<MA60 이면 즉시 BEAR
     assert next_regime(Regime.BULL, close=64999.0, ma20=68000, ma60=69000, ma200=65000.0, params=P2) is Regime.BEAR
+
+
+def test_grid_cap_is_2_5_percent():
+    """그리드 간격 상한 (2026-09-12 사용자 지시 4.0% → 2.5%, docs/grid-cap-study-20260912.md).
+
+    상한은 고변동일에만 물린다 — 평시(중앙 1.08%)에는 계산값 그대로다.
+    """
+    assert P.grid_max == 0.025
+    # 계산값이 상한 위 — 2026년형 고변동일 (0.75 × ATR/C = 3.85%)
+    assert grid_ratio(0.0513 * 70000, 70000.0, P) == pytest.approx(0.025)
+    # 계산값이 상한 아래 — 평시는 클립되지 않는다
+    assert grid_ratio(0.0144 * 70000, 70000.0, P) == pytest.approx(0.0108)
+    # 하한은 그대로 0.8%
+    assert grid_ratio(0.001 * 70000, 70000.0, P) == pytest.approx(0.008)
+
+
+def test_grid_cap_moves_ladder_up_on_volatile_days():
+    """상한 인하의 효과는 1~3차 지정가가 종가 쪽으로 올라오는 것뿐 — 단계 간격 비율은 그대로."""
+    from dataclasses import replace
+
+    atr = 0.06 * 70000            # 계산값 4.5% → 두 상한 모두 바인딩 (0.75 × 6% )
+    g_new = grid_ratio(atr, 70000.0, P)
+    g_old = grid_ratio(atr, 70000.0, replace(P, grid_max=0.04))
+    assert (g_new, g_old) == (0.025, 0.04)
+    assert [round(70000 * (1 - g_new * k)) for k in (1, 2, 3)] == [68250, 66500, 64750]
+    assert [round(70000 * (1 - g_old * k)) for k in (1, 2, 3)] == [67200, 64400, 61600]
+
