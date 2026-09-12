@@ -267,7 +267,7 @@ def test_chat_role_split_prompts_and_param_tool(monkeypatch):
     client.post("/chat", json={"messages": [{"role": "user", "content": "공식 알려줘"}]}, headers=headers)
     # 일반: 상세 수식·계수 없음 + 제한 계약 + 파라미터 도구 미노출
     assert "공개 제한" in seen["system"] and "핵심 개념" in seen["system"]
-    for secret in ["0.75", "0.8~4%", "50/30/20", "정본 요약", "Emax 1.30"]:
+    for secret in ["0.75", "0.8~2.5%", "50/30/20", "정본 요약", "Emax 1.30"]:
         assert secret not in seen["system"], secret
     assert "algorithm_params" not in seen["tools"]
     assert "error" in chat_mod._run_tool("algorithm_params", {}, 1, is_admin=False)
