@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.auth import current_user_id
@@ -161,6 +161,69 @@ def _prev_close_map_by_id(session: Session, inst_ids: set[int], before: date) ->
     return out
 
 
+def last_two_closes(session: Session, inst_ids: set[int]) -> dict[int, list[tuple[date, float]]]:
+    """종목별 마지막 두 종가 [(날짜, 종가), …] 최신순 — '오늘 손익'의 두 기준점."""
+    from app.models import OhlcvDaily
+
+    out: dict[int, list[tuple[date, float]]] = {}
+    for iid in inst_ids:
+        rows = session.execute(
+            select(OhlcvDaily.trade_date, OhlcvDaily.close_raw, OhlcvDaily.adj_factor)
+            .where(OhlcvDaily.instrument_id == iid)
+            .order_by(OhlcvDaily.trade_date.desc()).limit(2)
+        ).all()
+        out[iid] = [(d, c * float(a)) for d, c, a in rows]
+    return out
+
+
+def day_change_basis(session: Session, inst_ids: set[int], live_px: dict[int, float],
+                     today: date | None = None) -> tuple[dict[int, float], dict[int, float], date | None]:
+    """'오늘 손익'의 (현재가, 비교 기준가, 기준일) — 기준은 **지금 쓰는 가격 바로 직전 값** (2026-09-12 지시).
+
+    - 실시간 시세가 있으면(장중·애프터마켓): 현재가 = 실시간, 기준 = **오늘 이전** 마지막 종가 → 오늘 하루의 변동.
+      (오늘 정규장 종가가 이미 적재된 뒤에도 애프터마켓 시세가 흐르므로, 오늘 종가를 기준으로 삼으면 장 마감 후 변동만 보인다.)
+    - 없으면(주말·공휴일·장 시작 전·일봉 적재 지연): 현재가 = 마지막 종가, 기준 = 그 직전 종가
+      → **마지막 거래일의 변동**을 보여준다. 기준일 = 그 마지막 봉 날짜(화면에 표기해 오늘 것으로 오해하지 않게).
+
+    종전에는 둘 다 "오늘 이전 마지막 종가"라 새 봉이 없는 날에는 같은 값이 되어 항상 0 이었다.
+    종목마다 마지막 봉 날짜가 달라도(한국·미국 마감 시각 차이) 종목 단위로 두 봉을 보므로 자동으로 맞는다.
+    """
+    bars = last_two_closes(session, inst_ids)
+    now_px: dict[int, float] = {}
+    prev_px: dict[int, float] = {}
+    stale_dates: list[date] = []
+    for iid, rows in bars.items():
+        if not rows:
+            continue
+        d0, c0 = rows[0]
+        if iid in live_px:
+            now_px[iid] = live_px[iid]
+            # 오늘 이전의 마지막 종가 — 오늘 봉이 이미 있으면 그 앞 봉
+            base = rows[1] if d0 >= (today or kst_today()) and len(rows) > 1 else rows[0]
+            if base[0] < (today or kst_today()):
+                prev_px[iid] = base[1]
+        else:
+            now_px[iid] = c0
+            if len(rows) > 1:
+                prev_px[iid] = rows[1][1]
+                stale_dates.append(d0)
+    # 기준일은 '오늘이 아닐 때'만 돌려준다 — 장 마감 후 오늘 봉이 있으면 그건 오늘의 변동이라 표기가 필요 없다
+    as_of = max(stale_dates) if stale_dates and not live_px else None
+    if as_of is not None and as_of >= (today or kst_today()):
+        as_of = None
+    return now_px, prev_px, as_of
+
+
+def latest_bar_day(session: Session, inst_ids: set[int]) -> date | None:
+    """보유 종목의 최신 일봉 날짜 — 총자산 '오늘 손익'의 기준일 (없으면 None)."""
+    from app.models import OhlcvDaily
+
+    if not inst_ids:
+        return None
+    return session.scalar(select(func.max(OhlcvDaily.trade_date))
+                          .where(OhlcvDaily.instrument_id.in_(inst_ids)))
+
+
 def live_kr_stock(session: Session, user_id: int) -> tuple[str | None, int]:
     """10초 폴링 캐시로 평가한 국내 포트 주식 평가액 합 — 캐시가 하나도 없으면 (None, 0).
 
@@ -213,12 +276,39 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
     total_now = (live_stock + snap.cash + snap.other + (snap.journal or 0)) if live_at else snap.total
     stock_now = live_stock if live_at else snap.stock
     # 전일 대비·누적 손익은 외부 입출금을 차감한 순수 성과 (단순 Dietz, 검증 C-3·M-6)
+    #
+    # 기준일 (2026-09-12 지시): 오늘 봉이 아직 없으면(주말·공휴일·장 시작 전·일봉 적재 지연) 오늘 스냅샷은
+    # 마지막 종가로 평가돼 어제 스냅샷과 같아지고 '오늘 0원' 이 된다. 그럴 때는 **마지막 봉 날짜(base_day)의
+    # 스냅샷 vs 그 직전 스냅샷** 을 비교해 그날의 실제 변동을 보여주고, 화면에 기준일을 표기한다.
+    from app.models import Instrument, ManualJournal, ManualJournalEntry, PositionLot
+
+    user_inst = set(session.scalars(select(PositionLot.instrument_id).where(
+        PositionLot.portfolio_id.in_(select(TradePortfolio.id).where(TradePortfolio.user_id == user_id)))).all())
+    # 매매일지에만 보유가 있는 사용자도 기준일을 잡을 수 있게 일지 종목코드도 포함 (2026-09-12)
+    jcodes = set(session.scalars(select(ManualJournalEntry.code).where(
+        ManualJournalEntry.code.is_not(None),
+        ManualJournalEntry.journal_id.in_(select(ManualJournal.id).where(ManualJournal.user_id == user_id)))).all())
+    if jcodes:
+        user_inst |= set(session.scalars(select(Instrument.id).where(Instrument.code.in_(jcodes))).all())
+    base_day = latest_bar_day(session, user_inst)
     change = 0
     change_pct = None
-    if prev:
-        f = user_flows_between(session, user_id, prev.snap_date, today)
-        change = total_now - prev.total - f
-        denom = prev.total + f
+    change_asof = None
+    cur_total, cur_prev = total_now, prev
+    if not live_at and base_day is not None and base_day < today:
+        base_snap = session.scalar(select(AssetSnapshot).where(
+            AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date == base_day))
+        if base_snap is not None:
+            older = session.scalars(select(AssetSnapshot).where(
+                AssetSnapshot.user_id == user_id, AssetSnapshot.snap_date < base_day)
+                .order_by(AssetSnapshot.snap_date.desc()).limit(1)).first()
+            if older is not None:
+                cur_total, cur_prev, change_asof = int(base_snap.total), older, base_day
+    if cur_prev:
+        end_day = change_asof or today
+        f = user_flows_between(session, user_id, cur_prev.snap_date, end_day)
+        change = cur_total - cur_prev.total - f
+        denom = cur_prev.total + f
         change_pct = change / denom if denom > 0 else None
     since_pct = None
     since_amount = None      # 누적 금액도 함께 (2026-09-10 지시) — 카드에 %만 있어 크기를 알 수 없었다
@@ -241,8 +331,9 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
         inst_ids = set(session.scalars(select(PositionLot.instrument_id).where(
             PositionLot.portfolio_id.in_(pf_ids))).all()) if pf_ids else set()
         live_px, _at = _live_price_overrides(session, inst_ids)
+        # 오늘 손익의 두 기준점 (2026-09-12) — 장중이면 실시간 vs 마지막 종가, 아니면 마지막 종가 vs 그 직전 종가
+        now_px, prev_px, day_asof = day_change_basis(session, inst_ids, live_px)
         prices = {**latest_closes(session, inst_ids), **live_px}
-        prev_px = _prev_close_map_by_id(session, inst_ids, today)
         value = cost = 0
         for p in pfs:
             s, _c, co = _portfolio_state(session, p.id, prices)
@@ -254,15 +345,17 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
             if l.qty_open > 0:
                 qty_by_inst[l.instrument_id] = qty_by_inst.get(l.instrument_id, 0) + l.qty_open
         for iid, qty in qty_by_inst.items():
-            pc, now_px = prev_px.get(iid), prices.get(iid)
-            if pc and now_px:
-                day_change += qty * (now_px - pc)
+            pc, cur = prev_px.get(iid), now_px.get(iid)
+            if pc and cur:
+                day_change += qty * (cur - pc)
                 prev_eval += qty * pc
         pnl = value - cost
         return {"value": value, "cost": cost, "pnl": pnl,
                 "pnl_pct": (pnl / cost) if cost > 0 else None,
                 "day_change": round(day_change) if prev_eval > 0 else None,
-                "day_change_pct": (day_change / prev_eval) if prev_eval > 0 else None}
+                "day_change_pct": (day_change / prev_eval) if prev_eval > 0 else None,
+                # None = 오늘(장중·오늘 봉 있음), 날짜 = 그날 종가 기준 변동 (주말·휴장·장 시작 전·적재 지연)
+                "day_change_asof": day_asof.isoformat() if day_asof else None}
 
     # 포트별 분리 표기 (2026-09-02 지시) — 진행 중 실전매매 각각의 평가액·평가손익
     port_rows = []
@@ -275,7 +368,8 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
     # 적재 스냅샷은 종가 그대로 (live_kr_stock 도큐스트링 참조).
     live_px, live_row_at = _live_price_overrides(session, all_inst)
     prices_now = {**all_prices, **live_px}
-    prev_px = _prev_close_map_by_id(session, all_inst, today)   # 오늘 손익의 기준 = 오늘 이전 마지막 종가
+    # 오늘 손익의 기준 (2026-09-12) — 장중이면 마지막 종가, 아니면 마지막 종가의 직전 종가(= 그날의 변동)
+    row_now_px, prev_px, row_day_asof = day_change_basis(session, all_inst, live_px)
     for pfr in all_pfs:
         stock_v, cash_v, cost_v = _portfolio_state(session, pfr.id, prices_now)
         if stock_v == 0 and cash_v == 0 and cost_v == 0:
@@ -299,9 +393,9 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
             inst = session.get(Instrument, iid)
             positions.append({"code": inst.code, "name": inst.name,
                               "qty": it["qty"], "value": round(it["value"])})
-            pc, now_px = prev_px.get(iid), prices_now.get(iid)
-            if pc and now_px:
-                day_change += it["qty"] * (now_px - pc)
+            pc, cur = prev_px.get(iid), row_now_px.get(iid)
+            if pc and cur:
+                day_change += it["qty"] * (cur - pc)
                 prev_eval += it["qty"] * pc
             else:
                 day_missing.append(inst.name)
@@ -313,6 +407,7 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
             "day_change": round(day_change) if prev_eval > 0 else None,
             "day_change_pct": (day_change / prev_eval) if prev_eval > 0 else None,
             "day_missing": day_missing, "price_source": "live" if live_px else "close",
+            "day_change_asof": row_day_asof.isoformat() if row_day_asof else None,
             "color": (pfr.params or {}).get("color"),  # 탭 배경색 (2026-09-05)
             "positions": positions,
         })
@@ -370,6 +465,8 @@ def dashboard(user_id: int = Depends(current_user_id), session: Session = Depend
         "us_trend": [v for _d, v in sorted(us_by_date.items())],
         "change_amount": change,
         "change_pct": change_pct,
+        # None = 오늘 기준, 날짜 = 그날 종가 기준 (주말·휴장·장 시작 전·적재 지연, 2026-09-12)
+        "change_asof": change_asof.isoformat() if change_asof else None,
         "since_inception_pct": since_pct, "since_inception_amount": since_amount,
         "kr_stock": _market_breakdown("KR"),
         "us_stock": _market_breakdown("US"),  # 값 단위: 센트 (환율 미도입 — KRW 합산 제외)

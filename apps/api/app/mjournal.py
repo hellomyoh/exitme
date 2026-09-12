@@ -201,26 +201,57 @@ def _prev_close_map(session: Session, codes: set[str], before: date) -> dict[str
     return out
 
 
+def _last_two_close_map(session: Session, codes: set[str]) -> dict[str, list[tuple[date, int]]]:
+    """종목별 마지막 두 종가 [(날짜, 종가), …] 최신순 — 하루 변동의 두 기준점 (2026-09-12)."""
+    from app.models import Instrument, OhlcvDaily
+
+    out: dict[str, list[tuple[date, int]]] = {}
+    for code in codes:
+        inst = session.scalar(select(Instrument).where(Instrument.code == code))
+        if inst is None:
+            continue
+        rows = session.execute(
+            select(OhlcvDaily.trade_date, OhlcvDaily.close_raw)
+            .where(OhlcvDaily.instrument_id == inst.id)
+            .order_by(OhlcvDaily.trade_date.desc()).limit(2)).all()
+        out[code] = [(d, int(c)) for d, c in rows]
+    return out
+
+
 def add_day_change(session: Session, computed: dict, today: date) -> dict:
     """평가된 보유(price 있음)에 전일 종가·하루 변동을 붙인다 — 챗봇의 '어제와 오늘 비교' (2026-09-09 사용자 지적 "수량과 현재가로 계산을 못 한다").
     holdings[].prev_close/day_change/day_change_pct, summary.prev_eval/day_change/day_change_pct(전일 평가액 대비)."""
     codes = {h["code"] for h in computed["holdings"] if h.get("code") and h.get("price") is not None}
-    prev = _prev_close_map(session, codes, today) if codes else {}
+    bars = _last_two_close_map(session, codes) if codes else {}
     day_change = prev_eval = 0
+    stale: list[date] = []
     for h in computed["holdings"]:
-        pc = prev.get(h.get("code") or "")
-        if h.get("price") is None or pc is None or pc <= 0:
+        rows = bars.get(h.get("code") or "") or []
+        px = h.get("price")
+        # 기준 = 지금 쓰는 가격 바로 직전 값 (2026-09-12): 표시가가 마지막 종가와 다르면(증권사 현재가·장중)
+        # 기준은 마지막 종가, 같으면(주말·휴장·장 시작 전·적재 지연) 그 직전 종가 → 마지막 거래일의 변동
+        pc = None
+        if px is not None and rows:
+            if int(px) != rows[0][1]:
+                # 실시간·증권사 현재가 → 오늘 이전 마지막 종가와 비교 (오늘 봉이 이미 있으면 그 앞 봉)
+                base = rows[1] if rows[0][0] >= today and len(rows) > 1 else rows[0]
+                if base[0] < today:
+                    pc = base[1]
+            elif len(rows) > 1:
+                pc = rows[1][1]
+                stale.append(rows[0][0])
+        if px is None or pc is None or pc <= 0:
             h["prev_close"] = h["day_change"] = h["day_change_pct"] = None
             continue
         h["prev_close"] = pc
-        h["day_change"] = (int(h["price"]) - pc) * h["qty"]
-        h["day_change_pct"] = (int(h["price"]) - pc) / pc
+        h["day_change"] = (int(px) - pc) * h["qty"]
+        h["day_change_pct"] = (int(px) - pc) / pc
         day_change += h["day_change"]
         prev_eval += pc * h["qty"]
     s = computed["summary"]
     s["prev_eval"], s["day_change"] = prev_eval, day_change
     s["day_change_pct"] = (day_change / prev_eval) if prev_eval > 0 else None
-    s["day_change_asof"] = today.isoformat()
+    s["day_change_asof"] = (max(stale) if stale else today).isoformat()
     return computed
 
 
@@ -636,6 +667,9 @@ def journal_assets(session: Session, user_id: int) -> list[dict]:
                     "realized": s["realized"], "return_pct": s["return_pct"],
                     "day_change": day_change if prev_eval > 0 else None,
                     "day_change_pct": (day_change / prev_eval) if prev_eval > 0 else None,
+                    # 기준일 (2026-09-12) — 오늘이면 None, 아니면 그날 종가 기준(주말·휴장·장 시작 전·적재 지연)
+                    "day_change_asof": (s.get("day_change_asof")
+                                        if s.get("day_change_asof") != kst_today().isoformat() else None),
                     "day_missing": day_missing,
                     "holdings": [{"symbol": h["symbol"], "qty": h["qty"], "cost": h["cost"],
                                   "price": h.get("price"), "eval": h.get("eval")} for h in c["holdings"]],
