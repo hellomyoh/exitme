@@ -15,3 +15,4 @@
 | [ADR-010](010-bootstrap-entry.md) | 소량 진입 부트스트랩 — 시작 후 10거래일, 목표 미달분 15%(하락장 7.5%) 종가 지정가 | Accepted | 전략·도메인 | feature-strategy-engine.md, feature-portfolio.md |
 | [ADR-011](011-manual-order.md) | 앱에서 직접 주문 — 발주 경로에 수동(API) 주문 추가, mode=manual 로 무인과 같은 취소·체결 확정 | Accepted | 외부 연동·상태 기계 | feature-portfolio.md |
 | [ADR-012](012-leverage-total-cap.md) | 총 레버리지 상한 — 전술 트랙도 목표 노출에 종속(정본 §7 개정, 감사 A3). 역사 표본 발동 0회의 안전 경계 | Accepted | 전략·도메인 | feature-strategy-engine.md |
+| [ADR-013](013-grid-rung-clip.md) | 현금 부족 그리드 단은 생략이 아니라 **축소** — 얕은 단 우선 배분 정책 선택(정본 §6 공백 확정) | Accepted | 전략·도메인 | feature-strategy-engine.md, docs/entry-allocation-review-r2-20260913.md |

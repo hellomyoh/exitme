@@ -33,7 +33,7 @@ _REAL_PLAN = bt.plan
 
 
 def rebuild_buys(p: Plan, i, m200, mlev, pf, params: Params, days_since_start,
-                 clip_rung: bool = False, lev_first: bool = False) -> tuple[list[Order], list[Order], dict]:
+                 legacy_skip: bool = False, lev_first: bool = False) -> tuple[list[Order], list[Order], dict]:
     """플래너 매수 구간 복제. 반환 (매수 주문들, 총상한 매도, 진단).
 
     매도(축소·익절·강제청산·전략 축소·전술 이탈)는 플래너 것을 그대로 쓴다 — 이 함수는 매수와 lev_cap 만 다시 만든다.
@@ -91,9 +91,9 @@ def rebuild_buys(p: Plan, i, m200, mlev, pf, params: Params, days_since_start,
             if qty <= 0:
                 continue
             if qty * price > cash_left:
-                if not clip_rung:
-                    continue
-                qty = int(cash_left // (price * (1 + params.commission)))   # 수수료 포함 예산으로 축소
+                if legacy_skip:
+                    continue                                                 # A1 채택 전: 그 단을 통째로 생략
+                qty = int(cash_left // (price * (1 + params.commission))) if cash_left > 0 else 0
                 if qty <= 0:
                     continue
             cash_left -= qty * price
@@ -164,14 +164,14 @@ def _is_buy_or_cap(o: Order) -> bool:
     return o.side == "buy" or o.kind == "lev_cap"
 
 
-def make_plan(clip_rung=False, lev_first=False, log: list | None = None, base_log: dict | None = None,
-              budget_log: list | None = None):
+def make_plan(legacy_skip=False, lev_first=False, log: list | None = None, base_log: dict | None = None,
+              budget_log: list | None = None, plan_count: dict | None = None):
     """bt.plan 대체 — 플래너 계획을 받아 매수·총상한만 복제본으로 바꾼다."""
     def wrapped(i, m200, mlev, prev_regime, pf, params, days_since_start=None):
         p = _REAL_PLAN(i, m200, mlev, prev_regime, pf, params, days_since_start=days_since_start)
         if p.status != "OK":
             return p
-        buys, cap, diag = rebuild_buys(p, i, m200, mlev, pf, params, days_since_start, clip_rung, lev_first)
+        buys, cap, diag = rebuild_buys(p, i, m200, mlev, pf, params, days_since_start, legacy_skip, lev_first)
         kept = [o for o in p.orders if not _is_buy_or_cap(o)]
         orders = tuple(kept + buys + cap)
         if budget_log is not None:
@@ -183,6 +183,9 @@ def make_plan(clip_rung=False, lev_first=False, log: list | None = None, base_lo
             # 매수가 없는 날(cash0 ≤ 0 이라 애초에 낼 수 없는 날)은 대상이 아니다.
             if diag["n_buys"] > 0 and diag["fee_budget"] > max(diag["cash0"], 0.0) + 1e-6:
                 budget_log.append(("buffer", i, diag["fee_budget"] - max(diag["cash0"], 0.0)))
+        if plan_count is not None:
+            for o in buys:
+                plan_count[o.kind] = plan_count.get(o.kind, 0) + 1
         if log is not None:
             mine = sorted(_key(o) for o in buys + cap)
             theirs = sorted(_key(o) for o in p.orders if _is_buy_or_cap(o))
@@ -193,8 +196,9 @@ def make_plan(clip_rung=False, lev_first=False, log: list | None = None, base_lo
     return wrapped
 
 
-def run_variant(bars200, barslev, params, start, clip_rung=False, lev_first=False, log=None, budget_log=None):
-    bt.plan = make_plan(clip_rung, lev_first, log=log, budget_log=budget_log)
+def run_variant(bars200, barslev, params, start, legacy_skip=False, lev_first=False, log=None, budget_log=None,
+                plan_count=None):
+    bt.plan = make_plan(legacy_skip, lev_first, log=log, budget_log=budget_log, plan_count=plan_count)
     try:
         return run_backtest(bars200, barslev, CAP, params, start_index=start)
     finally:
@@ -202,7 +206,7 @@ def run_variant(bars200, barslev, params, start, clip_rung=False, lev_first=Fals
 
 
 def check_equivalence(bars200, barslev, params, start=W) -> tuple[int, list]:
-    """스위치 없는 복제본이 플래너 주문과 매일 일치하는지. 반환 (검사한 계획일 수, 불일치 목록)."""
+    """스위치 없는 복제본(= 현행 플래너: 축소)이 플래너 주문과 매일 일치하는지. 반환 (계획일 수, 불일치 목록)."""
     log: list = []
     days = {"n": 0}
     inner = make_plan(False, False, log=log)
@@ -285,9 +289,9 @@ def main(quick: bool = False) -> None:
         raise SystemExit("복제본이 플래너와 다르다 — 변형 비교를 진행하지 않는다")
 
     base = run_backtest(b200, blev, CAP, P, start_index=W)
-    variants = [("A1 생략→축소", dict(clip_rung=True)),
+    variants = [("A1 이전 (단 생략)", dict(legacy_skip=True)),
                 ("A3 레버리지 우선", dict(lev_first=True)),
-                ("A13 레버리지 우선 + 축소", dict(clip_rung=True, lev_first=True))]
+                ("A3+이전 (생략·레버 우선)", dict(legacy_skip=True, lev_first=True))]
     print("\n[2] 전 구간 (2018-01-26~) — 누적·MDD·샤프·체결, 바뀐 계획일, 수수료 포함 예산 위반 일수")
     print(f"{'변형':<24}{'누적':>9}{'CAGR':>8}{'MDD':>9}{'샤프':>7}{'체결':>6}{'바뀐날':>7}{'예산위반':>9}{'그중 σ20>35%':>13}")
     print(f"{'현행':<24}{base.kpi['total_return']:>9.2%}{base.kpi['cagr']:>8.2%}{mdd_of(base.equity):>9.2%}"
@@ -329,18 +333,30 @@ def main(quick: bool = False) -> None:
     for nm, m in mixes.items():
         print(f"{nm:<24}" + "".join(f"{m.get(k, 0):>10}" for k in kinds))
 
-    print("\n[2-2] 블록 길이 민감도 (A1 vs 현행) — 21일 선택에 의존하는가")
+    print("\n[2-4] 주문선 체결률 — 계획 매수 주문 대비 체결 (분모를 명시)")
+    print(f"{'규칙':<20}{'계획 grid':>10}{'체결 grid':>10}{'체결률':>9}{'계획 전체':>10}{'체결 전체':>10}{'체결률':>9}")
+    for nm, kwargs, res_r in (("현행 (축소)", {}, base),
+                              ("A1 이전 (생략)", dict(legacy_skip=True), results["A1 이전 (단 생략)"][0])):
+        pc: dict = {}
+        run_variant(b200, blev, P, W, plan_count=pc, **kwargs)
+        fm = fill_mix(res_r)
+        pg = sum(v for k, v in pc.items() if k.startswith("grid"))
+        fg = sum(v for k, v in fm.items() if k.startswith("grid"))
+        pa, fa = sum(pc.values()), sum(fm.values())
+        print(f"{nm:<20}{pg:>10}{fg:>10}{fg / pg:>9.2%}{pa:>10}{fa:>10}{fa / pa:>9.2%}")
+
+    print("\n[2-2] 블록 길이 민감도 (현행 vs A1 이전) — 21일 선택에 의존하는가")
     print(f"{'블록':>6}{'5%':>10}{'50%':>10}{'95%':>10}{'양(+) 비율':>12}")
-    a1 = results["A1 생략→축소"][0]
+    a1 = results["A1 이전 (단 생략)"][0]
     for blk in (5, 21, 63, 126, 252):
-        bs = paired_block_bootstrap(base.equity, a1.equity, block=blk)
+        bs = paired_block_bootstrap(a1.equity, base.equity, block=blk)   # 이전 → 현행 방향
         print(f"{blk:>6}{bs['p05']:>+10.4f}{bs['p50']:>+10.4f}{bs['p95']:>+10.4f}{bs['share_pos']:>12.1%}")
 
     print("\n[2-3] 변형 간 짝 비교 — A13 이 A1 보다 나은가 (기준선이 아니라 서로)")
-    a13 = results["A13 레버리지 우선 + 축소"][0]
+    a13 = results["A3+이전 (생략·레버 우선)"][0]
     a3 = results["A3 레버리지 우선"][0]
-    for nm, eq in (("A13 − A1", a13.equity), ("A3 − A1", a3.equity)):
-        bs = paired_block_bootstrap(a1.equity, eq)
+    for nm, eq in (("A3+이전 − 이전", a13.equity), ("A3 − 현행", a3.equity)):
+        bs = paired_block_bootstrap(a1.equity if "이전" in nm else base.equity, eq)
         print(f"  {nm:<10} 관측 {bs['obs']:+.4f} · 5%/50%/95% {bs['p05']:+.4f}/{bs['p50']:+.4f}/{bs['p95']:+.4f}"
               f" · 양(+) 비율 {bs['share_pos']:.1%}")
 

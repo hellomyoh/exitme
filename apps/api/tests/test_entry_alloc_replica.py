@@ -21,27 +21,45 @@ def _bars():
 
 
 def test_replica_without_switches_matches_the_planner_every_day():
+    """스위치 없는 복제본 = 현행 플래너(A1 채택 후: 현금 부족 단은 축소)."""
     b200, blev = _bars()
     n, mism = check_equivalence(b200, blev, P)
     assert n > 300, n                       # 워밍업 뒤 계획일이 충분히 검사됐다
     assert mism == [], mism[:3]
 
 
-def test_clip_mode_never_exceeds_the_fee_inclusive_budget_and_only_adds_rungs():
+def test_current_planner_clips_the_rung_the_old_rule_dropped():
+    """A1 채택 확인 — 현금이 모자란 단을 현행은 축소해 내고, 종전 규칙(legacy_skip)은 통째로 생략한다.
+
+    로그의 `planner` 가 현행(축소), `variant` 가 종전(생략)이다.
+    """
     b200, blev = _bars()
     log, blog = [], []
-    run_variant(b200, blev, P, W, clip_rung=True, log=log, budget_log=blog)
-    assert blog == []                       # 수수료 포함 총 매수 ≤ 현금 + 축소 매도대금, 매일
-    assert log                              # 축소가 실제로 일어난 날이 있다
+    run_variant(b200, blev, P, W, legacy_skip=True, log=log, budget_log=blog)
+    assert log, "두 규칙이 갈리는 날이 없다 — 합성 봉이 현금 제약을 만들지 못했다"
+    dropped_rungs = 0
     for m in log:
-        added = [k for k in m["variant"] if k not in m["planner"]]
-        removed = [k for k in m["planner"] if k not in m["variant"]]
-        # K200 쪽 변화는 그리드 단뿐(부트스트랩·매도 불변). 축소된 단이 현금을 먹으면 뒤 단·레버리지가 줄 수 있다 — 플래너 순서 그대로
-        assert all(k[1] == "buy" and (k[0] == LEV or k[5].startswith("grid")) for k in added + removed), m
-        # 레버리지는 수량만 줄거나(현금이 0 이 되면) 사라진다 — 새 종류가 생기지는 않는다
-        assert {k[5] for k in added if k[0] == LEV} <= {k[5] for k in removed if k[0] == LEV}, m
-    # 최소 한 날은 플래너가 생략한 단이 축소돼 살아났다
-    assert any(any(k[0] != LEV and k[5] not in {r[5] for r in m["planner"]} for k in m["variant"]) for m in log)
+        only_now = [k for k in m["planner"] if k not in m["variant"]]     # 현행에만 있는 주문
+        only_old = [k for k in m["variant"] if k not in m["planner"]]     # 종전에만 있는 주문
+        assert all(k[1] == "buy" for k in only_now + only_old), m          # 매도는 건드리지 않는다
+        if any(k[0] != LEV and k[5].startswith("grid") for k in only_now):
+            dropped_rungs += 1
+    assert dropped_rungs > 0, "현행이 축소해 살린 그리드 단이 없다"
+
+
+def test_budget_guarantee_is_cash_at_planned_prices_not_the_buffer():
+    """예산 성질 — 이 표본·계획가격 기준으로 수수료 포함 매수가 현금을 넘은 날은 없다.
+    다만 현금버퍼(0.5%)까지 보존하지는 않는다(플래너가 예약에서 수수료를 빼지 않는 기존 성질).
+    일반적 보장이 아니다 — 실제 체결가·매도대금 변동은 이 검사의 범위 밖이다.
+    """
+    b200, blev = _bars()
+    for kw in ({}, {"legacy_skip": True}):
+        blog: list = []
+        run_variant(b200, blev, P, W, budget_log=blog, **kw)
+        assert all(kind != "cash" for kind, _, _ in blog), kw
+        for kind, _, over in blog:
+            if kind == "buffer":
+                assert 0 < over < 100_000, over
 
 
 def test_lev_first_keeps_the_volatility_gate():
@@ -71,7 +89,7 @@ def _clip_days(params=P, **kw):
     return log, blog
 
 
-def test_clip_handles_zero_and_negative_cash_and_the_one_share_boundary():
+def test_clip_handles_zero_and_negative_cash_and_the_one_share_boundary():  # noqa: D401
     """현금이 0·음수(버퍼가 현금보다 큼)면 주문을 만들지 않고, 1주도 못 사면 축소가 0 으로 끝난다."""
     from app.strategy.params import round_tick
     from app.strategy.planner import K200, Order
@@ -82,17 +100,18 @@ def test_clip_handles_zero_and_negative_cash_and_the_one_share_boundary():
     for cash, want in ((0.0, 0), (-1.0, 0), (price * (1 + c) - 1, 0), (price * (1 + c), 1), (price * (1 + c) * 2.5, 2)):
         assert int(max(cash, 0) // (price * (1 + c))) == want, (cash, want)
     # 실제 실행에서도 음수 현금 날에는 매수가 없다 (예산 위반 로그가 그 날을 세지 않는다)
-    log, blog = _clip_days(clip_rung=True)
+    _, blog = _clip_days()
     assert all(kind != "cash" for kind, _, _ in blog)
 
 
 def test_clip_prefers_the_shallow_rung_over_deeper_rungs_and_tactical_leverage():
-    """r2.1 §8.1 — A1 은 '오류 제거'가 아니라 배분 정책 변경이다: 얕은 단을 채우고 그만큼 뒤(깊은 단·레버리지)가 줄어든다."""
-    log, _ = _clip_days(clip_rung=True)
+    """r2.1 §8.1 — A1 은 '오류 제거'가 아니라 배분 정책 변경이다: 얕은 단을 채우고 그만큼 뒤(깊은 단·레버리지)가 줄어든다.
+    현행(축소) 기준으로 보면, 종전(생략)에는 있던 깊은 단·레버리지가 현행에는 없는 날이 있다."""
+    log, _ = _clip_days(legacy_skip=True)
     shallower = 0
     for m in log:
-        added = {k[5] for k in m["variant"] if k not in m["planner"]}
-        removed = {k[5] for k in m["planner"] if k not in m["variant"]}
+        added = {k[5] for k in m["planner"] if k not in m["variant"]}     # 현행에만 있는 것 = 축소로 살린 얕은 단
+        removed = {k[5] for k in m["variant"] if k not in m["planner"]}   # 종전에만 있던 것 = 밀려난 깊은 단·레버리지
         # 추가된 K200 단 번호 < 제거/축소된 K200 단 번호이거나, 레버리지가 줄어든 날
         if any(a.startswith("grid") for a in added) and (removed - added):
             shallower += 1
@@ -101,7 +120,7 @@ def test_clip_prefers_the_shallow_rung_over_deeper_rungs_and_tactical_leverage()
 
 def test_budget_guarantee_is_cash_not_the_cash_buffer():
     """r2.1 §8.2 — 수수료 포함 매수는 현금을 넘지 않지만, 버퍼까지 보존하지는 않는다(현행도 같다)."""
-    for kw in ({}, {"clip_rung": True}):
+    for kw in ({}, {"legacy_skip": True}):
         log, blog = _clip_days(**kw)
         assert all(kind != "cash" for kind, _, _ in blog), kw        # 현금 자체는 넘지 않는다
         for kind, _, over in blog:
