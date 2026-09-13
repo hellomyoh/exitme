@@ -1050,3 +1050,12 @@
 - 테스트 결과: `pytest -q tests/` → **348 passed** (신규 3 — 사전 조회분을 09:01 이 재조회 없이 사용·장중 캐시 미사용, 잔고 실패에도 발주되고 정지 없음, 불일치는 종전대로 정지). 기존 감시 재시도 테스트는 잔고 실패가 더는 생략 경로가 아니므로 **시가 조회 실패**로 바꿔 같은 성질을 검증한다.
 - 문서: `docs/egw00215-order-failure-20260913.md` §7.
 - Git commit: fix: prefetch the balance before the open and keep placing orders when it is unavailable
+
+## [2026-09-13] fix | 접근토큰 장 시작 전 발급 (06:30) — 사용자 지시
+
+- 지시: "토큰은 24시간 유효하니까 거래 시작 전 05~07시에 한 번 만들어 놓으면 되는 거 아냐?" — 맞다. 확인: `_issue` 가 `expires_in`(기본 86400초)로 만료를 잡고 Redis 공용 캐시에 남은 시간만큼 TTL 로 저장한다(`_EXPIRY_MARGIN` 10분).
+- 문제였던 것: `_client()` 는 계좌마다 `KisAuth` 를 새로 만들고 그 락이 **인스턴스 단위**라, 장중 만료 순간 여러 호출이 동시에 발급하면 **EGW00133(앱키당 분당 1회)** 이 난다. 계좌를 병렬로 돌릴 때 남는 유일한 공유 자원이 토큰 발급이었다.
+- 조치: `kis_token_warm` Celery 태스크(평일 **06:30**) — 포트에 연결된 계좌마다 `access_token()` 한 번. 그날의 모든 호출은 캐시만 읽는다. 같은 앱키·시크릿이면 두 번째부터 발급하지 않고, 실패해도 그날 첫 호출이 종전처럼 발급하므로 배치가 막히지 않는다. 배치 경로라 `wait_on_rate_limit=True`(분당 제한이면 기다렸다 재확인).
+- 테스트 결과: `pytest -q tests/` → **349 passed** (신규 1 — 계좌별 1회 발급·실패해도 예외 없이 기록만).
+- 문서: `docs/egw00215-order-failure-20260913.md` §7.4.
+- Git commit: fix: warm the KIS access token before the session opens

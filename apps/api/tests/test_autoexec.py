@@ -731,3 +731,38 @@ def test_a_real_reconcile_mismatch_still_stops_everything():
     assert rec["submitted"] == 0 and rec["skipped"] == 2 and fake.placed == []
     st, view = _orders(c, h, pid, today)
     assert "사전 대조 불일치" in st["grid1"]["message"] and view["paused"] is True
+
+
+def test_token_warm_issues_once_per_app_key_before_the_session():
+    """06:30 토큰 워밍 (2026-09-13 지시) — 포트에 연결된 계좌마다 접근토큰을 미리 받아 둔다.
+
+    토큰은 24시간 유효하고 발급은 앱키당 분당 1회라, 장중에 만료를 만나 여러 호출이 동시에 발급하면 EGW00133 이 난다.
+    미리 받아 두면 그날 호출은 캐시만 읽는다 — 09:01 병렬 실행의 선결 조건.
+    """
+    import app.autoexec as ae
+
+    c, h = _client()
+    today = datetime.now(KST).date()
+    pid, aid = _setup_portfolio(c, h, today)
+    issued: list[int] = []
+
+    class _Auth:
+        def __init__(self, cred):
+            self.cred = cred
+
+        def access_token(self):
+            issued.append(self.cred.id)
+            return "tok"
+
+    with SessionLocal() as s:
+        out = ae.warm_tokens(s, now=datetime.combine(today, time(6, 30), tzinfo=KST),
+                             auth_factory=_Auth, only_credential_ids={aid})
+    assert out["ok"] == [aid] and out["failed"] == [] and issued == [aid]
+
+    class _Broken(_Auth):
+        def access_token(self):
+            raise RuntimeError("KIS error EGW00133 토큰 발급이 분당 1회로 제한됩니다")
+
+    with SessionLocal() as s:   # 실패해도 예외를 올리지 않는다 — 그날 첫 호출이 발급한다
+        out = ae.warm_tokens(s, auth_factory=_Broken, only_credential_ids={aid})
+    assert out["ok"] == [] and out["failed"][0]["credential_id"] == aid and "EGW00133" in out["failed"][0]["error"]
