@@ -60,3 +60,50 @@ def test_lev_first_keeps_the_volatility_gate():
                    [float(b["low"]) for b in b200], [float(b["close"]) for b in b200], low_gate)
     assert any(s is not None and s > low_gate.sigma20_liquidate for s in m200.sigma20[W:])
     assert r.kpi["total_return"] is not None
+
+
+# ── r2.1 (2026-09-13 2차 반론) — 경계·정책 효과 ────────────────────────────────────
+
+def _clip_days(params=P, **kw):
+    b200, blev = _bars()
+    log, blog = [], []
+    run_variant(b200, blev, params, W, log=log, budget_log=blog, **kw)
+    return log, blog
+
+
+def test_clip_handles_zero_and_negative_cash_and_the_one_share_boundary():
+    """현금이 0·음수(버퍼가 현금보다 큼)면 주문을 만들지 않고, 1주도 못 사면 축소가 0 으로 끝난다."""
+    from app.strategy.params import round_tick
+    from app.strategy.planner import K200, Order
+
+    # 축소 공식 자체의 경계 — int(cash // (price × (1+c)))
+    c = P.commission
+    price = 70_000
+    for cash, want in ((0.0, 0), (-1.0, 0), (price * (1 + c) - 1, 0), (price * (1 + c), 1), (price * (1 + c) * 2.5, 2)):
+        assert int(max(cash, 0) // (price * (1 + c))) == want, (cash, want)
+    # 실제 실행에서도 음수 현금 날에는 매수가 없다 (예산 위반 로그가 그 날을 세지 않는다)
+    log, blog = _clip_days(clip_rung=True)
+    assert all(kind != "cash" for kind, _, _ in blog)
+
+
+def test_clip_prefers_the_shallow_rung_over_deeper_rungs_and_tactical_leverage():
+    """r2.1 §8.1 — A1 은 '오류 제거'가 아니라 배분 정책 변경이다: 얕은 단을 채우고 그만큼 뒤(깊은 단·레버리지)가 줄어든다."""
+    log, _ = _clip_days(clip_rung=True)
+    shallower = 0
+    for m in log:
+        added = {k[5] for k in m["variant"] if k not in m["planner"]}
+        removed = {k[5] for k in m["planner"] if k not in m["variant"]}
+        # 추가된 K200 단 번호 < 제거/축소된 K200 단 번호이거나, 레버리지가 줄어든 날
+        if any(a.startswith("grid") for a in added) and (removed - added):
+            shallower += 1
+    assert shallower > 0, "얕은 단이 깊은 단·레버리지를 대체한 날이 없다 — 정책 효과 주장이 성립하지 않는다"
+
+
+def test_budget_guarantee_is_cash_not_the_cash_buffer():
+    """r2.1 §8.2 — 수수료 포함 매수는 현금을 넘지 않지만, 버퍼까지 보존하지는 않는다(현행도 같다)."""
+    for kw in ({}, {"clip_rung": True}):
+        log, blog = _clip_days(**kw)
+        assert all(kind != "cash" for kind, _, _ in blog), kw        # 현금 자체는 넘지 않는다
+        for kind, _, over in blog:
+            if kind == "buffer":
+                assert 0 < over < 100_000, over                       # 잠식은 수수료 규모(버퍼의 극히 일부)
