@@ -1018,3 +1018,14 @@
 - 함께 확인: `무인 매도 꺼짐 — 수동 처리` 3줄은 오류가 아니라 계좌별 **매도 플래그 off** 때문.
 - 문서: `docs/egw00215-order-failure-20260913.md`.
 - Git commit: fix: retry the ledger rate limit and re-place lines a transient failure skipped
+
+## [2026-09-13] feat | 과거 로트 전략 태그 소급 + 레짐 표시 보강 (사용자 지시 "모두 진행")
+
+- **소급 태깅** (`apps/api/scripts/retag_legacy_lots.py`): 0027 이전 매수는 태그가 비어 있어 `rebuild_lots` 의 종전 근사로 떨어졌다 — K200 은 익절가를 **최근 종가**×(1+오늘 Grid)로 잡아 체결가 아래가 될 수 있었고(감사 A1: 그리드 체결의 22%), 레버리지는 전부 `lev_strat` 이라 **전술 이탈 매도가 나가지 않았다**(감사 A3). 즉 감사 수정은 새 체결에만 적용되고 기존 보유는 옛 경로였다. 개발 DB 실측: 매수 64건 **전부 태그 없음**.
+- 채우는 규칙은 `lots.lot_tag`(백테스트 체결 블록)와 동일 — 증권사 주문 기록이 있으면 그 종류로, 없으면 체결일의 **계획일 레짐·Grid** 를 재생해 상승장이면 core, 아니면 grid + 익절가 = **체결가**×(1+계획일 Grid). 레버리지는 `lev_strat` 로 명시(수동 로트에 전술 근거가 없고 현행 폴백과 같은 동작이라 매매가 바뀌지 않는다). 매도는 주문 기록이 있을 때만, 없으면 종전 FIFO.
+- 개발 DB 적용(dry-run): `buys=58 · tagged_replay=56 · lev=2 · no_bar=6` — 소급 뒤 익절가는 항상 체결가 위(+1.26% 표본). `_portfolio_orders` 의 시장 맥락 블록을 `signals.market_context` 로 추출해 주문표와 **같은 기준**(같은 페어·Params·레짐 시계열)으로 재생한다.
+- **레짐 표시** (`apps/api/app/regime_view.py`, 표시 전용): 2026-09-13 검증서의 제안 1·3 구현. ① 중립을 조정(L>0·S≤0)·회복(L<0·S≥0)·경계로 갈라 라벨 — 다음 레짐 예측력이 없으므로 문구·툴팁 모두 "상태 설명"으로 못박았다 ② 레버리지 차단 사유(하락장/중립장 · σ20 > 35% · E ≤ 1)를 한 줄로. 판정 공식·주문 규칙·응답의 다른 값은 불변이며 `indicators`·`e_target`·`regime` 만 쓴다.
+- 화면: 대시보드 레짐 카드(세분화 배지 + 설명 + 위험 줄), 주문표 머리글(세분화 배지 + 툴팁), 주문표 위 위험 줄(하락장 안내와 중복 시 생략).
+- 테스트 결과: `pytest -q tests/` → **345 passed** (신규 5 — 소급 태깅 1, 표시 보조 4). `npx tsc --noEmit` 무오류. 헤드리스 확인: 주문표 머리글 "중립장 조정 · E 65.0%" + "위험 · 중립장 — 레버리지 보유 없음", 대시보드 카드 "중립장 | 조정 | E 65.0% | … | 위험 · σ20 38% > 35% — 레버리지 청산"(응답 가로채기 — 개발 DB 는 09-11 MISSING 스냅샷이 최신이라 실데이터로 OK 카드가 뜨지 않는다), 콘솔 오류 없음.
+- 운영 반영은 사용자 몫: `docker compose exec -T api python -m scripts.retag_legacy_lots --dry-run` 으로 건수 확인 뒤 옵션 없이 재실행.
+- Git commit: feat: backfill legacy lot tags and label the neutral sub-state and leverage gate

@@ -109,7 +109,12 @@ type TrendHandle = { name: string; color: string; kind: TrendKind;
   api: ISeriesApi<"Area"> | ISeriesApi<"Line"> };
 type TrendTip = { x: number; flip: boolean; date: string;
   rows: { name: string; color: string; value: number }[] };
-type Signal = { status: string; regime?: string; e_target?: number; w_200?: number; w_lev?: number };
+type RegimeDetail = {
+  sub?: { name: string; note: string; l: number; s: number } | null;
+  risk?: { code: string; text: string } | null;
+};
+type Signal = { status: string; regime?: string; e_target?: number; w_200?: number; w_lev?: number;
+                regime_detail?: RegimeDetail | null };
 type CalItem = { date: string; pnl: number };
 
 const REGIME_KO: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -361,14 +366,30 @@ export default function DashboardPage() {
           <CardTitle>RAVG v2.5 레짐</CardTitle>
           {signal?.status === "OK" ? (
             <>
-              <div className="mb-3 flex items-center gap-2">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
                 <span className="text-xl font-extrabold" style={{ color: REGIME_COLOR[signal.regime ?? ""] }}>
                   {REGIME_KO[signal.regime ?? ""]}
                 </span>
+                {/* 중립 세분화 — 지금 어떤 중립인지의 설명이지 다음 방향의 신호가 아니다 (2026-09-13 검증서 §2) */}
+                {signal.regime_detail?.sub && (
+                  <span title={`${signal.regime_detail.sub.note}
+종가/MA200 ${fmtPct(signal.regime_detail.sub.l, 1)} · MA20/MA60 ${fmtPct(signal.regime_detail.sub.s, 1)}
+다음 레짐을 예측하지는 않습니다`}
+                    className="rounded-md bg-raised px-1.5 py-0.5 text-xs font-semibold text-muted">
+                    {signal.regime_detail.sub.name}
+                  </span>
+                )}
                 <Badge tone="accent">E {fmtPct(signal.e_target)}</Badge>
               </div>
               <GaugeBar ratio={(signal.e_target ?? 0) / 1.3} color={REGIME_COLOR[signal.regime ?? ""]} />
               <div className="mt-2 text-xs text-faint">K200 {fmtPct(signal.w_200)} · 레버리지 {fmtPct(signal.w_lev)}</div>
+              {signal.regime_detail?.sub && (
+                <div className="mt-1 text-xs text-faint">{signal.regime_detail.sub.note}</div>
+              )}
+              {/* 레버리지가 막혀 있으면 그 사유 — 이미 작동 중인 통제의 설명 (2026-09-13 검증서 §4) */}
+              {signal.regime_detail?.risk && (
+                <div className="mt-1 text-xs font-medium text-down">위험 · {signal.regime_detail.risk.text}</div>
+              )}
             </>
           ) : <p className="text-[13px] text-faint">{signal?.status ?? "—"} — 시딩·배치 후 표시됩니다</p>}
         </Card>

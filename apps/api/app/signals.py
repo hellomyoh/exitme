@@ -16,6 +16,7 @@ from app.auth import current_user_id
 from app.db import get_session
 from app.models import OrderSheetRow, SignalSnapshot, TradePortfolio
 from app.strategy.backtest import run_backtest
+from app import regime_view
 from app.strategy.params import Params
 
 router = APIRouter()
@@ -182,28 +183,19 @@ def _record(session: Session, trade_date: date, status: str, regime=None, e=None
     return snap
 
 
-def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bool = False,
-                      now: datetime | None = None) -> dict:
-    """내 실전 포트 기준 주문표 — 보유 로트·현금을 플래너 Portfolio 로 변환해 plan() 직접 실행 (ADR-005).
+def market_context(session: Session, pf_row, user_id: int) -> dict:
+    """포트가 쓰는 시장 맥락 — 종목 페어·비용·파라미터·시세·레짐 (2026-09-13 추출).
 
-    force_freeze=True 는 09:01 실행기 전용 — 이 계산을 그날의 주문표로 동결한다(ADR-009). 화면 조회는 동결 뒤에는 스냅샷을 그대로 돌려준다.
-
-    근사 규칙(ASSUMPTIONS): 실전 로트의 익절가는 '오늘 Grid' 기준 매수가×(1+Grid)로 부여,
-    상승장이면 코어로 간주. 200 ETF 는 KODEX/TIGER 모두 K200 레그로 매핑.
+    `_portfolio_orders` 가 쓰던 블록을 그대로 꺼낸 것이다. 로트 태그 소급(scripts/retag_legacy_lots.py)이
+    **주문표와 똑같은 기준**(같은 페어·같은 Params·같은 레짐 시계열)으로 과거를 재생하도록 한곳에 둔다.
+    반환: codes·etf·params·algo_source·bars_200·bars_lev·result(백테스트)·regime(현재)·m200·mlev.
     """
-    from sqlalchemy import func
-
     from app.backtests import load_aligned_bars
-    from app.models import Instrument, PositionLot, TradePortfolio, TradeTransaction
-    from app.strategy.planner import K200, LEV, Portfolio, grid_ratio, plan, prepare
-    from app.strategy.params import round_tick
+    from app.models import Instrument, PositionLot
+    from app.strategy.planner import prepare
     from app.strategy.regime import Regime
 
-    pf_row = session.get(TradePortfolio, pid)
-    if pf_row is None or pf_row.user_id != user_id:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="portfolio not found")
-
+    pid = pf_row.id
     from app.backtests import base_costs_for, user_algo_overrides
     if pf_row.market == "US":
         # 보유 레버리지에 따라 페어 결정 (TQQQ 보유 시 3배 파라미터)
@@ -251,6 +243,39 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
                        [float(b["low"]) for b in bars], [float(b["close"]) for b in bars], params)
 
     m200, mlev = to_market(bars_200), to_market(bars_lev)
+    return {"codes": codes, "etf": etf, "params": params, "algo_source": algo_source, "algo": algo,
+            "bars_200": bars_200, "bars_lev": bars_lev, "result": result, "regime": regime,
+            "m200": m200, "mlev": mlev}
+
+
+def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bool = False,
+                      now: datetime | None = None) -> dict:
+    """내 실전 포트 기준 주문표 — 보유 로트·현금을 플래너 Portfolio 로 변환해 plan() 직접 실행 (ADR-005).
+
+    force_freeze=True 는 09:01 실행기 전용 — 이 계산을 그날의 주문표로 동결한다(ADR-009). 화면 조회는 동결 뒤에는 스냅샷을 그대로 돌려준다.
+
+    근사 규칙(ASSUMPTIONS): 실전 로트의 익절가는 '오늘 Grid' 기준 매수가×(1+Grid)로 부여,
+    상승장이면 코어로 간주. 200 ETF 는 KODEX/TIGER 모두 K200 레그로 매핑.
+    """
+    from sqlalchemy import func
+
+    from app.backtests import load_aligned_bars
+    from app.models import Instrument, PositionLot, TradePortfolio, TradeTransaction
+    from app.strategy.planner import K200, LEV, Portfolio, grid_ratio, plan, prepare
+    from app.strategy.params import round_tick
+    from app.strategy.regime import Regime
+
+    pf_row = session.get(TradePortfolio, pid)
+    if pf_row is None or pf_row.user_id != user_id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="portfolio not found")
+
+    ctx = market_context(session, pf_row, user_id)
+    codes, etf, params = ctx["codes"], ctx["etf"], ctx["params"]
+    algo_source, algo = ctx["algo_source"], ctx["algo"]
+    bars_200, bars_lev = ctx["bars_200"], ctx["bars_lev"]
+    result, regime = ctx["result"], ctx["regime"]
+    m200, mlev = ctx["m200"], ctx["mlev"]
     last = len(bars_200) - 1
     grid_today = grid_ratio(m200.atr20[last], m200.closes[last], params)
     base_day = date.fromisoformat(bars_200[last]["date"])
@@ -331,6 +356,8 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
         "signal_date": base_day.isoformat(), "regime": regime.value, "e_target": p.e_target,
         "w_200": p.w_200, "w_lev": p.w_lev, "trade_date": base_day.isoformat(),   # 같은 계획에서 (감사 A12) — 공용 모델 값 덮어씀
         "indicators": {k: v for k, v in (p.indicators or {}).items() if v is not None},
+        # 표시 전용 레짐 상세 (2026-09-13, 제안 1·3): 중립 세분화 라벨 + 레버리지 차단 사유. 판정·주문 규칙 불변
+        "regime_detail": regime_view.detail(regime.value, p.indicators, p.e_target, params),
         # 어떤 공식으로 계산했는지 표시용 (2026-09-05): portfolio = 전환 시 동결 변수, settings = 설정 추종
         "algo_source": algo_source, "algo_overrides": algo, "algo_detail": algo_detail,
         "reconcile": reconcile,  # 계획 vs 등록 체결 대조 경고 (2026-09-05 지시) — 표시만
@@ -573,7 +600,7 @@ def get_daily_signal(date_: date | None = Query(default=None, alias="date"),
                 "w_lev": float(snap.w_lev) if snap.w_lev is not None else None,
                 "gap_cancel_below": extra["gap_cancel_below"] or snap.gap_cancel_below,
                 "indicators": snap.indicators, "detail": snap.detail,
-                **extra,
+                **extra,   # 포트 기준 값이 공용 모델 값을 덮는다 — regime_detail 도 포트 계산분이 우선
             }
         return {
             "status": "OK", "trade_date": extra["signal_date"], "version": None,
@@ -593,6 +620,8 @@ def get_daily_signal(date_: date | None = Query(default=None, alias="date"),
         "w_lev": float(snap.w_lev) if snap.w_lev is not None else None,
         "gap_cancel_below": snap.gap_cancel_below,
         "indicators": snap.indicators, "detail": snap.detail,
+        "regime_detail": regime_view.detail(snap.regime, snap.indicators,
+                                            float(snap.e_target) if snap.e_target is not None else None),
         "orders": [
             {"instrument": o.instrument, "side": o.side, "otype": o.otype,
              "qty": o.qty, "price": o.price, "kind": o.kind} for o in orders
