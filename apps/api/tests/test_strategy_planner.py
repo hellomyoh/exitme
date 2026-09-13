@@ -307,15 +307,55 @@ def test_reduce_bypasses_band_on_regime_change_and_bear():
     assert [o for o in p2.orders if o.kind == "reduce"]
 
 
-def test_core_lot_gets_tp_on_transition_day():
-    """검증 ①③: BULL→NEUTRAL 전환일에 core 로트도 전환일 종가 기준 익절 발행 (feature §5.6)."""
+def test_core_lot_gets_tp_ladder_on_transition_day():
+    """검증 ①③ + ADR-014: BULL→NEUTRAL 전환일에 core 로트도 익절 발행 — 단, **사다리**로 나눠 낸다.
+
+    가격은 전환일 종가 × (1 + k·Grid) (k=1..3), 수량은 grid_weights(50/30/20), 합계는 보유 전량.
+    """
     m = mk_market(ma20=67000.0, ma60=69000.0, ma200=65000.0)  # ma20 < ma60×0.98 → NEUTRAL 전이
     lots = [Lot(K200, 300, 70000, "core", None, 0)]
     p = plan(I, m, mk_lev(), Regime.BULL, pf_with(8e7, lots), P)
     assert p.regime is Regime.NEUTRAL
+    tp = sorted([o for o in p.orders if o.kind == "tp"], key=lambda o: o.price)
+    g = p.indicators["grid"]
+    assert [o.qty for o in tp] == [150, 90, 60]                       # 50/30/20, 합 300
+    assert [o.price for o in tp] == [round_tick(70000 * (1 + g * k), P.tick, up=True) for k in (1, 2, 3)]
+    assert all(o.lot_id == 0 for o in tp)                             # 같은 로트를 가리킨다
+
+
+def test_core_tp_ladder_allocation_boundaries():
+    """사다리 수량 배분 — 합계 보존·최대잔여법(1주는 가장 가까운 단)·빈 단 없음."""
+    from app.strategy.planner import _core_tp_ladder
+
+    for n in (1000, 100, 10, 7, 3, 2, 1):
+        lad = _core_tp_ladder(n, 70000, 0.01, P)
+        assert sum(q for q, _ in lad) == n, (n, lad)                  # 수량 유실·초과 없음
+        assert all(q > 0 for q, _ in lad)                             # 빈 단 없음
+        assert [pr for _, pr in lad] == sorted(pr for _, pr in lad)   # 가격 오름차순
+    assert _core_tp_ladder(1, 70000, 0.01, P) == [(1, round_tick(70000 * 1.01, P.tick, up=True))]
+    assert _core_tp_ladder(0, 70000, 0.01, P) == []
+    assert [q for q, _ in _core_tp_ladder(100, 70000, 0.01, P)] == [50, 30, 20]
+
+
+def test_reduce_earmark_takes_precedence_over_the_tp_ladder():
+    """축소(리밸런싱) 매도가 FIFO 로 먼저 물량을 잡고, **남은 수량만** 사다리로 나뉜다 — 중복 매도 없음."""
+    m = mk_market(ma20=68000.0, ma60=69000.0, ma200=65000.0)          # 중립 유지
+    lots = [Lot(K200, 1300, 70000, "core", None, 0)]                  # 9,100만 — 목표 초과
+    p = plan(I, m, mk_lev(), Regime.NEUTRAL, pf_with(1e7, lots), P)
+    reduce_qty = sum(o.qty for o in p.orders if o.kind == "reduce")
     tp = [o for o in p.orders if o.kind == "tp"]
-    assert tp and tp[0].qty == 300
-    assert tp[0].price == round_tick(70000 * (1 + p.indicators["grid"]), P.tick, up=True)
+    assert reduce_qty > 0
+    assert sum(o.qty for o in tp) == 1300 - reduce_qty                # 전량 예약 ≤ 보유
+    assert len(tp) <= P.grid_steps
+
+
+def test_grid_lot_keeps_its_single_frozen_tp():
+    """그리드 로트는 체결가에 묶인 익절가가 정본 규칙 — 사다리 대상이 아니다."""
+    m = mk_market(ma20=68000.0, ma60=69000.0, ma200=65000.0)
+    lot = Lot(K200, 100, 68950, "grid", 69985, 0)
+    p = plan(I, m, mk_lev(), Regime.NEUTRAL, pf_with(1e8, [lot]), P)
+    tp = [o for o in p.orders if o.kind == "tp"]
+    assert len(tp) == 1 and tp[0].price == 69985 and tp[0].qty == 100
 
 
 def test_strategic_track_enters_at_small_wlev():

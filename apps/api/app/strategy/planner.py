@@ -112,6 +112,29 @@ def grid_ratio(atr: float, close: float, params: Params) -> float:
     return min(max(params.grid_coef * atr / close, params.grid_min), params.grid_max)
 
 
+def _core_tp_ladder(available: int, close: float, grid: float, params: Params) -> list[tuple[int, int]]:
+    """코어 로트 익절 사다리 — [(수량, 지정가)] (ADR-014).
+
+    매수 그리드의 거울: 가격은 `종가 × (1 + k·Grid)` (k=1..grid_steps, 호가 올림), 수량은 `grid_weights` 비율.
+    마지막 단이 잔량을 가져가 **합계가 정확히 available** 이 된다(수량 유실·초과 없음).
+    수량이 단수보다 적으면 앞 단부터 1주씩만 배정되고 빈 단은 만들지 않는다.
+    """
+    ws = list(params.grid_weights[:params.grid_steps])
+    ws += [0.0] * (params.grid_steps - len(ws))
+    total_w = sum(ws)
+    if total_w <= 0:
+        ws = [1.0 / params.grid_steps] * params.grid_steps
+        total_w = 1.0
+    exact = [available * w / total_w for w in ws]
+    base = [int(x) for x in exact]
+    left = available - sum(base)
+    # 잔량은 **최대잔여법**으로 — 동률이면 가까운 단(k 작은 쪽) 우선. 1주면 1단(가장 잘 닿는 가격)에 간다
+    for k in sorted(range(params.grid_steps), key=lambda j: (-(exact[j] - base[j]), j))[:left]:
+        base[k] += 1
+    return [(q, round_tick(close * (1 + grid * (k + 1)), params.tick, up=True))
+            for k, q in enumerate(base) if q > 0]
+
+
 def apply_regime_conversion(pf: Portfolio, old: Regime, new: Regime, grid_today: float, close: float,
                             params: Params) -> None:
     """레짐 전환 시 로트 재분류 (feature-strategy-engine §5.6).
@@ -207,7 +230,6 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
     if (regime is Regime.NEUTRAL or not f.f1_no_tp_in_bull) and regime is not Regime.BEAR:
         # 중립 왕복 익절 (f1 off 이면 v1: 상승장에도 익절)
         # 전환일의 core 로트도 전환일 종가 기준 익절가로 즉시 발행 (feature §5.6, 검증 ①③)
-        core_tp = round_tick(close * (1 + grid), params.tick, up=True)
         earmarked = reduce_qty  # 축소가 FIFO 로 소진할 물량
         for idx, l in enumerate(pf.lots):
             if l.instrument != K200:
@@ -220,7 +242,13 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
             if l.kind == "grid" and l.tp_price:
                 orders.append(Order(K200, "sell", "limit", available, l.tp_price, "tp", lot_id=idx))
             elif l.kind == "core":
-                orders.append(Order(K200, "sell", "limit", available, core_tp, "tp", lot_id=idx))
+                # 코어 로트(보유분 입력·상승장 체결 후 전환 전)는 익절가를 자기 체결가가 아니라 **오늘 종가**에서 받는
+                # 근사 로트다. 그 근사를 한 가격에 몰지 않고 매수 그리드를 거울처럼 뒤집어 **사다리로 나눈다**
+                # (ADR-014, 2026-09-13 사용자 승인): 종가×(1+k·Grid), k=1..grid_steps, 수량은 grid_weights.
+                # 작은 급등 한 번에 전량이 나가던 것을 줄인다(전량 비중 57%→42%). 그리드 로트는 체결가에 묶인
+                # 익절가가 정본 규칙이라 대상이 아니다. docs/entry-holding-tp-ladder-20260913.md
+                for sq, sp in _core_tp_ladder(available, close, grid, params):
+                    orders.append(Order(K200, "sell", "limit", sq, sp, "tp", lot_id=idx))
 
     # ── 소량 진입 부트스트랩 (ADR-010, 2026-09-08): 시작 후 boot_days 거래일 동안 목표 미달분의 boot_frac 을 종가 근처 지정가로 —
     #    콜드 스타트의 첫 체결(그리드 1단은 하루 25%)을 1~2일로 앞당긴다. 하락장은 boot_bear_mult 배(그리드가 정지된 하락장에도 소량 진입).

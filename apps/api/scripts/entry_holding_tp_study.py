@@ -72,6 +72,29 @@ def make_plan(mults=None, weights=None, start_index=None):
     return wrapped
 
 
+def make_legacy_single():
+    """ADR-014 채택 전 동작 재현 — core 로트 익절을 **한 가격·전량** 한 줄로 되돌린다."""
+    def wrapped(i, m200, mlev, prev_regime, pf, params, days_since_start=None):
+        p = _REAL_PLAN(i, m200, mlev, prev_regime, pf, params, days_since_start=days_since_start)
+        if p.status != "OK":
+            return p
+        core_tp = [o for o in p.orders
+                   if o.instrument == K200 and o.side == "sell" and o.kind == "tp" and o.lot_id is not None
+                   and pf.lots[o.lot_id].kind == "core"]
+        if len(core_tp) <= 1:
+            return p
+        close, grid = p.indicators["close"], p.indicators["grid"]
+        price = round_tick(close * (1 + grid), params.tick, up=True)
+        out = [o for o in p.orders if o not in core_tp]
+        by_lot: dict = {}
+        for o in core_tp:
+            by_lot[o.lot_id] = by_lot.get(o.lot_id, 0) + o.qty
+        for lot_id, qty in by_lot.items():
+            out.append(Order(K200, "sell", "limit", qty, price, "tp", lot_id=lot_id))
+        return p.__class__(**{**p.__dict__, "orders": tuple(out)})
+    return wrapped
+
+
 def make_fixed_plan(mults, weights, hold_qty, reprice=False):
     """보고서(2026-09-13) 안 — P0·g0 를 **한 번 고정**하고 단별 잔여 수량을 상태로 유지한다.
 
@@ -126,8 +149,10 @@ def make_fixed_plan(mults, weights, hold_qty, reprice=False):
     return wrapped
 
 
-def run_case(b200, blev, params, start, hold_qty, hold_px, mults=None, weights=None, fixed=False, reprice=False):
-    bt.plan = (make_fixed_plan(mults, weights, hold_qty, reprice) if fixed
+def run_case(b200, blev, params, start, hold_qty, hold_px, mults=None, weights=None, fixed=False, reprice=False,
+             legacy=False):
+    bt.plan = (make_legacy_single() if legacy
+               else make_fixed_plan(mults, weights, hold_qty, reprice) if fixed
                else make_plan(mults, weights, start))
     try:
         return run_backtest(b200, blev, CAP * (1 - HOLD_FRAC), params, start_index=start,
@@ -171,7 +196,8 @@ def main() -> None:
     print(f"데이터 {dates[0]}~{dates[-1]} {len(b200)}봉 · 지문 {str(fp)[:16]}")
     print(f"시작 상태: 현금 {1 - HOLD_FRAC:.0%} + K200 {HOLD_FRAC:.0%}(시작일 종가 취득) · 1년 보유 · 시작일 21일 간격")
 
-    cases = [("L0 현행 (한 가격 전량)", None, None),
+    cases = [("L0 채택 전 (한 가격 전량)", None, None, False, False, True),
+             ("현행 (ADR-014 사다리)", None, None),
              ("L1 사다리 50/30/20 · 1·2·3×", (1, 2, 3), (0.5, 0.3, 0.2)),
              ("L2 균등 1/3 · 1·2·3×", (1, 2, 3), (1, 1, 1)),
              ("L3 촘촘 50/30/20 · 1·1.5·2×", (1, 1.5, 2), (0.5, 0.3, 0.2)),
@@ -187,11 +213,12 @@ def main() -> None:
         nm, mults, ws = case[0], case[1], case[2]
         fixed = len(case) > 3 and case[3]
         reprice = len(case) > 4 and case[4]
+        legacy = len(case) > 5 and case[5]
         rets, mdds, tpd, full = [], [], [], []
         for st_ in starts:
             hold_px = closes[st_]
             hold_qty = int(CAP * HOLD_FRAC // hold_px)
-            r = run_case(b200[:st_ + H], blev[:st_ + H], P, st_, hold_qty, hold_px, mults, ws, fixed, reprice)
+            r = run_case(b200[:st_ + H], blev[:st_ + H], P, st_, hold_qty, hold_px, mults, ws, fixed, reprice, legacy)
             base = CAP * (1 - HOLD_FRAC) + hold_qty * hold_px
             rets.append(r.equity[-1] / base - 1)
             mdds.append(mdd_of(r.equity))
@@ -205,7 +232,7 @@ def main() -> None:
 
     print(f"\n[2] 현행 대비 짝 비교 (같은 시작일)")
     print(f"{'변형':<28}{'평균 차이':>10}{'중앙':>10}{'최악':>10}{'최선':>10}{'이김':>6}{'짐':>5}{'동일':>6}")
-    b0 = out["L0 현행 (한 가격 전량)"]
+    b0 = out["L0 채택 전 (한 가격 전량)"]
     for nm, rets in out.items():
         if nm.startswith("L0"):
             continue
