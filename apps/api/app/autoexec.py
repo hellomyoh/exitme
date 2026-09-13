@@ -732,6 +732,37 @@ def _get_balance(pid: int, now: datetime) -> tuple[dict | None, datetime | None]
         return None, None
 
 
+def warm_tokens(session: Session, now: datetime | None = None, auth_factory=None,
+                only_credential_ids: set[int] | None = None) -> dict:
+    """장 시작 전 접근토큰 발급 (2026-09-13 지시) — 06:30, 포트에 연결된 계좌마다 한 번.
+
+    KIS 토큰은 24시간 유효하고 **발급은 앱키당 분당 1회**다. 장중에 만료되면 그때 발급해야 하고,
+    여러 호출이 동시에 만료를 만나면 서로 발급을 시도해 EGW00133 이 난다(`KisAuth._lock` 은 인스턴스 단위라
+    계좌마다 새 객체를 만드는 `_client()` 경로를 묶지 못한다). 미리 받아 Redis 공용 캐시에 넣어 두면
+    그날의 모든 호출이 캐시를 읽으므로 발급 경쟁이 생기지 않는다 — 09:01 병렬 실행의 선결 조건이기도 하다.
+
+    같은 앱키·시크릿을 쓰는 계좌가 여럿이면 두 번째부터는 캐시를 읽어 발급하지 않는다.
+    """
+    from app.services.kis_auth import KisAuth
+
+    now = now or datetime.now(KST)
+    out: dict = {"date": now.date().isoformat(), "ok": [], "failed": []}
+    pids = select(TradePortfolio.broker_credential_id).where(TradePortfolio.broker_credential_id.is_not(None))
+    q = select(BrokerCredential).where(BrokerCredential.id.in_(pids))
+    if only_credential_ids:
+        q = q.where(BrokerCredential.id.in_(list(only_credential_ids)))
+    for cred in session.scalars(q.order_by(BrokerCredential.id)).all():
+        try:
+            # 배치 경로 — 분당 제한을 만나면 기다렸다 다시 본다(대화형과 반대)
+            auth = (auth_factory or (lambda c: KisAuth(c.app_key, c.app_secret, c.env, wait_on_rate_limit=True)))(cred)
+            auth.access_token()
+            out["ok"].append(cred.id)
+        except Exception as exc:  # noqa: BLE001 — 실패해도 그날 첫 호출이 발급한다
+            logger.warning("KIS token warm failed cred=%s: %s", cred.id, exc)
+            out["failed"].append({"credential_id": cred.id, "error": str(exc)[:160]})
+    return out
+
+
 def prefetch_balances(session: Session, now: datetime | None = None, client_factory=None,
                       sleep_fn=_time.sleep, only_credential_ids: set[int] | None = None) -> dict:
     """08:45 사전 잔고 조회 (ADR-009 §2-4 보강, 2026-09-13 지시 1).
