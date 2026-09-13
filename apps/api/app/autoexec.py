@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import time as _time
 from datetime import date, datetime, time, timedelta, timezone
@@ -54,6 +55,13 @@ RETRY_WINDOW = (time(9, 0), time(15, 20))        # 장중 재시도 허용 구�
 RETRYABLE = ("failed", "skipped")                # 재시도 대상 상태. skipped_gap(그날의 전략 판정)·발주됨·체결은 대상 외
 REORDERABLE = ("failed", "skipped", "cancelled")  # 줄별 '재등록' 대상 — 사용자가 그 줄을 직접 취소한 경우 포함 (2026-09-10 지시)
 RETRY_LOCK_TTL = 60
+# 사전 잔고 조회 (2026-09-13 지시) — 09:01 의 KIS 호출 묶음에서 잔고 1건을 08:45 로 옮긴다.
+# 08:45 인 이유: 장전 시간외 종가매매가 08:30~08:40 이라 그 뒤로는 개장(09:00) 전까지 보유·예수금이 움직이지 않는다.
+# 캐시는 09:05 까지만 쓴다 — 개장 뒤에는 체결로 잔고가 바뀌므로 장중 재시도·감시는 반드시 새로 조회한다.
+BALANCE_KEY = "autoexec:balance:{pid}"
+BALANCE_TTL = 3600
+BALANCE_PREFETCH_AT = time(8, 45)
+BALANCE_CACHE_UNTIL = time(9, 5)
 
 SIDE_KO = {"buy": "매수", "sell": "매도"}
 
@@ -681,6 +689,86 @@ def _log_run(session: Session, pf: TradePortfolio, rec: dict, now: datetime, tri
               portfolio_id=pf.id, data={k: v for k, v in rec.items() if k != "name"}, at=now)
 
 
+def _redis():
+    try:
+        import redis as sync_redis
+
+        from app.config import get_settings
+
+        return sync_redis.from_url(get_settings().redis_url, decode_responses=True, socket_connect_timeout=1)
+    except Exception:  # noqa: BLE001 — Redis 없으면 캐시 없이 동작
+        return None
+
+
+def _put_balance(pid: int, bal: dict, now: datetime) -> bool:
+    r = _redis()
+    if r is None:
+        return False
+    try:
+        r.set(BALANCE_KEY.format(pid=pid), json.dumps({"at": now.isoformat(timespec="seconds"), "bal": bal}),
+              ex=BALANCE_TTL)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _get_balance(pid: int, now: datetime) -> tuple[dict | None, datetime | None]:
+    """사전 조회분 — 오늘 것이고 09:05 이전일 때만. 그 밖에는 (None, None) 이라 호출자가 직접 조회한다."""
+    if now.time() >= BALANCE_CACHE_UNTIL:
+        return None, None
+    r = _redis()
+    if r is None:
+        return None, None
+    try:
+        raw = r.get(BALANCE_KEY.format(pid=pid))
+        if not raw:
+            return None, None
+        row = json.loads(raw)
+        at = datetime.fromisoformat(row["at"])
+        if at.date() != now.date() or at.time() < time(8, 0):
+            return None, None
+        return row["bal"], at
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def prefetch_balances(session: Session, now: datetime | None = None, client_factory=None,
+                      sleep_fn=_time.sleep, only_credential_ids: set[int] | None = None) -> dict:
+    """08:45 사전 잔고 조회 (ADR-009 §2-4 보강, 2026-09-13 지시 1).
+
+    09:01 에 몰리던 원장 호출 중 잔고 1건을 장 시작 전으로 옮긴다. 실패해도 09:01 은 그대로 진행한다
+    (그때 직접 조회하고, 그것마저 실패하면 원장 기준으로 발주 — `_place_lines` ④).
+    """
+    now = now or datetime.now(KST)
+    today = now.date()
+    client_factory = client_factory or _client
+    out: dict = {"date": today.isoformat(), "ok": [], "failed": []}
+    q = select(TradePortfolio).where(TradePortfolio.market == "KR",
+                                     TradePortfolio.broker_credential_id.is_not(None))
+    if only_credential_ids:
+        q = q.where(TradePortfolio.broker_credential_id.in_(list(only_credential_ids)))
+    first = True
+    for pf in session.scalars(q.order_by(TradePortfolio.id)).all():
+        cred = session.get(BrokerCredential, pf.broker_credential_id)
+        if cred is None:
+            continue
+        state = pf_auto_state(pf)
+        allowed = account_auto_exec(cred)
+        if state["paused"] or not (allowed.get("buy") or allowed.get("sell")):
+            continue                      # 무인이 꺼진 포트는 09:01 에 발주하지 않으므로 미리 볼 필요도 없다
+        if not first:
+            sleep_fn(PORTFOLIO_GAP_SEC)   # 계좌마다 1초 간격 — 원장 초당 한도(EGW00215) 여유
+        first = False
+        try:
+            bal = client_factory(cred).fetch_balance()
+            _put_balance(pf.id, bal, now)
+            out["ok"].append(pf.id)
+        except Exception as exc:  # noqa: BLE001 — 실패는 기록만, 09:01 이 직접 조회한다
+            logger.warning("auto-exec balance prefetch failed pid=%s: %s", pf.id, exc)
+            out["failed"].append({"portfolio_id": pf.id, "error": str(exc)[:160]})
+    return out
+
+
 def _ledger_holdings(session: Session, pid: int) -> dict[str, int]:
     """앱 원장(잔여 로트) 기준 종목별 보유 수량 — 09:01 사전 대조에서 계좌 잔고와 비교한다."""
     from app.models import PositionLot
@@ -801,29 +889,40 @@ def _place_lines(session: Session, pf: TradePortfolio, client, keep: list[Broker
         grid = [r for r in keep if r.side == "buy" and (r.kind.startswith(GRID_KINDS_PREFIX) or r.kind == "boot")]
         _skip(grid, "skipped_gap", f"갭 취소 — 시가 {open_px:,}원 ≤ 기준 {int(float(gap_exact)):,}원, 그리드·초기 진입 매수 생략", rec, "skipped_gap")
         keep = [r for r in keep if r not in grid]
-    # ④ 잔고 — 원장 대조·매도 한도
+    # ④ 잔고 — 원장 대조·매도 한도. 사전 조회분(08:45)이 있으면 그것을 쓰고, 없으면 지금 조회한다 (2026-09-13 지시 1)
     deposit = 0
+    bal_note = ""
     if keep:
-        try:
-            bal = client.fetch_balance()
-        except Exception as exc:  # noqa: BLE001
-            _skip(keep, "skipped", f"잔고 조회 실패로 발주하지 않았습니다 — {humanize_kis_error(str(exc)[:120])}", rec, "skipped", cause="api")
-            keep = []
+        bal, at = _get_balance(pf.id, now)
+        if bal is None:
+            try:
+                bal = client.fetch_balance()
+            except Exception as exc:  # noqa: BLE001
+                # 조회 실패로 발주를 멈추지 않는다 (2026-09-13 지시 2): 잔고가 모자라면 증권사가 거절하므로
+                # 조회 실패가 곧 "주문하면 안 되는 상태"는 아니다. 원장으로 상한만 걸고 사유를 줄마다 남긴다.
+                # 잃는 것은 사전 대조뿐 — 원장과 계좌가 어긋나 있으면 이 날은 걸러지지 않는다(체결 뒤 대조가 잡는다).
+                bal = None
+                bal_note = f"잔고 확인 불가({humanize_kis_error(str(exc)[:60])}) — 원장 기준 발주"
+                logger.warning("auto-exec balance unavailable pid=%s: %s — proceeding on ledger", pf.id, exc)
+        ledger = _ledger_holdings(session, pf.id)
+        if bal is None:
+            deposit = int((plan.get("account") or {}).get("cash") or 0)   # 매수가능조회 실패 시의 폴백 예산 = 원장 현금
+            held = ledger                                                  # 매도 상한 = 원장 보유
         else:
             deposit = int(bal.get("deposit") or 0)
             held = {h["code"]: int(h["qty"]) for h in bal.get("holdings", [])}
-            ledger = _ledger_holdings(session, pf.id)
             diffs = [(c, ledger.get(c, 0), held.get(c, 0)) for c in (code_200, code_lev) if ledger.get(c, 0) != held.get(c, 0)]
             if diffs:
                 detail = ", ".join(f"{c} 원장 {l:,}주 ≠ 계좌 {a:,}주" for c, l, a in diffs)
                 _skip(keep, "skipped", f"사전 대조 불일치 — {detail}", rec, "skipped")
                 keep = []
                 pause_portfolio(pf, f"{who} 사전 대조 불일치 — {detail}. 체결 가져오기 또는 기록 수정으로 원장을 계좌에 맞춘 뒤 다시 켜세요", now)
-            for r in [r for r in keep if r.side == "sell"]:
-                if r.qty > held.get(r.code, 0):
-                    r.message = f"잔고 부족 — 매도 {r.qty}주 > 보유 {held.get(r.code, 0)}주"
-                    rec["skipped"] += 1
-                    keep.remove(r)
+        for r in [r for r in keep if r.side == "sell"]:
+            if r.qty > held.get(r.code, 0):
+                src = "보유" if bal is not None else "원장 보유"
+                r.message = f"잔고 부족 — 매도 {r.qty}주 > {src} {held.get(r.code, 0):,}주"
+                rec["skipped"] += 1
+                keep.remove(r)
     # ⑤ 상한 + 매수가능조회 → 발주. 매도 먼저(시장가 → 지정가, 현금 확보), 매수는 시장가(레버리지 진입) → 얕은 그리드 → 깊은 그리드.
     #    상한·주문가능 수량에 걸리면 정지가 아니라 **축소**(0 이면 생략) — 신규 진입이 며칠에 걸쳐 채워진다 (ADR-009 §2-8·9)
     equity = int((plan.get("account") or {}).get("equity") or 0)
@@ -832,7 +931,7 @@ def _place_lines(session: Session, pf: TradePortfolio, client, keep: list[Broker
     streak, last_fail, running, clipped = state["fail_streak"], "", 0, 0
     for r in sorted(keep, key=lambda x: (0 if x.side == "sell" else 1, 0 if x.otype == "market" else 1, -int(x.price or 0))):
         plan_qty = int(r.qty)
-        notes: list[str] = []
+        notes: list[str] = [bal_note] if bal_note else []
         if r.side == "buy":
             est_px = int(r.price) if r.price else _latest_close(session, r.code)
             if est_px <= 0:
