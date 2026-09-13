@@ -72,8 +72,63 @@ def make_plan(mults=None, weights=None, start_index=None):
     return wrapped
 
 
-def run_case(b200, blev, params, start, hold_qty, hold_px, mults=None, weights=None):
-    bt.plan = make_plan(mults, weights, start)
+def make_fixed_plan(mults, weights, hold_qty, reprice=False):
+    """보고서(2026-09-13) 안 — P0·g0 를 **한 번 고정**하고 단별 잔여 수량을 상태로 유지한다.
+
+    매일 재계산하지 않으므로 가격이 내려가도 사다리가 따라 내려가지 않는다. 체결은 잔여 수량 감소로 역산해
+    **싼 단부터** 소진한 것으로 본다(가격 순서상 그 단이 먼저 닿는다). 상승장에는 익절을 내지 않고(core 정책)
+    계획은 보존했다가 중립장에 복원한다.
+    """
+    st: dict = {"p0": None, "g0": None, "alloc": None}
+
+    def wrapped(i, m200, mlev, prev_regime, pf, params, days_since_start=None):
+        p = _REAL_PLAN(i, m200, mlev, prev_regime, pf, params, days_since_start=days_since_start)
+        if p.status != "OK":
+            return p
+        core = [(idx, l) for idx, l in enumerate(pf.lots) if l.instrument == K200 and l.kind == "core"]
+        if not core:
+            return p
+        if st["p0"] is None or reprice:            # 계획 생성(고정) / reprice=True 면 가격만 매일 갱신
+            st["p0"], st["g0"] = p.indicators["close"], p.indicators["grid"]
+            ws = list(weights)
+            tot = sum(ws) or 1.0
+            left = hold_qty
+            alloc = []
+            for n, w in enumerate(ws):
+                q = int(hold_qty * w / tot) if n < len(ws) - 1 else left
+                q = min(q, left)
+                left -= q
+                alloc.append(q)
+            if st["alloc"] is None:                # 수량 배분은 최초 한 번만 (단별 잔여를 상태로 유지)
+                st["alloc"] = alloc
+        core_tp = [o for o in p.orders
+                   if o.instrument == K200 and o.side == "sell" and o.kind == "tp" and o.lot_id is not None
+                   and pf.lots[o.lot_id].kind == "core"]
+        if not core_tp:                            # 상승장 등 — 익절 없음, 계획은 보존
+            return p
+        out = [o for o in p.orders if o not in core_tp]
+        for o in core_tp:
+            avail = o.qty                           # 축소 선점을 뺀 매도 가능 수량
+            sold = max(0, hold_qty - pf.lots[o.lot_id].qty)
+            rem = []
+            for q in st["alloc"]:                   # 싼 단부터 소진
+                take = min(sold, q)
+                sold -= take
+                rem.append(q - take)
+            for mu, q in zip(mults, rem):
+                q = min(q, avail)
+                if q <= 0:
+                    continue
+                avail -= q
+                price = round_tick(st["p0"] * (1 + st["g0"] * mu), params.tick, up=True)
+                out.append(Order(K200, "sell", "limit", q, price, "tp", lot_id=o.lot_id))
+        return p.__class__(**{**p.__dict__, "orders": tuple(out)})
+    return wrapped
+
+
+def run_case(b200, blev, params, start, hold_qty, hold_px, mults=None, weights=None, fixed=False, reprice=False):
+    bt.plan = (make_fixed_plan(mults, weights, hold_qty, reprice) if fixed
+               else make_plan(mults, weights, start))
     try:
         return run_backtest(b200, blev, CAP * (1 - HOLD_FRAC), params, start_index=start,
                             initial_lots=[{"leg": "K200", "qty": hold_qty, "price": hold_px}])
@@ -120,17 +175,23 @@ def main() -> None:
              ("L1 사다리 50/30/20 · 1·2·3×", (1, 2, 3), (0.5, 0.3, 0.2)),
              ("L2 균등 1/3 · 1·2·3×", (1, 2, 3), (1, 1, 1)),
              ("L3 촘촘 50/30/20 · 1·1.5·2×", (1, 1.5, 2), (0.5, 0.3, 0.2)),
-             ("L4 절반만 익절 (1×)", (1, 99), (0.5, 0.5))]
+             ("L4 절반만 익절 (1×)", (1, 99), (0.5, 0.5)),
+             ("L5 고정 사다리 50/30/20 (보고서안)", (1, 2, 3), (0.5, 0.3, 0.2), True),
+             ("L6 고정 균등 1/3 (보고서안)", (1, 2, 3), (1, 1, 1), True),
+             ("L7 수량 고정 + 가격 매일 갱신", (1, 2, 3), (0.5, 0.3, 0.2), True, True)]
     starts = list(range(W, len(b200) - H, STEP))
     print(f"\n[1] 시작일 {len(starts)}개 × 1년 — 최종 수익률 분포와 익절 행동")
     print(f"{'변형':<28}{'평균':>9}{'중앙':>9}{'최악':>9}{'최선':>9}{'MDD 평균':>10}{'익절일':>7}{'전량 비중':>10}")
     out = {}
-    for nm, mults, ws in cases:
+    for case in cases:
+        nm, mults, ws = case[0], case[1], case[2]
+        fixed = len(case) > 3 and case[3]
+        reprice = len(case) > 4 and case[4]
         rets, mdds, tpd, full = [], [], [], []
         for st_ in starts:
             hold_px = closes[st_]
             hold_qty = int(CAP * HOLD_FRAC // hold_px)
-            r = run_case(b200[:st_ + H], blev[:st_ + H], P, st_, hold_qty, hold_px, mults, ws)
+            r = run_case(b200[:st_ + H], blev[:st_ + H], P, st_, hold_qty, hold_px, mults, ws, fixed, reprice)
             base = CAP * (1 - HOLD_FRAC) + hold_qty * hold_px
             rets.append(r.equity[-1] / base - 1)
             mdds.append(mdd_of(r.equity))
