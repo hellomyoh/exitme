@@ -334,3 +334,69 @@ def test_consume_sell_cap_reduction_takes_tactical_lots_first():
     consume_sell(lots, 1, 400, at, "lev_cap")            # 전술 150 소진 후 전략 250
     assert [(l["lot_kind"], l["qty"]) for l in lots] == [("lev_strat", 450), ("lev_tact1", 0), ("lev_tact2", 0)]
 
+
+
+# ── 소급 태깅 (0027 이전 기록, 2026-09-13) ─────────────────────────────────────────
+
+@needs_db
+@pytest.mark.integration
+def test_retag_legacy_buys_from_the_plan_day_context_and_leaves_unknowns_alone():
+    """태그 없는 과거 매수에 **체결일의 계획일 레짐·Grid** 로 종류·익절가를 채운다.
+
+    핵심 개선: 종전 근사는 익절가를 '최근 종가 × (1+오늘 Grid)' 로 잡아 체결가보다 낮을 수 있었다(감사 A1).
+    소급 태깅 뒤에는 익절가가 항상 **그 로트의 체결가 위**다. 봉이 없는 날짜·대상 외 종목은 건드리지 않는다.
+    """
+    from sqlalchemy import select as _select
+
+    from app.models import Instrument as _Inst
+    from app.models import OhlcvDaily as _Bar
+    from app.models import TradeTransaction as _Tx
+    from scripts.retag_legacy_lots import run as retag
+    from tests.test_backtest_api import seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+        last_bar = s.scalar(_select(_Bar.trade_date).join(_Inst, _Inst.id == _Bar.instrument_id)
+                            .where(_Inst.code == "069500").order_by(_Bar.trade_date.desc()).limit(1))
+
+    c, h = _client()
+    pid = c.post("/portfolios", json={"name": "소급", "market": "KR", "code_200": "069500"}, headers=h).json()["id"]
+    c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 50_000_000,
+                               "executed_at": last_bar.isoformat() + "T15:30:00+09:00"}, headers=h)
+    for code, qty, px in (("069500", 10, 70_000), ("122630", 5, 20_000)):
+        r = c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": code, "qty": qty, "price": px,
+                                       "executed_at": last_bar.isoformat() + "T15:30:00+09:00"}, headers=h)
+        assert r.status_code in (200, 201), r.text
+    # 봉이 없는 날(미래)의 매수 — 재생할 계획일이 없으니 태그하지 않는다
+    c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 1, "price": 70_000,
+                               "executed_at": (last_bar + timedelta(days=400)).isoformat() + "T15:30:00+09:00"}, headers=h)
+
+    with SessionLocal() as s:
+        rows = s.scalars(_select(_Tx).where(_Tx.portfolio_id == pid, _Tx.kind == "buy")).all()
+        assert [r.lot_kind for r in rows] == [None, None, None]     # 등록 시점엔 태그 없음(전략 정보 미상)
+
+    out = retag(portfolio_id=pid, dry_run=True)
+    assert out["totals"]["buys"] == 2 and out["totals"]["no_bar"] == 1
+    with SessionLocal() as s:
+        assert all(r.lot_kind is None for r in s.scalars(_select(_Tx).where(_Tx.portfolio_id == pid, _Tx.kind == "buy")).all())
+
+    out = retag(portfolio_id=pid, dry_run=False)
+    assert out["totals"]["buys"] == 2 and out["totals"]["tagged_replay"] == 1 and out["totals"]["lev"] == 1
+    with SessionLocal() as s:
+        by_code = {}
+        for r in s.scalars(_select(_Tx).where(_Tx.portfolio_id == pid, _Tx.kind == "buy")).all():
+            by_code.setdefault(s.get(_Inst, r.instrument_id).code, []).append(r)
+        k200 = [r for r in by_code["069500"] if r.qty == 10][0]
+        future = [r for r in by_code["069500"] if r.qty == 1][0]
+        lev = by_code["122630"][0]
+        assert k200.lot_kind in ("grid", "core")
+        if k200.lot_kind == "grid":
+            assert k200.tp_price > k200.price                        # 익절가는 반드시 체결가 위 (감사 A1 회귀)
+        else:
+            assert k200.tp_price is None                             # 상승장 계획 → 코어(익절 없음)
+        assert lev.lot_kind == "lev_strat" and lev.tp_price is None   # 수동 레버리지는 전략 트랙 — 현행 폴백과 같은 동작
+        assert future.lot_kind is None                                # 봉 없는 날은 그대로
+
+    # 두 번 돌려도 더 바꿀 것이 없다 (이미 태그된 행은 건너뛴다)
+    assert retag(portfolio_id=pid, dry_run=False)["totals"]["buys"] == 0

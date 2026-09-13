@@ -48,7 +48,7 @@ type JournalItem = {
   account: { cash: number; qty_200: number; qty_lev: number; equity: number } | null;
   e_target: number | null;
 };
-type Signal = { status: string; exec_day?: string; pending?: boolean; pending_note?: string | null; frozen?: boolean; frozen_at?: string | null; boot?: { day: number; days: number } | null; expected_open?: { price: number; at: string; kind: "expected" | "open" | "current"; gap_hit: boolean; samples: { at: string; price: number }[] } | null; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; reconcile?: { date: string; items: { level: string; kind?: string; text: string; label?: string; plan?: number; filled?: number }[] } | null };
+type Signal = { status: string; exec_day?: string; pending?: boolean; pending_note?: string | null; frozen?: boolean; frozen_at?: string | null; boot?: { day: number; days: number } | null; expected_open?: { price: number; at: string; kind: "expected" | "open" | "current"; gap_hit: boolean; samples: { at: string; price: number }[] } | null; trade_date?: string; regime?: string; e_target?: number; orders?: OrderRow[]; snapshot_missing?: boolean; name_lev?: string; strategy?: string; gap_cancel_below?: number; basis?: string; name_200?: string; code_200?: string; account?: { qty_200: number; qty_lev: number; cash: number }; algo_source?: "portfolio" | "settings"; algo_overrides?: Record<string, number>; algo_detail?: { key: string; label: string; value: number; default: number | null }[]; indicators?: Record<string, number>; regime_detail?: { sub?: { name: string; note: string; l: number; s: number } | null; risk?: { code: string; text: string } | null } | null; reconcile?: { date: string; items: { level: string; kind?: string; text: string; label?: string; plan?: number; filled?: number }[] } | null };
 
 const TX_KO: Record<string, string> = { buy: "매수", sell: "매도", deposit: "입금", withdraw: "출금" };
 const REGIME_KO2: Record<string, string> = { BULL: "상승장", NEUTRAL: "중립장", BEAR: "하락장" };
@@ -1119,7 +1119,13 @@ function PortfolioPage() {
             </Tip>
           )}
           {signal?.status === "OK" && (
-            <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]} · E {fmtPct(signal.e_target)}
+            <span className="normal-case text-faint">· {signal.trade_date} 종가 · {REGIME_KO2[signal.regime ?? ""]}
+              {/* 중립 세분화 (2026-09-13 검증서 §2) — 지금 어떤 중립인지의 설명, 다음 방향의 신호가 아니다 */}
+              {signal.regime_detail?.sub && (
+                <Tip tip={<span>{signal.regime_detail.sub.note}<br />종가/MA200 {fmtPct(signal.regime_detail.sub.l)} · MA20/MA60 {fmtPct(signal.regime_detail.sub.s)}<br />상태 설명입니다 — 다음 레짐을 예측하지 않습니다.</span>}>
+                  <span className="ml-1 cursor-help font-semibold text-muted">{signal.regime_detail.sub.name}</span>
+                </Tip>
+              )} · E {fmtPct(signal.e_target)}
               {signal.basis === "portfolio" && signal.account
                 ? ` · 계산 기준: 보유 ${signal.account.qty_200.toLocaleString()}주/레버 ${signal.account.qty_lev.toLocaleString()}주 · 현금 ${fm(signal.account.cash)}${signal.boot ? ` · 초기 진입 ${signal.boot.day}/${signal.boot.days}일` : ""}${signal.frozen ? " — 09:00 동결" : " — 09:00 전 등록분 반영"}`
                 : " · 모델 기준"}
@@ -1175,6 +1181,11 @@ function PortfolioPage() {
           <p className="mb-2 text-[12.5px] text-faint">ⓘ 장 마감 배치 스냅샷이 아직 없어 시세로 직접 계산한 주문표입니다 — 배치(16:05) 이후 확정 표기로 바뀝니다.</p>
         )}
         {boMsg && market === "KR" && <p className="mb-2 text-[12.5px] text-ink">{boMsg}</p>}
+        {/* 레버리지 차단 사유 (2026-09-13 검증서 §4) — 새 규칙이 아니라 이미 작동 중인 통제의 설명.
+            하락장 안내가 따로 있으므로 그때는 겹쳐 쓰지 않는다 */}
+        {signal?.status === "OK" && market === "KR" && signal.regime_detail?.risk && signal.regime !== "BEAR" && (
+          <p className="mb-2 text-[12.5px] text-muted">위험 · {signal.regime_detail.risk.text}</p>
+        )}
         {signal?.status === "OK" && signal.regime === "BEAR" && market === "KR" && !(signal.orders ?? []).some((o) => o.side === "buy") && (
           <p className="mb-2 text-[12.5px] text-muted">하락장 — 그리드 매수 정지. 중립장 전환까지 매수 없음{signal.account && signal.account.qty_200 === 0 ? " (보유 0 · 현금 대기)" : ""}</p>
         )}
