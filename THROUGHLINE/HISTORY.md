@@ -1260,3 +1260,13 @@
 - 화면(`portfolio/page.tsx`): 수량 아래에 `+37,940원 (2.5%)` 를 붙이고 툴팁에 `취득가 108,215원 기준 · 세전·수수료 전`. 규약은 포지션 평가손익(`unrealized`)과 같은 **세전·수수료 전**.
 - 테스트 결과: `pytest -q tests/` → **362 passed**(기존 콜드 스타트 익절 테스트에 `cost`·`pnl`·`pnl_pct` 단언 추가). `npx tsc --noEmit` 무오류. 헤드리스 확인: 익절 2줄에 `+37,940원 (2.5%)`·`+47,770원 (2.5%)` 표기, 매수 줄에는 표기 없음, 콘솔 오류 없음.
 - Git commit: feat: show what each take-profit line would realise
+
+## [2026-09-14] chore | 로그인 세션 3시간 → 12시간 (사용자 지시) · v0.31.3
+
+- 지시: "로그인 세션 시간을 12시간으로 늘리세요." `auth.REFRESH_TTL` 3시간 → **12시간**. access 15분·회전·httpOnly/Secure/SameSite=strict 는 불변이라, 늘어난 것은 **완전히 손을 뗀 뒤 재로그인까지의 허용 시간**뿐이다.
+- 명세 불일치 정리(AGENTS §코드-명세 불일치): ARCHITECTURE §6 과 ADR-003 은 원안 **14일**로 남아 있었고 2026-09-02 의 1시간→3시간이 반영되지 않았다. ARCHITECTURE §6 을 현행 값의 권위로 갱신하고, ADR-003 에는 본문을 고치는 대신 **수명 변경 이력**(1시간 → 3시간 → 12시간)과 트레이드오프를 덧붙였다.
+- 함께 고친 표시 문구: `settings/page.tsx` "마지막 활동 후 12시간", `lib/api.ts` 주석 2곳.
+- 테스트 결과: `pytest -q tests/` → **362 passed, 1 failed**. 실패는 `test_mjournal.py::test_valuation_price_coverage_and_backfill` 로 **이 변경과 무관한 기존 실패**다 — 변경을 stash 하고 돌려도 같은 `assert (4 == 4 and 2 == 3)` 로 실패한다. 테스트가 2026-09-04 봉을 하드코딩해 `_ensure_daily_bars` 의 `start + timedelta(days=10)` 경계를 오늘(09-14) 넘어선 시간 의존 결함으로, 별건으로 다룬다.
+- 신규 테스트 `test_refresh_cookie_lives_twelve_hours` — `REFRESH_TTL`·쿠키 `Max-Age=43200`·JWT `exp−iat` 를 함께 못박는다(둘 중 하나만 길면 조기 로그아웃이 남는다).
+- `npx tsc --noEmit` 무오류. 헤드리스 확인: 로그인 후 refresh 쿠키 수명 **12.00시간**(httpOnly, SameSite=Strict), 설정 화면 "마지막 활동 후 12시간", 콘솔 오류 없음.
+- Git commit: chore: keep a login session alive for twelve hours
