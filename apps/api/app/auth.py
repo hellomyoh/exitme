@@ -1,4 +1,4 @@
-"""JWT 인증 — access 15분(Bearer) + refresh 3시간 롤링(httpOnly Secure 쿠키, 회전). ADR-003.
+"""JWT 인증 — access 15분(Bearer) + refresh 12시간 롤링(httpOnly Secure 쿠키, 회전). ADR-003.
 
 회원 단일 등급. 모든 소유 리소스는 user_id 격리 (ARCHITECTURE §6).
 """
@@ -22,9 +22,11 @@ router = APIRouter(prefix="/auth")
 bearer = HTTPBearer(auto_error=False)
 
 ACCESS_TTL = timedelta(minutes=15)
-# 사용 중에는 access 만료(15분)마다 refresh 가 회전하며 만료가 매번 3시간 뒤로 밀린다(롤링).
-# 즉 3시간 이상 완전히 손을 뗀 경우에만 재로그인 — 잦은 로그아웃 불편 해소 (2026-09-02 지시, 기존 1시간)
-REFRESH_TTL = timedelta(hours=3)
+# 사용 중에는 access 만료(15분)마다 refresh 가 회전하며 만료가 매번 12시간 뒤로 밀린다(롤링).
+# 즉 12시간 이상 완전히 손을 뗀 경우에만 재로그인 — 하루 한 번 열면 그날은 유지된다
+# (2026-09-14 지시, 1시간 → 3시간(2026-09-02) → 12시간). 쿠키는 httpOnly·Secure·SameSite=strict 이고
+# 회전할 때마다 새 토큰으로 바뀌므로, 길어진 것은 '방치 허용 시간'이지 탈취 시 무제한 사용이 아니다.
+REFRESH_TTL = timedelta(hours=12)
 ALGO = "HS256"
 
 

@@ -1,5 +1,6 @@
 """인증·차트 저장 API 통합 테스트 — 소유자 격리 검증 (ADR-003, feature-chart §12)."""
 import uuid
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -46,6 +47,30 @@ def test_register_login_refresh_flow():
     # refresh 회전
     resp2 = client.post("/auth/refresh")
     assert resp2.status_code == 200 and resp2.json()["access_token"]
+
+
+def test_refresh_cookie_lives_twelve_hours():
+    """세션 길이는 refresh 쿠키 수명 하나로 정해진다 (2026-09-14 지시: 3시간 → 12시간)."""
+    import jwt as pyjwt
+
+    from app.auth import ACCESS_TTL, REFRESH_TTL
+    from app.config import get_settings
+
+    assert REFRESH_TTL == timedelta(hours=12)
+    assert ACCESS_TTL == timedelta(minutes=15)
+
+    client = TestClient(app, base_url="https://testserver")
+    email = unique_email()
+    register(client, email)
+    resp = client.post("/auth/login", json={"email": email, "password": "password123"})
+    assert resp.status_code == 200
+
+    # 쿠키 속성과 토큰 exp 가 함께 12시간이어야 한다 — 둘 중 하나만 길면 조기 로그아웃이 남는다
+    raw = resp.headers["set-cookie"]
+    assert "Max-Age=43200" in raw and "HttpOnly" in raw and "SameSite=strict" in raw
+    payload = pyjwt.decode(resp.cookies["refresh_token"], get_settings().jwt_secret, algorithms=["HS256"])
+    assert payload["kind"] == "refresh"
+    assert 11.9 * 3600 < payload["exp"] - payload["iat"] <= 12 * 3600
 
 
 def test_layout_owner_isolation():
