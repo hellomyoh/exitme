@@ -86,15 +86,17 @@ def consume_sell(lots: list[dict], instrument_id: int, qty: int, executed_at: da
 
 
 def rebuild_lots(lot_rows: list[dict], leg_of, dates: list[str], reg_by_date: dict[str, str],
-                 m200, params: Params, last: int, regime_now: str, approx_tp: int) -> list[Lot]:
+                 m200, params: Params, last: int, regime_now: str, approx_tp: int | None = None) -> list[Lot]:
     """원장 로트 행 → 플래너 Lot.
 
     태그 있는 행: 저장된 종류·익절가에서 출발해 체결일 이후 레짐 전환을 재생(apply_regime_conversion 과 같은 규칙)한다.
       - → BULL 전환: grid → core, 익절 제거
       - BULL → 비상승 전환: core → grid, 익절가 = 전환일 종가 × (1+전환일 Grid) 올림
       체결일 d 의 로트는 d 종가 계획에서 결정된 전환부터 적용받는다(백테스트: 체결 → 같은 날 종가 plan → 전환).
-    태그 없는 행: 종전 근사 — 상승장이면 core, 아니면 grid + approx_tp(최근 종가 × (1+오늘 Grid)).
-    leg_of(instrument_id) → "K200" | "LEV".
+    태그 없는 행(보유분 입력·HTS 직접 주문): 체결 시점 근거가 없으므로 **익절가를 얼려 두지 않고 `core` 로** 둔다.
+      그러면 플래너가 그날 종가 기준 **사다리**로 익절을 낸다 (ADR-014). 종전에는 비상승장에서 `grid` + 근사 익절가
+      한 개를 붙여, 사다리가 적용되지 않고 전량이 한 줄로 나갔다 (2026-09-13 실사용 주문표에서 발견).
+    leg_of(instrument_id) → "K200" | "LEV". approx_tp 는 더 쓰지 않는다(하위 호환으로만 받는다).
     """
     out: list[Lot] = []
     for row in lot_rows:
@@ -104,10 +106,8 @@ def rebuild_lots(lot_rows: list[dict], leg_of, dates: list[str], reg_by_date: di
             out.append(Lot(LEV, row["qty"], row["price"], kind if kind in LEV_BUY_KINDS else "lev_strat", None, 0))
             continue
         if kind not in ("grid", "core"):
-            if regime_now == "BULL" and params.flags.f1_no_tp_in_bull:
-                out.append(Lot(K200, row["qty"], row["price"], "core", None, 0))
-            else:
-                out.append(Lot(K200, row["qty"], row["price"], "grid", approx_tp, 0))
+            # 레짐과 무관하게 core — 익절가는 플래너가 그날 종가로 사다리를 만들어 준다(1단이 종전 근사가와 같다).
+            out.append(Lot(K200, row["qty"], row["price"], "core", None, 0))
             continue
         # 태그 로트 — 체결일부터 어제 계획일까지 레짐 전환 재생
         opened = row["opened_at"]

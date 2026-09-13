@@ -303,12 +303,11 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
         else:  # 1배 주력(069500/102110/QQQ) → 200 레그
             qty_200 += l["qty"]
     # 로트 종류·익절가 (감사 A1·A2, 2026-09-12): 태그가 있으면 체결 시점 스냅샷에서 레짐 전환을 재생해 백테스트와 같은 상태로,
-    # 없으면 종전 근사 — 익절 기준가 = 최근 종가 × (1+오늘 Grid) (정본 §5.6 코어 편입 규칙 준용; 평단 기준은 즉시 전량 매도 함정,
-    # 2026-08-28 검토). 태그 로트가 쌓일수록 근사 몫이 줄어 실전이 백테스트로 수렴한다 (lots.py).
+    # 없으면 **core**(익절가 미고정) — 플래너가 그날 종가로 사다리를 만든다 (ADR-014, 2026-09-13). 평단 기준은 즉시 전량
+    # 매도 함정이라 쓰지 않는다(2026-08-28 검토). 태그 로트가 쌓일수록 근사 몫이 줄어 실전이 백테스트로 수렴한다 (lots.py).
     from app.lots import rebuild_lots
-    approx_tp = round_tick(m200.closes[last] * (1 + grid_today), params.tick, up=True)
     lots = rebuild_lots(lot_rows, leg_by_inst.__getitem__, [b["date"] for b in bars_200],
-                        dict(zip(result.dates, result.regimes)), m200, params, last, regime.value, approx_tp)
+                        dict(zip(result.dates, result.regimes)), m200, params, last, regime.value)
 
     user_pf = Portfolio(cash=float(cash), lots=lots)
     # 소량 진입 부트스트랩 (ADR-010): 시작일 = max(포트 생성일, 첫 거래일) — 시작 패널이 입금을 직전 영업일로 소급 기록해도 생성일이 잡아 준다.

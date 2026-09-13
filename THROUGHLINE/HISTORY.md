@@ -1223,3 +1223,12 @@
 - 테스트 결과: 코드·파라미터 변경 없음(측정 절만 추가). 측정 `scripts/entry_holding_tp_study.py` `[2-1] 매도 가중치 축`.
 - 문서: `docs/entry-holding-tp-ladder-20260913.md` §10.
 - Git commit: docs: compare sell-ladder weights - mean says sell less, win rate does not
+
+## [2026-09-13] fix | 사다리가 실전 보유분에 적용되지 않던 누락 보완 (사용자 주문표 확인)
+
+- 사용자가 실제 주문표(TIGER 200 400주 보유·중립장)를 확인: **익절이 여전히 전량 한 줄(400주 @112,480)**. 원인은 배포 지연이 아니라 **적용 범위 누락**이었다.
+- `lots.rebuild_lots` 는 태그 없는 K200 을 **상승장이면 core, 그 밖에는 `grid` + 근사 익절가**로 되살린다. ADR-014 사다리는 `core` 에만 걸리므로 **중립장 보유분은 `grid` 가 되어 사다리를 받지 못했다.** 백테스트는 `initial_lots` 를 core 로 만들어 이 차이가 측정에 드러나지 않았다 — 0027 감사가 지적한 "백테스트와 실전의 로트 재구성이 갈리는" 문제와 같은 종류.
+- 보완: 태그 없는 K200 로트는 **레짐과 무관하게 core(익절가 미고정)**. 익절가는 플래너가 그날 종가로 만들고 **1단이 종전 근사가와 동일**해 가장 가까운 가격은 보존된다. 실측 예: 400주·종가 109,735·Grid 2.5% → 종전 `400주 @112,480` → 현행 `200@112,480 · 120@115,225 · 80@117,970`. `approx_tp` 인자는 미사용(하위 호환 유지), `signals.py` 의 계산도 제거.
+- 테스트 결과: `pytest -q tests/` → **361 passed**. 기존 미태그 로트 테스트를 새 동작으로 갱신하고 **플래너까지 이어 사다리 3줄이 나오는지** 확인하는 단언을 추가했다(레짐 3종 모두 core).
+- 문서: [ADR-014](adr/014-core-tp-ladder.md) "실사용에서 드러난 누락과 보완" 절 추가.
+- Git commit: fix: rebuild untagged holdings as core so the ladder reaches them
