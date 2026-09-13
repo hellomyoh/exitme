@@ -99,3 +99,92 @@ def test_order_post_retries_only_on_rate_limit():
     with pytest.raises(KisError, match="40310000"):
         c3._post("/x", "TTTC0012U", {}, sleep_fn=lambda _s: None)
     assert c3.session.posts == 1
+
+
+# ── 2026-09-11 사고: EGW00215(원장 초당 한도) ──────────────────────────────────────
+
+class _GetResp(_Resp):
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise AssertionError(f"unexpected raise_for_status {self.status_code}")
+
+
+class _GetSession:
+    def __init__(self, responses):
+        self.responses, self.gets = list(responses), 0
+
+    def get(self, url, headers=None, params=None, timeout=None):
+        self.gets += 1
+        return self.responses.pop(0)
+
+
+def _get_client(responses, cano="68800037"):
+    c = KisTradingClient.__new__(KisTradingClient)
+    KisClient.__init__(c, _Auth("prod", "A"), session=_GetSession(responses))
+    c._shared_r = False
+    c.cano, c.acnt_prdt_cd = cano, "01"
+    return c
+
+
+def test_balance_get_retries_on_ledger_rate_limit(monkeypatch):
+    """잔고 조회가 EGW00215 로 거절되면 백오프 뒤 다시 조회한다 — 한 번의 유량 초과로 그날 발주가 통째로 생략되지 않게."""
+    import app.services.kis_client as kc
+
+    monkeypatch.setattr(kc.time, "sleep", lambda _s: None)
+    limited = _GetResp(500, {"rt_cd": "1", "msg_cd": "EGW00215",
+                             "msg1": "원장에서 허용 가능한 초당 거래건수를 초과하였습니다."})
+    ok = _GetResp(200, {"rt_cd": "0", "output1": [], "output2": [{}]})
+    c = _get_client([limited, limited, ok])
+    assert c._get("/balance", "TTTC8434R", {})["rt_cd"] == "0"
+    assert c.session.gets == 3
+
+
+def test_rate_limit_in_200_body_is_retried_and_other_codes_are_not(monkeypatch):
+    """200 + rt_cd!=0 형태로 와도 유량 코드면 재시도, 그 밖의 코드는 즉시 오류."""
+    import app.services.kis_client as kc
+
+    monkeypatch.setattr(kc.time, "sleep", lambda _s: None)
+    limited = _GetResp(200, {"rt_cd": "1", "msg_cd": "EGW00215", "msg1": "원장에서 허용 가능한 초당 거래건수를 초과하였습니다."})
+    ok = _GetResp(200, {"rt_cd": "0", "output": {}})
+    c = _get_client([limited, ok])
+    assert c._get("/x", "TR", {})["rt_cd"] == "0" and c.session.gets == 2
+
+    other = _GetResp(500, {"rt_cd": "1", "msg_cd": "EGW00304", "msg1": "앱시크릿이 올바르지 않습니다"})
+    c2 = _get_client([other, ok])
+    with pytest.raises(KisError, match="EGW00304"):
+        c2._get("/x", "TR", {})
+    assert c2.session.gets == 1
+
+
+def test_order_post_retries_on_ledger_rate_limit():
+    ok = _Resp(200, {"rt_cd": "0", "output": {"ODNO": "1"}, "msg1": "정상"})
+    limited = _Resp(500, {"rt_cd": "1", "msg_cd": "EGW00215", "msg1": "원장에서 허용 가능한 초당 거래건수를 초과하였습니다."})
+    slept: list[float] = []
+    c = _trading([limited, ok])
+    assert c._post("/x", "TTTC0012U", {}, sleep_fn=slept.append)["output"]["ODNO"] == "1"
+    assert c.session.posts == 2 and slept == [1.0]
+
+
+def test_ledger_throttle_is_counted_per_account_not_only_per_app_key():
+    """원장 버킷은 계좌별 — 같은 앱키라도 계좌가 다르면 따로 센다. 시세 전용(계좌 없음) 클라이언트는 대상 외."""
+    r = _R()
+    clock = [2000.1]
+    slept: list[float] = []
+
+    def now():
+        return clock[0]
+
+    def sleep(sec):
+        slept.append(sec)
+        clock[0] += sec
+
+    a = _get_client([], cano="11110000")
+    a._shared_r = r
+    assert [a._ledger_throttle(now_fn=now, sleep_fn=sleep) for _ in range(2)] == [0, 0]   # 실전 2건/초
+    assert a._ledger_throttle(now_fn=now, sleep_fn=sleep) == 1 and int(clock[0]) == 2001
+    b = _get_client([], cano="22220000")
+    b._shared_r = r
+    assert b._ledger_throttle(now_fn=now, sleep_fn=sleep) == 0                             # 다른 계좌는 별도 카운터
+    q = KisClient(_Auth("prod", "A"))
+    q._shared_r = r
+    assert q._ledger_throttle(now_fn=now, sleep_fn=sleep) == 0                             # 계좌 없음 → 제한 없음

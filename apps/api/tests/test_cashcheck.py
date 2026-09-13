@@ -59,7 +59,7 @@ def test_fetch_balance_parses_d1_d2_deposit():
         def headers(self, tr_id, session=None):
             return {}
 
-    def fake_get(self, path, tr_id, params):
+    def fake_get(self, path, tr_id, params, ledger=False):   # ledger: 원장 TR 표시 (2026-09-11 EGW00215 대응)
         return {"output1": [{"pdno": "069500", "prdt_name": "KODEX 200", "hldg_qty": "10", "pchs_avg_pric": "100000",
                              "pchs_amt": "1000000", "prpr": "101000", "evlu_amt": "1010000"}],
                 "output2": [{"dnca_tot_amt": "4200000", "nxdy_excc_amt": "4100000", "prvs_rcdl_excc_amt": "3998500",
@@ -73,7 +73,7 @@ def test_fetch_balance_parses_d1_d2_deposit():
     assert b["holdings"] == [{"code": "069500", "name": "KODEX 200", "qty": 10, "avg_price": 100000, "buy_amount": 1000000,
                               "price": 101000, "eval_amount": 1010000}]
     # D+2 필드가 없는 응답 → 총액으로 채움
-    def fake_get_old(self, path, tr_id, params):
+    def fake_get_old(self, path, tr_id, params, ledger=False):
         return {"output1": [], "output2": [{"dnca_tot_amt": "700000"}], "ctx_area_nk100": ""}
     c._get = fake_get_old.__get__(c)  # type: ignore[method-assign]
     assert c.fetch_balance()["deposit_d2"] == 700_000

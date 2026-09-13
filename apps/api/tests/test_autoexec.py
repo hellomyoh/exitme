@@ -603,3 +603,53 @@ def test_manual_order_places_cancels_and_shows_with_auto(monkeypatch):
 def ae_mod():
     import app.autoexec as ae
     return ae
+
+
+def test_watchdog_retries_only_lines_skipped_by_a_transient_api_failure():
+    """2026-09-11 09:01 사고: 잔고 조회가 EGW00215(원장 초당 한도)로 한 번 실패하자 그 계좌의 그날 매수가 통째로 생략됐고,
+    09:15 감시는 '이미 실행함'이라 아무것도 하지 않았다. 이제 감시가 **조회 실패로 못 나간 줄만** 다시 낸다.
+    주문가능 수량 부족처럼 그날의 판정으로 생략된 줄은 대상이 아니다."""
+    import app.autoexec as ae
+    from app.models import TradePortfolio
+
+    class _BalanceFails(FakeKis):
+        def __init__(self, *a, **kw):
+            self.fails = kw.pop("fails", 1)
+            super().__init__(*a, **kw)
+
+        def fetch_balance(self):
+            if self.fails > 0:
+                self.fails -= 1
+                raise RuntimeError("KIS error EGW00215 원장에서 허용 가능한 초당 거래건수를 초과하였습니다.")
+            return super().fetch_balance()
+
+    c, h = _client()
+    today = datetime.now(KST).date()
+    pid, aid = _setup_portfolio(c, h, today, deposit_krw=9_000_000)
+    c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True}, headers=h)
+
+    # ① 09:01 — 잔고 조회 실패로 두 줄 모두 생략 (발주 0)
+    fake = _BalanceFails(open_px=100000, deposit=9_000_000, holdings={}, psbl_cash=500_000, fails=1)
+    rec, _ = _run(fake, aid, today, LINES[:2], at=(9, 1))
+    assert rec["submitted"] == 0 and rec["skipped"] == 2 and fake.placed == []
+    st, _ = _orders(c, h, pid, today)
+    assert "EGW00215" in st["grid1"]["message"] and "원장의 초당 요청 한도" in st["grid1"]["message"]
+    with SessionLocal() as s:
+        keys = ae.transient_lines(s, s.get(TradePortfolio, pid), today)
+    assert sorted(k.split(":")[0] for k in keys) == ["grid1", "grid2"]
+
+    # ② 09:15 감시 — 지연 실행 대상은 아니지만(이미 실행함) 그 두 줄을 다시 낸다. 주문가능현금은 grid1 까지만 된다
+    rec2, out2 = _run(fake, aid, today, LINES[:2], at=(9, 15), trigger="watchdog")
+    assert rec2.get("error") == "already-ran" and out2["late"] == []
+    assert [r["portfolio_id"] for r in out2["retried"]] == [pid]
+    assert out2["retried"][0]["submitted"] == 1 and out2["retried"][0]["skipped"] == 1
+    assert fake.placed == [("069500", "buy", 5, 99000)]
+
+    # ③ 남은 생략(주문가능 수량 부족)은 그날의 판정 — 다시 내지 않는다
+    st, view = _orders(c, h, pid, today)
+    assert st["grid1"]["status"] == "submitted" and st["grid2"]["status"] == "skipped"
+    assert "주문가능 수량 부족" in st["grid2"]["message"]
+    with SessionLocal() as s:
+        assert ae.transient_lines(s, s.get(TradePortfolio, pid), today) == set()
+    ev = [i for i in c.get("/logs?type=event", headers=h).json()["items"] if i["kind"] == "autoexec.retry"]
+    assert ev and "09:15 자동 재시도" in ev[0]["text"]

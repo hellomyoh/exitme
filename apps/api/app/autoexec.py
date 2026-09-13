@@ -580,13 +580,74 @@ def run_auto_execution(session: Session, now: datetime | None = None, client_fac
     return out
 
 
+def transient_lines(session: Session, pf: TradePortfolio, plan_date: date) -> set[str]:
+    """이 실행일에 **일시적 사유**로 못 나간 줄 (2026-09-11 사고 EGW00215).
+
+    대상 둘: ① 생략 사유가 조회 실패(skip_cause="api") — 발주 자체를 하지 않았다.
+    ② 발주 실패인데 사유가 유량 초과 — KIS 가 주문을 받기 전에 거절했으므로 중복 접수 위험이 없다.
+    갭 취소·꺼짐·잔고 부족·상한·사전 대조 불일치는 그날의 판정이라 대상이 아니다.
+    """
+    from app.services.kis_client import _RATE_LIMIT_CODES
+
+    rows = session.scalars(select(BrokerOrder).where(BrokerOrder.portfolio_id == pf.id,
+                                                     BrokerOrder.plan_date == plan_date,
+                                                     BrokerOrder.mode == "auto").order_by(BrokerOrder.id)).all()
+    latest: dict[str, BrokerOrder] = {}
+    for r in rows:
+        latest[r.line_key] = r
+    out: set[str] = set()
+    for k, r in latest.items():
+        if r.status == "skipped" and (r.response or {}).get("skip_cause") == "api":
+            out.add(k)
+        elif r.status == "failed" and any(c in (r.message or "") for c in _RATE_LIMIT_CODES):
+            out.add(k)
+    return out
+
+
+def retry_transient(session: Session, now: datetime, client_factory=None, sleep_fn=_time.sleep, plan_fn=None,
+                    only_credential_ids: set[int] | None = None) -> list[dict]:
+    """09:15 감시의 두 번째 일 — 09:01 이 **돌았지만** 조회 실패·유량 초과로 못 나간 줄만 같은 절차로 다시 낸다.
+
+    2026-09-11 09:01: 잔고 조회가 EGW00215(원장 초당 한도)로 한 번 실패하자 그 계좌의 그날 그리드 매수 3줄이 전부 생략됐고,
+    감시는 '이미 실행함'으로 건너뛰어 아무도 다시 내지 않았다 — 사용자가 화면에서 '재시도'를 누를 때까지 그날 매수가 비었다.
+    여기서 다시 내는 줄은 **접수된 적이 없는 줄**뿐이라 중복 발주가 되지 않는다.
+    """
+    today = now.date()
+    q = select(TradePortfolio).where(TradePortfolio.market == "KR")
+    if only_credential_ids:
+        q = q.where(TradePortfolio.broker_credential_id.in_(list(only_credential_ids)))
+    done: list[dict] = []
+    for pf in session.scalars(q.order_by(TradePortfolio.id)).all():
+        if (pf_auto_state(pf).get("last_run") or {}).get("date") != today.isoformat():
+            continue                                   # 오늘 실행 기록이 없는 포트는 위에서 지연 실행이 처리한다
+        lines = transient_lines(session, pf, today)
+        if not lines:
+            continue
+        try:
+            res = retry_auto_exec(session, pf, now=now, client_factory=client_factory, sleep_fn=sleep_fn,
+                                  plan_fn=plan_fn, only_lines=lines, what="09:15 자동 재시도")
+            session.commit()
+            done.append({"portfolio_id": pf.id, "lines": sorted(lines), **{k: res.get(k) for k in ("submitted", "skipped", "failed")}})
+            logger.warning("auto-exec watchdog retried transient lines pid=%s %s", pf.id, sorted(lines))
+        except HTTPException as exc:                   # 정지·취소·장중 밖 등 — 기록만 하고 다음 포트
+            session.rollback()
+            done.append({"portfolio_id": pf.id, "lines": sorted(lines), "error": str(exc.detail)[:120]})
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
+            logger.exception("auto-exec watchdog retry failed pid=%s", pf.id)
+            done.append({"portfolio_id": pf.id, "lines": sorted(lines), "error": str(exc)[:120]})
+    return done
+
+
 def run_watchdog(session: Session, now: datetime | None = None, client_factory=None, sleep_fn=_time.sleep, plan_fn=None,
                  only_credential_ids: set[int] | None = None) -> dict:
-    """09:15 감시 — 09:01 이 돌지 않은 포트를 지연 실행한다(락·마커로 중복 없음). 실행한 포트는 경고 로그·알림으로 드러낸다 (ADR-009 §5)."""
+    """09:15 감시 — 09:01 이 돌지 않은 포트를 지연 실행하고(락·마커로 중복 없음), 돌았지만 일시적 사유로 못 나간 줄은 다시 낸다 (ADR-009 §5)."""
     out = run_auto_execution(session, now=now, client_factory=client_factory, sleep_fn=sleep_fn, plan_fn=plan_fn,
                              only_credential_ids=only_credential_ids, trigger="watchdog")
     out["heartbeat_age"] = heartbeat_age()
     out["late"] = [r["portfolio_id"] for r in out["portfolios"] if r.get("error") not in ("already-ran", "locked") and not r.get("error")]
+    out["retried"] = retry_transient(session, now or datetime.now(KST), client_factory=client_factory,
+                                     sleep_fn=sleep_fn, plan_fn=plan_fn, only_credential_ids=only_credential_ids)
     return out
 
 
@@ -641,10 +702,13 @@ def _latest_close(session: Session, code: str) -> int:
     return int(lc[0]) if lc else 0
 
 
-def _skip(rows: list[BrokerOrder], status: str, message: str, rec: dict, key: str) -> None:
+def _skip(rows: list[BrokerOrder], status: str, message: str, rec: dict, key: str, cause: str | None = None) -> None:
+    """cause="api": 증권사 조회 실패처럼 **일시적**이라 다시 시도하면 될 생략 — 09:15 감시가 이 줄만 자동 재시도한다 (2026-09-11 사고)."""
     for r in rows:
         r.status = status
         r.message = message
+        if cause:
+            r.response = {**(r.response or {}), "skip_cause": cause}
     rec[key] += len(rows)
 
 
@@ -730,7 +794,7 @@ def _place_lines(session: Session, pf: TradePortfolio, client, keep: list[Broker
     gap_exact = plan.get("gap_cancel_exact") or plan.get("gap_cancel_below")
     gap_hit = bool(keep and open_px is not None and gap_exact and open_px <= float(gap_exact))
     if keep and open_px is None:
-        _skip(keep, "skipped", "시가를 확인하지 못해 발주하지 않았습니다 (현재가 조회 실패)", rec, "skipped")
+        _skip(keep, "skipped", "시가를 확인하지 못해 발주하지 않았습니다 (현재가 조회 실패)", rec, "skipped", cause="api")
         keep = []
     if gap_hit:
         # 갭 취소 대상 = 그리드 매수 + 소량 진입(boot, ADR-010). 레버리지 시장가·익절 매도는 대상 외
@@ -743,7 +807,7 @@ def _place_lines(session: Session, pf: TradePortfolio, client, keep: list[Broker
         try:
             bal = client.fetch_balance()
         except Exception as exc:  # noqa: BLE001
-            _skip(keep, "skipped", f"잔고 조회 실패로 발주하지 않았습니다 — {humanize_kis_error(str(exc)[:120])}", rec, "skipped")
+            _skip(keep, "skipped", f"잔고 조회 실패로 발주하지 않았습니다 — {humanize_kis_error(str(exc)[:120])}", rec, "skipped", cause="api")
             keep = []
         else:
             deposit = int(bal.get("deposit") or 0)
