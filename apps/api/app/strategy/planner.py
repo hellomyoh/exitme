@@ -282,8 +282,16 @@ def plan(i: int, m200: Market, mlev: Market, prev_regime: Regime, pf: Portfolio,
         for k in range(1, params.grid_steps + 1):
             price = round_tick(close * (1 - grid * k), params.tick, up=False)
             qty = int(remaining * (ws[k - 1] / total_w) // price)
-            if qty <= 0 or qty * price > cash_left:
+            if qty <= 0:
                 continue
+            if qty * price > cash_left:
+                # 현금 부족 시 그 단을 통째로 생략하지 않고 **가용 현금만큼 축소**한다 (2026-09-13 사용자 승인, A1).
+                # 종전에는 여기서 continue 해 1단(예산 50%)이 통째로 빠지고 더 작은 2·3단만 나갔다 — 같은 현금이
+                # 더 깊은(싼) 가격으로 가는 배분이었다. 축소하면 얕은 단이 채워지고 뒤 단·레버리지가 잔여 현금에 맞춰 준다.
+                # 오류 수정이 아니라 배분 정책 선택이다 (docs/entry-allocation-review-r2-20260913.md §8.1, ADR-013).
+                qty = int(cash_left // (price * (1 + params.commission))) if cash_left > 0 else 0
+                if qty <= 0:
+                    continue
             cash_left -= qty * price
             orders.append(Order(K200, "buy", "limit", qty, price, f"grid{k}"))
 
