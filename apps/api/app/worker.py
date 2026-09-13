@@ -76,6 +76,12 @@ celery_app.conf.update(
             "task": "app.worker.evening_asset_snapshot",
             "schedule": crontab(hour=20, minute=20, day_of_week="mon-fri"),
         },
+        # 사전 잔고 조회 (2026-09-13 지시) — 09:01 에 몰리던 원장 호출에서 잔고 1건을 장 시작 전으로 옮긴다.
+        # 08:45: 장전 시간외 종가매매(08:30~08:40)가 끝난 뒤라 개장까지 보유·예수금이 바뀌지 않는다.
+        "auto-exec-prefetch-balance": {
+            "task": "app.worker.auto_exec_prefetch_balance",
+            "schedule": crontab(hour=8, minute=45, day_of_week="mon-fri"),
+        },
         # 무인 매매 단일 실행 (ADR-009, 2026-09-08) — 09:01 에 주문표 계산·동결 → 시가 확인 → 갭 판정 → 잔고 → 상한 → 발주. 하루 1회
         "auto-exec-open": {
             "task": "app.worker.auto_execute_open",
@@ -374,6 +380,24 @@ def auto_execute_open() -> dict:
             logger.info("skip auto_execute_open: %s is a holiday", today)
             return {"skipped": "holiday", "date": today.isoformat()}
         return run_auto_execution(session)
+
+
+@celery_app.task(name="app.worker.auto_exec_prefetch_balance", max_retries=0)
+def auto_exec_prefetch_balance() -> dict:
+    """08:45 사전 잔고 조회 — 09:01 의 KIS 원장 호출을 하나 줄인다 (2026-09-13). 실패해도 09:01 이 직접 조회한다."""
+    from app.autoexec import prefetch_balances
+    from app.db import SessionLocal
+    from app.models import TradingCalendar
+
+    today = datetime.now(KST).date()
+    with SessionLocal() as session:
+        cal = session.get(TradingCalendar, today)
+        if cal is not None and not cal.is_open:
+            return {"skipped": "holiday", "date": today.isoformat()}
+        out = prefetch_balances(session)
+        if out["failed"]:
+            logger.warning("auto-exec balance prefetch: %d failed %s", len(out["failed"]), out["failed"][:3])
+        return out
 
 
 @celery_app.task(name="app.worker.auto_exec_watchdog", max_retries=0)

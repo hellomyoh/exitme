@@ -606,34 +606,37 @@ def ae_mod():
 
 
 def test_watchdog_retries_only_lines_skipped_by_a_transient_api_failure():
-    """2026-09-11 09:01 사고: 잔고 조회가 EGW00215(원장 초당 한도)로 한 번 실패하자 그 계좌의 그날 매수가 통째로 생략됐고,
+    """2026-09-11 09:01 사고: 조회 한 번이 EGW00215(원장 초당 한도)로 실패하자 그 계좌의 그날 주문이 통째로 생략됐고,
     09:15 감시는 '이미 실행함'이라 아무것도 하지 않았다. 이제 감시가 **조회 실패로 못 나간 줄만** 다시 낸다.
-    주문가능 수량 부족처럼 그날의 판정으로 생략된 줄은 대상이 아니다."""
+    주문가능 수량 부족처럼 그날의 판정으로 생략된 줄은 대상이 아니다.
+    (잔고 조회 실패는 2026-09-13 지시로 더는 줄을 막지 않으므로, 남은 일시적 생략 경로인 시가 조회 실패로 검증한다.)"""
     import app.autoexec as ae
     from app.models import TradePortfolio
 
-    class _BalanceFails(FakeKis):
+    class _PriceFails(FakeKis):
+        """첫 호출에서 시가 조회가 유량 초과로 실패 — 그날 줄이 전부 생략된다(사유 = 조회 실패)."""
+
         def __init__(self, *a, **kw):
             self.fails = kw.pop("fails", 1)
             super().__init__(*a, **kw)
 
-        def fetch_balance(self):
+        def fetch_price(self, code):
             if self.fails > 0:
                 self.fails -= 1
                 raise RuntimeError("KIS error EGW00215 원장에서 허용 가능한 초당 거래건수를 초과하였습니다.")
-            return super().fetch_balance()
+            return super().fetch_price(code)
 
     c, h = _client()
     today = datetime.now(KST).date()
     pid, aid = _setup_portfolio(c, h, today, deposit_krw=9_000_000)
     c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True}, headers=h)
 
-    # ① 09:01 — 잔고 조회 실패로 두 줄 모두 생략 (발주 0)
-    fake = _BalanceFails(open_px=100000, deposit=9_000_000, holdings={}, psbl_cash=500_000, fails=1)
+    # ① 09:01 — 시가 조회 실패로 두 줄 모두 생략 (발주 0)
+    fake = _PriceFails(open_px=100000, deposit=9_000_000, holdings={}, psbl_cash=500_000, fails=4)  # _read_open 은 4회 재시도
     rec, _ = _run(fake, aid, today, LINES[:2], at=(9, 1))
     assert rec["submitted"] == 0 and rec["skipped"] == 2 and fake.placed == []
     st, _ = _orders(c, h, pid, today)
-    assert "EGW00215" in st["grid1"]["message"] and "원장의 초당 요청 한도" in st["grid1"]["message"]
+    assert "시가를 확인하지 못해" in st["grid1"]["message"]
     with SessionLocal() as s:
         keys = ae.transient_lines(s, s.get(TradePortfolio, pid), today)
     assert sorted(k.split(":")[0] for k in keys) == ["grid1", "grid2"]
@@ -653,3 +656,78 @@ def test_watchdog_retries_only_lines_skipped_by_a_transient_api_failure():
         assert ae.transient_lines(s, s.get(TradePortfolio, pid), today) == set()
     ev = [i for i in c.get("/logs?type=event", headers=h).json()["items"] if i["kind"] == "autoexec.retry"]
     assert ev and "09:15 자동 재시도" in ev[0]["text"]
+
+
+def test_prefetch_at_0845_supplies_the_balance_and_0901_does_not_ask_again():
+    """사전 잔고 조회 (2026-09-13 지시 1) — 08:45 에 받아 두면 09:01 은 잔고를 다시 부르지 않는다.
+    09:05 이후(장중 재시도·감시)에는 체결로 잔고가 바뀌므로 캐시를 쓰지 않고 새로 조회한다."""
+    import app.autoexec as ae
+
+    class _CountingKis(FakeKis):
+        def __init__(self, *a, **kw):
+            self.balance_calls = 0
+            super().__init__(*a, **kw)
+
+        def fetch_balance(self):
+            self.balance_calls += 1
+            return super().fetch_balance()
+
+    c, h = _client()
+    today = datetime.now(KST).date()
+    pid, aid = _setup_portfolio(c, h, today, deposit_krw=9_000_000)
+    c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True}, headers=h)
+    fake = _CountingKis(open_px=100000, deposit=9_000_000, holdings={}, psbl_cash=9_000_000)
+
+    with SessionLocal() as s:
+        out = ae.prefetch_balances(s, now=datetime.combine(today, time(8, 45), tzinfo=KST),
+                                   client_factory=lambda cred: fake, sleep_fn=lambda _s: None,
+                                   only_credential_ids={aid})
+    assert out["ok"] == [pid] and fake.balance_calls == 1
+    with SessionLocal() as s:
+        bal, at = ae._get_balance(pid, datetime.combine(today, time(9, 1), tzinfo=KST))
+    assert bal is not None and at.hour == 8                        # 09:01 이 쓸 수 있다
+    assert ae._get_balance(pid, datetime.combine(today, time(10, 30), tzinfo=KST)) == (None, None)  # 장중엔 안 쓴다
+
+    rec, _ = _run(fake, aid, today, LINES[:2], at=(9, 1))
+    assert rec["submitted"] == 2 and fake.balance_calls == 1       # 09:01 은 잔고를 다시 부르지 않았다
+
+
+def test_balance_failure_no_longer_blocks_the_day_and_falls_back_to_the_ledger():
+    """잔고 조회가 실패해도 발주한다 (2026-09-13 지시 2) — 잔고가 모자라면 증권사가 거절하므로 조회 실패가 곧 정지 사유는 아니다.
+    매도 상한은 원장 보유, 매수가능조회 실패 시 예산은 원장 현금. 줄마다 '잔고 확인 불가' 사유가 남는다."""
+    import app.autoexec as ae
+
+    class _NoBalance(FakeKis):
+        def fetch_balance(self):
+            raise RuntimeError("KIS error EGW00215 원장에서 허용 가능한 초당 거래건수를 초과하였습니다.")
+
+    c, h = _client()
+    today = datetime.now(KST).date()
+    pid, aid = _setup_portfolio(c, h, today, deposit_krw=9_000_000)
+    c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True, "sell": True}, headers=h)
+    c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 10, "price": 100000,
+                               "executed_at": (today - timedelta(days=2)).isoformat() + "T15:30:00+09:00"}, headers=h)
+    fake = _NoBalance(open_px=100000, deposit=0, holdings={}, psbl_cash=9_000_000)
+
+    rec, _ = _run(fake, aid, today, LINES, at=(9, 1))
+    # 매수 2줄(그리드1·레버리지 시장가) + 익절 매도 1줄(원장 보유 10주 ≥ 2주) 은 나가고, grid2 는 현금 한도로 축소·생략
+    assert rec["submitted"] >= 3 and rec["failed"] == 0
+    st, view = _orders(c, h, pid, today)
+    assert st["tp"]["status"] == "submitted"                       # 원장 보유로 매도 상한 판정
+    assert "잔고 확인 불가" in st["grid1"]["message"] and "EGW00215" in st["grid1"]["message"]
+    assert view["paused"] is False                                 # 조회 실패는 정지 사유가 아니다
+
+
+def test_a_real_reconcile_mismatch_still_stops_everything():
+    """대조 '불일치'(조회는 됐는데 원장 ≠ 계좌)는 종전대로 전량 생략 + 정지 — 이번 변경은 '조회 실패'만 완화한다."""
+    c, h = _client()
+    today = datetime.now(KST).date()
+    pid, aid = _setup_portfolio(c, h, today, deposit_krw=9_000_000)
+    c.put(f"/settings/auto-exec/accounts/{aid}", json={"buy": True, "sell": True}, headers=h)
+    c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 10, "price": 100000,
+                               "executed_at": (today - timedelta(days=2)).isoformat() + "T15:30:00+09:00"}, headers=h)
+    fake = FakeKis(open_px=100000, deposit=9_000_000, holdings={"069500": 3}, psbl_cash=9_000_000)   # 계좌 3주 ≠ 원장 10주
+    rec, _ = _run(fake, aid, today, LINES[:2], at=(9, 1))
+    assert rec["submitted"] == 0 and rec["skipped"] == 2 and fake.placed == []
+    st, view = _orders(c, h, pid, today)
+    assert "사전 대조 불일치" in st["grid1"]["message"] and view["paused"] is True
