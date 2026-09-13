@@ -125,8 +125,12 @@ def test_rebuild_keeps_tagged_tp_and_replays_regime_conversions():
     assert (lots[0].kind, lots[0].tp_price) == ("grid", 69985)
 
 
-def test_rebuild_untagged_lots_keep_the_approximation_and_lev_tags_survive():
-    """태그 없는 K200 은 종전 근사(approx_tp / 상승장 core), 레버리지는 전술 태그가 그대로 살아 has1/has2 판정을 살린다 (A1)."""
+def test_rebuild_untagged_lots_become_core_so_the_planner_can_ladder_them():
+    """태그 없는 K200 은 **레짐과 무관하게 core** — 익절가를 얼려 두지 않아야 플래너가 그날 종가로 사다리를 만든다 (ADR-014).
+
+    종전에는 비상승장에서 `grid` + 근사 익절가 한 개가 붙어 사다리가 적용되지 않았고, 보유분 입력으로 시작한 포트의
+    익절이 전량 한 줄로 나갔다(2026-09-13 실사용 주문표에서 발견). 레버리지는 전술 태그가 그대로 살아 has1/has2 판정을 살린다 (A1).
+    """
     dates, m = _dates(), _mk()
     rows = [
         {"instrument_id": 1, "qty": 10, "price": 60000, "opened_at": datetime(2026, 7, 3, 15, 30, tzinfo=KST), "lot_kind": None, "tp_price": None},
@@ -135,11 +139,23 @@ def test_rebuild_untagged_lots_keep_the_approximation_and_lev_tags_survive():
     ]
     leg = lambda iid: LEV if iid == 2 else K200
     reg = {d: "NEUTRAL" for d in dates}
-    lots = rebuild_lots(rows, leg, dates, reg, m, P, 39, "NEUTRAL", approx_tp=71050)
-    assert (lots[0].kind, lots[0].tp_price) == ("grid", 71050)
-    assert (lots[1].kind, lots[2].kind) == ("lev_tact2", "lev_strat")   # 태그 없음 → 종전처럼 전략 트랙
-    lots = rebuild_lots(rows[:1], leg, dates, reg, m, P, 39, "BULL", approx_tp=71050)
-    assert (lots[0].kind, lots[0].tp_price) == ("core", None)
+    for regime_now in ("NEUTRAL", "BULL", "BEAR"):
+        lots = rebuild_lots(rows, leg, dates, reg, m, P, 39, regime_now)
+        assert (lots[0].kind, lots[0].tp_price) == ("core", None), regime_now
+        assert (lots[1].kind, lots[2].kind) == ("lev_tact2", "lev_strat")   # 태그 없음 → 종전처럼 전략 트랙
+
+    # 플래너까지 이어 본다 — 중립장에서 core 로트는 사다리 3줄을 받는다(전량 한 줄이 아니다)
+    from app.strategy.planner import Portfolio, plan, prepare
+
+    n = 300
+    closes = [70000.0] * n
+    mk = prepare([70000.0] * n, [70350.0] * n, [69650.0] * n, closes, P)
+    m200 = prepare([70000.0] * n, [70350.0] * n, [69650.0] * n, closes, P)
+    m200.ma20[n - 1], m200.ma60[n - 1], m200.ma200[n - 1] = 69000.0, 69500.0, 68000.0   # 중립 유지
+    lot = rebuild_lots(rows[:1], leg, dates, reg, m, P, 39, "NEUTRAL")[0]
+    p = plan(n - 1, m200, mk, Regime.NEUTRAL, Portfolio(cash=5e7, lots=[lot]), P)
+    tp = sorted([o for o in p.orders if o.kind == "tp"], key=lambda o: o.price)
+    assert len(tp) == P.grid_steps and sum(o.qty for o in tp) == 10
 
 
 # ── 동일성: 백테스트 체결 → 원장 → 재구성 = 백테스트 최종 상태·다음 주문표 ──────────────
