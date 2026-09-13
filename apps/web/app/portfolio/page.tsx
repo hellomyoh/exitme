@@ -37,7 +37,7 @@ const formulaOf = (etf?: string | null) => US_FORMULAS.find((f) => f.key === (et
 
 // 탭 배경색 프리셋 — 라이트·다크 모두에서 20% 틴트로 사용 (2026-09-05 지시)
 const TAB_COLORS = ["#f97316", "#2563eb", "#059669", "#dc2626", "#7c3aed", "#0891b2", "#db2777", "#64748b"];
-type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string };
+type OrderRow = { instrument: string; side: string; otype: string; qty: number; price: number | null; kind: string ; cost?: number; pnl?: number; pnl_pct?: number};
 type JournalFill = {
   id: number; kind: string; code: string | null; name: string | null; qty: number | null;
   price: number | null; amount: number | null; realized_pnl: number | null; time: string; memo: string | null;
@@ -1235,7 +1235,15 @@ function PortfolioPage() {
                         ? <><span className="mr-1 hidden rounded bg-raised px-1.5 py-0.5 text-[11px] font-bold text-muted sm:inline">지정가</span>{fpx(o.price)}</>
                         : <><span className="mr-1 rounded bg-accent/15 px-1.5 py-0.5 text-[11px] font-bold text-accent">시장가</span><span className="text-[12px] text-faint">시가</span></>}
                     </td>
-                    <td className="table-num py-2">{o.qty.toLocaleString()}주</td>
+                    <td className="table-num py-2">
+                      {o.qty.toLocaleString()}주
+                      {/* 익절 줄: 이 가격에 팔면 얼마인가 — 취득가(로트 가중평균) 대비, 세전·수수료 전 (2026-09-14 지시) */}
+                      {o.kind === "tp" && o.pnl != null && (
+                        <span className="mt-0.5 block text-[11.5px] font-semibold text-up" title={`취득가 ${fpx(o.cost ?? 0)} 기준 · 세전·수수료 전`}>
+                          +{fm(o.pnl)}{o.pnl_pct != null && ` (${fmtPct(o.pnl_pct, 1)})`}
+                        </span>
+                      )}
+                    </td>
                     <td className="py-2 pl-2 sm:pl-4">
                       <button className="btn !px-2.5 !py-1 text-[12.5px]" onClick={() => prefillFill(o)}>
                         <span className="sm:hidden">등록</span><span className="hidden sm:inline">체결 등록</span>

@@ -508,6 +508,10 @@ def test_cold_start_fills_keep_their_own_take_profit_not_the_close_anchored_ladd
     want = round_tick(fill_px * (1 + fill_grid), P.tick, up=True)
     assert len(tp) == 1, tp                                # 로트가 하나면 한 줄 (사다리 아님)
     assert tp[0]["price"] == want and tp[0]["qty"] == 31
+    # 이 가격에 팔면 얼마인가 (2026-09-14) — 취득가 기준, 세전·수수료 전
+    assert tp[0]["cost"] == fill_px
+    assert tp[0]["pnl"] == round((want - fill_px) * 31)
+    assert abs(tp[0]["pnl_pct"] - (want / fill_px - 1)) < 1e-9
     # 종가 기준 사다리 가격이 아니어야 한다
     for k in (1, 2, 3):
         assert tp[0]["price"] != round_tick(last_close * (1 + 0.025 * k), P.tick, up=True)
