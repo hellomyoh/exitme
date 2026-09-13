@@ -346,6 +346,18 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
         else:
             merged[key] = {"instrument": o.instrument, "side": o.side, "otype": o.otype,
                            "qty": o.qty, "price": o.price, "kind": o.kind}
+        # 익절 줄: 그 로트의 취득가를 모아 "이 가격에 팔면 얼마" 를 낸다 (2026-09-14 지시).
+        # 로트별 익절은 로트마다 취득가가 다르고 같은 가격끼리 합쳐지므로 수량 가중으로 모은다.
+        if o.kind == "tp" and o.lot_id is not None and o.price and 0 <= o.lot_id < len(lots):
+            merged[key]["_cost_sum"] = merged[key].get("_cost_sum", 0) + lots[o.lot_id].price * o.qty
+    for row in merged.values():
+        cost_sum = row.pop("_cost_sum", None)
+        if not cost_sum or not row["qty"]:
+            continue
+        cost = cost_sum / row["qty"]                       # 수량 가중 평균 취득가
+        row["cost"] = round(cost)
+        row["pnl"] = round((row["price"] - cost) * row["qty"])   # 세전·수수료 전 (평가손익과 같은 규약)
+        row["pnl_pct"] = (row["price"] / cost - 1) if cost > 0 else None
     out = {
         "basis": "portfolio", "portfolio": {"id": pf_row.id, "name": pf_row.name},
         "exec_day": exec_day.isoformat(),  # 이 주문표의 실행일 — 오늘/예정 표시용 (2026-09-02)

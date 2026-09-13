@@ -1252,3 +1252,11 @@
 - 테스트 결과: 코드·파라미터 변경 없음(측정 절만 추가). 측정 `scripts/entry_holding_tp_study.py` `[2-2] 익절 총량 상한`.
 - 문서: `docs/entry-holding-tp-ladder-20260913.md` §11.
 - Git commit: docs: capping the take-profit quantity measures worse, not better
+
+## [2026-09-14] feat | 주문표 익절 줄에 '이 가격에 팔면 얼마' 표기 (사용자 지시)
+
+- 지시: "매도 그리드 로트에 이 가격에 팔면 얼마 수익인지 해당 줄에 추가." 익절 주문은 로트를 가리키므로(`Order.lot_id`) 그 로트의 취득가를 알 수 있다.
+- 서버(`signals._portfolio_orders`): 표시용 병합 때 익절 줄마다 로트 취득가를 **수량 가중**으로 모아 `cost`(가중평균 취득가) · `pnl`(=(지정가−취득가)×수량) · `pnl_pct` 를 함께 실는다. 같은 익절가끼리 합쳐지는 줄도 정확하다. 시장가 매도(축소·청산)는 가격이 없어 대상 외.
+- 화면(`portfolio/page.tsx`): 수량 아래에 `+37,940원 (2.5%)` 를 붙이고 툴팁에 `취득가 108,215원 기준 · 세전·수수료 전`. 규약은 포지션 평가손익(`unrealized`)과 같은 **세전·수수료 전**.
+- 테스트 결과: `pytest -q tests/` → **362 passed**(기존 콜드 스타트 익절 테스트에 `cost`·`pnl`·`pnl_pct` 단언 추가). `npx tsc --noEmit` 무오류. 헤드리스 확인: 익절 2줄에 `+37,940원 (2.5%)`·`+47,770원 (2.5%)` 표기, 매수 줄에는 표기 없음, 콘솔 오류 없음.
+- Git commit: feat: show what each take-profit line would realise
