@@ -1190,3 +1190,14 @@
 - 테스트 결과: `pytest -q tests/` → **357 passed**(신규 1 — 지나간 익절가 가드).
 - 문서: `docs/entry-holding-tp-ladder-20260913.md` §8.
 - Git commit: fix: never retag a lot with a take-profit the market has already passed
+
+## [2026-09-13] audit | 보유 시작 vs 콜드 스타트 계산 분리 검증 (사용자 지시)
+
+- 지시: "기존 보유량이 있을 때 시작한 실전매매와 보유 없이 초기 진입으로 시작한 실전매매가 정확히 구분되어 계산되는지 검토." **결론: 구분된다.** 갈라지는 지점 6곳을 코드로 확인하고 end-to-end 테스트로 고정했다.
+- 지점 6곳: ① 소량 진입(ADR-010) — 시작일까지 등록된 매수가 있으면 `days_since_start=None` ② 백테스트도 같은 판정(`None if initial_lots`) ③ **수익률 분모** — 입금이 `현금 + 보유 원가`라 `principal` 에 보유분 포함, 백테스트 `base_capital = capital + Σ(qty×price)` 과 **같은 규약** ④ 원장 현금 — 보유 시작도 현금 그대로(음수 안 됨) ⑤ 보유 수량 ⑥ 로트 종류·익절(미태그 → 상승장 core / 그 외 grid+최근 종가 기준).
+- 신규 테스트 `test_cold_start_and_holdings_start_are_accounted_separately` — 화면 시작 패널 두 경로를 그대로 재현: 현금만 시작(boot 있음·qty 0·현금 5,000만·원금 5,000만·보유원가 0) vs 보유분 시작(boot 없음·qty 100·**현금 5,000만**·**원금 1억 1,000만**·보유원가 600만). 2026-09-02 결함(현금만 분모 → 보유 평가액이 통째로 수익, +153% 사례) 회귀 방지 포함.
+- 구분되지 **않는** 것은 의도된 설계: 레짐·E·그리드 가격은 시장만의 함수, 익절·축소는 현재 보유만 본다. 시작 방식은 초기 조건이지 전략 상태가 아니다.
+- 경계 하나 기록: `started_with_holdings` 는 **시작일까지** 등록된 매수를 본다 — 현금으로 시작한 당일에 직접 산 체결을 등록하면 부트스트랩이 꺼진다(설계 의도, ADR-010 콜드 스타트 전용). 다음 날 등록분은 영향 없다. 주문표에 사유 표시는 현재 없다.
+- 테스트 결과: `pytest -q tests/` → **358 passed**(신규 1).
+- 문서: `docs/start-mode-separation-audit-20260913.md`.
+- Git commit: test: pin that cold start and holdings start stay separate end to end

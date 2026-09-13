@@ -513,3 +513,76 @@ def test_bootstrap_applies_to_new_portfolio_only(monkeypatch):
         snap = run_signal_batch(s)
         rows = s.scalars(select(OrderSheetRow).where(OrderSheetRow.signal_id == snap.id)).all()
         assert not any(r.kind == "boot" for r in rows)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DB_UP, reason="database not reachable")
+def test_cold_start_and_holdings_start_are_accounted_separately():
+    """보유 없이 시작한 포트와 보유분으로 시작한 포트가 **끝까지 구분되어** 계산되는지 (2026-09-13 지시).
+
+    화면 시작 패널의 두 경로를 그대로 재현한다:
+      · 현금만 시작      → 입금 = 현금                      (memo "시작 입금")
+      · 보유분 입력 시작 → 입금 = 현금 + 보유 원가 + 매수 등록 (memo "시작 입금 (현금+보유 원가)")
+    확인 항목: 부트스트랩 적용 여부 · 원장 현금 · 수익률 분모(납입원금) · 보유 수량 · 주문표 표시.
+    """
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    from datetime import timezone as _tz
+
+    from sqlalchemy import select
+
+    from app.signals import _portfolio_orders
+    from app.models import TradePortfolio, User
+
+    kst = _tz(_td(hours=9))
+    with SessionLocal() as s:
+        from tests.test_backtest_api import seed_synthetic
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+    base_day, exec_day = _last_bar_and_exec_day()
+    client = TestClient(app, base_url="https://testserver")
+    email = f"cs{uuid.uuid4().hex[:8]}@stocklab.dev"
+    token = client.post("/auth/register", json={"email": email, "password": "password123"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+    with SessionLocal() as s:
+        uid = s.scalar(select(User.id).where(User.email == email))
+
+    CASH, QTY, PX = 50_000_000, 100, 60_000
+    at = f"{base_day}T15:30:00+09:00"
+
+    # ① 현금만 시작 (콜드 스타트)
+    pid_c = client.post("/portfolios", json={"name": "현금 시작", "market": "KR", "code_200": "069500"},
+                        headers=h).json()["id"]
+    client.post("/positions", json={"portfolio_id": pid_c, "kind": "deposit", "amount": CASH,
+                                    "executed_at": at, "memo": "시작 입금"}, headers=h)
+    # ② 보유분 입력하고 시작 — 입금에 보유 원가를 **포함**해야 원장 현금이 음수가 되지 않는다
+    pid_h = client.post("/portfolios", json={"name": "보유 시작", "market": "KR", "code_200": "069500"},
+                        headers=h).json()["id"]
+    client.post("/positions", json={"portfolio_id": pid_h, "kind": "deposit", "amount": CASH + QTY * PX,
+                                    "executed_at": at, "memo": "시작 입금 (현금+보유 원가)"}, headers=h)
+    client.post("/positions", json={"portfolio_id": pid_h, "kind": "buy", "code": "069500", "qty": QTY,
+                                    "price": PX, "executed_at": at, "memo": "보유분 등록"}, headers=h)
+    with SessionLocal() as s:
+        for pid in (pid_c, pid_h):
+            pf = s.get(TradePortfolio, pid)
+            pf.created_at = _dt.combine(base_day, _dt.min.time(), tzinfo=kst)
+        s.commit()
+
+    # ③ 주문표 — 콜드 스타트만 부트스트랩
+    from app.signals import freeze_at
+    with SessionLocal() as s:
+        out_c = _portfolio_orders(s, pid_c, uid, now=freeze_at(exec_day) - _td(hours=1))
+        out_h = _portfolio_orders(s, pid_h, uid, now=freeze_at(exec_day) - _td(hours=1))
+    assert out_c["boot"] is not None and any(o["kind"] == "boot" for o in out_c["orders"])
+    assert out_h["boot"] is None and not any(o["kind"] == "boot" for o in out_h["orders"])
+
+    # ④ 계좌 상태 — 보유 수량과 원장 현금이 각각 맞다 (보유 시작도 현금이 CASH 그대로)
+    assert out_c["account"]["qty_200"] == 0 and out_c["account"]["cash"] == CASH
+    assert out_h["account"]["qty_200"] == QTY and out_h["account"]["cash"] == CASH
+
+    # ⑤ 수익률 분모 — 납입원금은 보유 원가를 포함한다 (현금만 분모로 쓰면 보유 평가액이 통째로 수익, 2026-09-02 결함)
+    sc = client.get(f"/portfolio/summary?portfolio_id={pid_c}", headers=h).json()
+    sh = client.get(f"/portfolio/summary?portfolio_id={pid_h}", headers=h).json()
+    assert sc["principal"] == CASH
+    assert sh["principal"] == CASH + QTY * PX
+    assert sh["invested_cost"] == QTY * PX and sc["invested_cost"] == 0
