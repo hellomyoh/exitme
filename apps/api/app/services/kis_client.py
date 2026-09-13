@@ -69,7 +69,15 @@ _RETRIES = 4
 # 프로세스를 넘지 못하므로 Redis 카운터로 초당 건수를 앱키·환경별로 묶는다. 실전 20건/초 → 10, 모의 2건/초 → 1. Redis 가 없으면 인스턴스 스로틀만.
 _SHARED_LIMIT_PER_SEC = {"prod": 10, "vps": 1}
 _SHARED_WAIT_MAX = 6.0
-_ORDER_RETRIES = 3       # 주문 POST 는 유량 초과(EGW00201) 에만 재시도 — 그 경우 주문은 접수되지 않았으므로 중복 위험이 없다
+_ORDER_RETRIES = 3       # 주문 POST 는 유량 초과에만 재시도 — 그 경우 주문은 접수되지 않았으므로 중복 위험이 없다
+# 유량 초과 코드 2종 — 둘 다 "잠시 뒤 다시 보내면 되는" 오류다. EGW00201 은 게이트웨이(앱키) 초당 한도,
+# EGW00215 는 **원장(계좌) 초당 한도**("원장에서 허용 가능한 초당 거래건수를 초과하였습니다").
+# 2026-09-11 09:01 사고: EGW00215 가 재시도 대상이 아니어서 잔고 조회 한 번이 실패하자 그 계좌의 그날 그리드 매수 3줄이
+# 통째로 생략됐다(autoexec `_place_lines` ④ 는 잔고 조회 실패 시 남은 줄을 전부 생략한다). docs/egw00215-order-failure-20260913.md
+_RATE_LIMIT_CODES = ("EGW00201", "EGW00215")
+# 원장(계좌) 단위 초당 한도 — 앱키 단위(_SHARED_LIMIT_PER_SEC)와 별개 카운터. 잔고·매수가능·체결·주문 TR 이 대상.
+_LEDGER_LIMIT_PER_SEC = {"prod": 2, "vps": 1}
+_LEDGER_MIN_INTERVAL = 0.4   # Redis 가 없을 때의 인스턴스 단위 최소 간격 (원장 계열만)
 
 
 class KisClient:
@@ -77,15 +85,22 @@ class KisClient:
         self.auth = auth
         self.session = session or requests.Session()
         self._last_call = 0.0
+        self._last_ledger = 0.0
         self._throttle_lock = threading.Lock()
 
-    def _throttle(self) -> None:
+    def _throttle(self, ledger: bool = False) -> None:
         with self._throttle_lock:
             wait = self._last_call + _MIN_INTERVAL - time.monotonic()
+            if ledger:
+                wait = max(wait, self._last_ledger + _LEDGER_MIN_INTERVAL - time.monotonic())
             if wait > 0:
                 time.sleep(wait)
             self._last_call = time.monotonic()
+            if ledger:
+                self._last_ledger = self._last_call
         self._shared_throttle()
+        if ledger:
+            self._ledger_throttle()
 
     def _shared_redis(self):
         """공용 유량 카운터용 Redis — 없으면 None(인스턴스 스로틀만). 첫 실패 뒤에는 다시 시도하지 않는다(호출마다 접속 지연 방지)."""
@@ -106,17 +121,34 @@ class KisClient:
 
     def _shared_throttle(self, now_fn=time.time, sleep_fn=time.sleep) -> int:
         """앱키·환경별 초당 건수 제한 — 같은 초의 카운터가 한도를 넘으면 다음 초까지 기다린다. 반환: 기다린 횟수(테스트용)."""
-        r = self._shared_redis()
-        if r is None:
-            return 0
         env = getattr(self.auth, "env", "prod")
         limit = _SHARED_LIMIT_PER_SEC.get(env, _SHARED_LIMIT_PER_SEC["prod"])
         digest = hashlib.sha256(str(getattr(self.auth, "app_key", "")).encode()).hexdigest()[:12]
+        return self._bucket_throttle(f"kis:rl:{env}:{digest}", limit, now_fn, sleep_fn)
+
+    def _ledger_throttle(self, now_fn=time.time, sleep_fn=time.sleep) -> int:
+        """원장(계좌)별 초당 건수 제한 — EGW00215 예방 (2026-09-11 사고). 계좌번호가 없는 시세 전용 클라이언트는 대상이 아니다.
+
+        같은 계좌를 두 포트가 공유하거나, 09:01 실행기와 장중 재시도가 겹쳐도 원장 호출이 한 초에 몰리지 않게 한다.
+        """
+        cano = str(getattr(self, "cano", "") or "")
+        if not cano:
+            return 0
+        env = getattr(self.auth, "env", "prod")
+        limit = _LEDGER_LIMIT_PER_SEC.get(env, _LEDGER_LIMIT_PER_SEC["prod"])
+        digest = hashlib.sha256(f"{getattr(self.auth, 'app_key', '')}:{cano}".encode()).hexdigest()[:12]
+        return self._bucket_throttle(f"kis:rl:led:{env}:{digest}", limit, now_fn, sleep_fn)
+
+    def _bucket_throttle(self, prefix: str, limit: int, now_fn=time.time, sleep_fn=time.sleep) -> int:
+        """초 단위 Redis 카운터 한 개 — prefix 로 앱키 버킷과 원장 버킷을 가른다. 반환: 기다린 횟수(테스트용)."""
+        r = self._shared_redis()
+        if r is None:
+            return 0
         waited = 0
         deadline = now_fn() + _SHARED_WAIT_MAX
         while True:
             now = now_fn()
-            key = f"kis:rl:{env}:{digest}:{int(now)}"
+            key = f"{prefix}:{int(now)}"
             try:
                 n = r.incr(key)
                 if n == 1:
@@ -128,10 +160,11 @@ class KisClient:
             waited += 1
             sleep_fn(max(0.05, 1.0 - (now - int(now)) + 0.02))
 
-    def _get(self, path: str, tr_id: str, params: dict[str, str]) -> dict:
-        # 유량 초과 시 KIS 가 500(EGW00201)을 반환 — 스로틀 + 지수 백오프 재시도 (NOTES.md)
+    def _get(self, path: str, tr_id: str, params: dict[str, str], ledger: bool = False) -> dict:
+        # 유량 초과 시 KIS 가 500(EGW00201/EGW00215)을 반환 — 스로틀 + 지수 백오프 재시도 (NOTES.md)
+        # ledger=True: 계좌 원장 TR(잔고·매수가능·체결·미체결·예약 조회) — 원장 단위 초당 한도까지 함께 지킨다
         for attempt in range(_RETRIES + 1):
-            self._throttle()
+            self._throttle(ledger=ledger)
             resp = self.session.get(
                 self.auth.base_url + path,
                 headers=self.auth.headers(tr_id, self.session),
@@ -146,7 +179,7 @@ class KisClient:
                 except ValueError:
                     err = None
                 code = str((err or {}).get("msg_cd") or "").strip()
-                if code and code != "EGW00201":
+                if code and code not in _RATE_LIMIT_CODES:
                     raise KisError(f"KIS error {code} {str((err or {}).get('msg1') or '').strip()}")
                 if attempt < _RETRIES:
                     delay = 1.0 * (2 ** attempt)
@@ -158,6 +191,13 @@ class KisClient:
             body = resp.json()
             # KIS 공통: rt_cd == "0" 이 정상
             if body.get("rt_cd") != "0":
+                # 유량 초과를 200 + rt_cd!=0 으로 주는 경우도 있어 같은 규칙으로 재시도한다 (2026-09-11)
+                code = str(body.get("msg_cd") or "").strip()
+                if code in _RATE_LIMIT_CODES and attempt < _RETRIES:
+                    delay = 1.0 * (2 ** attempt)
+                    logger.warning("KIS %s rate-limited (%s), retrying in %.0fs (%d/%d)", path, code, delay, attempt + 1, _RETRIES)
+                    time.sleep(delay)
+                    continue
                 raise KisError(f"KIS error rt_cd={body.get('rt_cd')} msg={body.get('msg1', '').strip()}")
             return body
         raise KisError("unreachable")
@@ -385,7 +425,7 @@ class KisTradingClient(KisClient):
         """잔고 1회 조회 — 자격·계좌 유효성 확인용. 실패 시 KisError 를 그대로 올린다."""
         env = self.auth.env if self.auth.env in ("prod", "vps") else "prod"
         body = self._get(BALANCE_PATH, BALANCE_TR[env],
-                         _balance_probe_params(self.cano, prdt or self.acnt_prdt_cd))
+                         _balance_probe_params(self.cano, prdt or self.acnt_prdt_cd), ledger=True)
         holdings = [r for r in (body.get("output1") or []) if _to_int(_first(r, "hldg_qty")) > 0]
         summary = (body.get("output2") or [{}])
         summary = summary[0] if isinstance(summary, list) and summary else {}
@@ -419,7 +459,7 @@ class KisTradingClient(KisClient):
             tr = CCLD_TR[(env, kind)]
             fk = nk = ""
             for _page in range(20):  # 안전 상한
-                body = self._get(DAILY_CCLD_PATH, tr, {
+                body = self._get(DAILY_CCLD_PATH, tr, ledger=True, params={
                     "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd,
                     "INQR_STRT_DT": s0.strftime("%Y%m%d"), "INQR_END_DT": e0.strftime("%Y%m%d"),
                     "SLL_BUY_DVSN_CD": "00",                    # 전체
@@ -455,7 +495,7 @@ class KisTradingClient(KisClient):
         deposit = total_eval = deposit_d1 = 0
         deposit_d2: int | None = None
         for _page in range(10):  # 안전 상한
-            body = self._get(BALANCE_PATH, BALANCE_TR[env], params)
+            body = self._get(BALANCE_PATH, BALANCE_TR[env], params, ledger=True)
             for r in (body.get("output1") or []):
                 qty = _to_int(_first(r, "hldg_qty", "HLDG_QTY"))
                 if qty <= 0:
@@ -486,10 +526,11 @@ class KisTradingClient(KisClient):
 
     # ── 예약주문 (2026-09-05 지시) — 접수 15:40~다음 영업일 07:30, 장 시작 시 자동 주문 ──
     def _post(self, path: str, tr_id: str, body: dict[str, str], sleep_fn=time.sleep) -> dict:
-        """주문 계열 POST — 원칙적으로 재시도하지 않는다(중복 접수 방지). 예외: 유량 초과(EGW00201)는 KIS 가 주문을 받기 전에 거절한 것이라
-        접수된 주문이 없으므로 1·2·4초 뒤 최대 3회 다시 보낸다 (2026-09-09 사고: 그리드 3차 접수 실패). rt_cd != "0" 은 KisError."""
+        """주문 계열 POST — 원칙적으로 재시도하지 않는다(중복 접수 방지). 예외: 유량 초과(EGW00201 게이트웨이 · EGW00215 원장)는
+        KIS 가 주문을 받기 전에 거절한 것이라 접수된 주문이 없으므로 1·2·4초 뒤 최대 3회 다시 보낸다
+        (2026-09-09 사고: 그리드 3차 접수 실패 / 2026-09-11 사고: EGW00215). rt_cd != "0" 은 KisError."""
         for attempt in range(_ORDER_RETRIES + 1):
-            self._throttle()
+            self._throttle(ledger=True)
             resp = self.session.post(self.auth.base_url + path,
                                      headers=self.auth.headers(tr_id, self.session), json=body, timeout=10)
             try:
@@ -500,9 +541,9 @@ class KisTradingClient(KisClient):
                 return data
             code = str(data.get("msg_cd") or "").strip()
             msg = str(data.get("msg1") or resp.text[:120]).strip()
-            if code == "EGW00201" and attempt < _ORDER_RETRIES:
+            if code in _RATE_LIMIT_CODES and attempt < _ORDER_RETRIES:
                 delay = 1.0 * (2 ** attempt)
-                logger.warning("KIS order %s rate-limited (EGW00201), retrying in %.0fs (%d/%d)", path, delay, attempt + 1, _ORDER_RETRIES)
+                logger.warning("KIS order %s rate-limited (%s), retrying in %.0fs (%d/%d)", path, code, delay, attempt + 1, _ORDER_RETRIES)
                 sleep_fn(delay)
                 continue
             raise KisError(f"KIS error {code} {msg} (HTTP {resp.status_code})".replace("  ", " "))
@@ -545,7 +586,7 @@ class KisTradingClient(KisClient):
 
     def list_reserved_orders(self, start: date, end: date, include_cancelled: bool = True) -> list[dict]:
         """예약주문 조회 (CTSC0004R) — 접수일 [start, end]. 첫 페이지(최대 수십 건)만 읽는다."""
-        body = self._get(RESV_LIST_PATH, RESV_LIST_TR, {
+        body = self._get(RESV_LIST_PATH, RESV_LIST_TR, ledger=True, params={
             "RSVN_ORD_ORD_DT": start.strftime("%Y%m%d"), "RSVN_ORD_END_DT": end.strftime("%Y%m%d"),
             "TMNL_MDIA_KIND_CD": "00", "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd,
             "PRCS_DVSN_CD": "0", "CNCL_YN": "Y" if include_cancelled else "N",
@@ -602,7 +643,7 @@ class KisTradingClient(KisClient):
         반환 {"cash": 주문가능현금, "cash_qty": 미수 없는 매수가능수량, "max_qty": 최대 매수가능수량(미수 포함), "raw"}.
         무인 실행은 미수(신용)를 쓰지 않으므로 cash_qty 를 기준으로 한다.
         """
-        body = self._get(PSBL_ORDER_PATH, PSBL_ORDER_TR, {
+        body = self._get(PSBL_ORDER_PATH, PSBL_ORDER_TR, ledger=True, params={
             "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "PDNO": code,
             "ORD_UNPR": str(int(price)), "ORD_DVSN": "00",
             "CMA_EVLU_AMT_ICLD_YN": "N", "OVRS_ICLD_YN": "N",
@@ -627,7 +668,7 @@ class KisTradingClient(KisClient):
                   "INQR_DVSN_1": "1", "INQR_DVSN_2": "0"}   # 1 주문순 / 0 매수·매도 전체
         out: list[dict] = []
         for _page in range(5):  # 안전 상한
-            body = self._get(OPEN_ORDERS_PATH, OPEN_ORDERS_TR, params)
+            body = self._get(OPEN_ORDERS_PATH, OPEN_ORDERS_TR, params, ledger=True)
             rows = body.get("output") or body.get("output1") or []
             if isinstance(rows, dict):
                 rows = [rows]

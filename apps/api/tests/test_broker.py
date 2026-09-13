@@ -488,7 +488,7 @@ def test_fetch_executions_spans_both_kis_trs():
 
     calls: list[tuple[str, str, str]] = []
 
-    def fake_get(self, path, tr_id, params):
+    def fake_get(self, path, tr_id, params, ledger=False):   # ledger: 원장 TR 표시 (2026-09-11 EGW00215 대응)
         calls.append((tr_id, params["INQR_STRT_DT"], params["INQR_END_DT"]))
         if tr_id == "TTTC0081R":   # 최근 3개월: 두 달 전 매수 (기존 코드에선 365일 조회에서 빠지던 건)
             d = (_d.today() - timedelta(days=60)).strftime("%Y%m%d")
