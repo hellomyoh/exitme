@@ -240,6 +240,27 @@ def main() -> None:
         print(f"{nm:<28}{mean(d):>+10.3%}{median(d):>+10.3%}{min(d):>+10.3%}{max(d):>+10.3%}"
               f"{sum(1 for x in d if x > 1e-9):>6}{sum(1 for x in d if x < -1e-9):>5}{sum(1 for x in d if abs(x) <= 1e-9):>6}")
 
+    print("\n[2-1] 매도 가중치 축 — 1단(가장 잘 닿는 가격)에 얼마를 배정하는가")
+    print(f"{'가중치':<22}{'1단 비중':>9}{'평균 차이':>10}{'중앙':>9}{'최악':>9}{'최선':>9}{'이김':>6}{'짐':>5}{'동일':>6}")
+    wgrid = [("70/20/10 (앞 무겁게)", (0.7, 0.2, 0.1)),
+             ("50/30/20 (현행)", (0.5, 0.3, 0.2)),
+             ("균등 1/3", (1, 1, 1)),
+             ("20/30/50 (뒤 무겁게)", (0.2, 0.3, 0.5)),
+             ("10/20/70", (0.1, 0.2, 0.7)),
+             ("0/0/100 (1·2단 안 팜)", (0, 0, 1))]
+    for nm, ws2 in wgrid:
+        d = []
+        for st_ in starts:
+            hold_px = closes[st_]
+            hold_qty = int(CAP * HOLD_FRAC // hold_px)
+            base_v = CAP * (1 - HOLD_FRAC) + hold_qty * hold_px
+            a = run_case(b200[:st_ + H], blev[:st_ + H], P, st_, hold_qty, hold_px)
+            b = run_case(b200[:st_ + H], blev[:st_ + H], P, st_, hold_qty, hold_px, (1, 2, 3), ws2)
+            d.append(b.equity[-1] / base_v - a.equity[-1] / base_v)
+        share = ws2[0] / sum(ws2)
+        print(f"{nm:<22}{share:>9.0%}{mean(d):>+10.3%}{median(d):>+9.3%}{min(d):>+9.3%}{max(d):>+9.3%}"
+              f"{sum(1 for x in d if x > 1e-9):>6}{sum(1 for x in d if x < -1e-9):>5}{sum(1 for x in d if abs(x) <= 1e-9):>6}")
+
     print("\n[3] 왜 그런가 — 익절가가 한 번에 닿는 빈도 (현행 모델, 전 구간)")
     r = run_backtest(b200, blev, CAP, P, start_index=W)
     n, med, fr = tp_stats(r)
