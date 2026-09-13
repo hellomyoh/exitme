@@ -1232,3 +1232,12 @@
 - 테스트 결과: `pytest -q tests/` → **361 passed**. 기존 미태그 로트 테스트를 새 동작으로 갱신하고 **플래너까지 이어 사다리 3줄이 나오는지** 확인하는 단언을 추가했다(레짐 3종 모두 core).
 - 문서: [ADR-014](adr/014-core-tp-ladder.md) "실사용에서 드러난 누락과 보완" 절 추가.
 - Git commit: fix: rebuild untagged holdings as core so the ladder reaches them
+
+## [2026-09-14] test | 콜드 스타트 체결의 익절 기준 확인 — 사다리는 태그 없는 로트 전용 (사용자 질문)
+
+- 질문: 보유 없이 시작한 포트인데 익절이 **사다리 3줄**(16주 @112,480 · 9주 @115,225 · 6주 @117,970)로 나온다. 맞는가.
+- 진단: 세 가격이 정확히 `종가 109,735 × 1.025 / 1.05 / 1.075` 이고 수량이 31주의 50/30/20 최대잔여 배분(16/9/6)이다 — **종가 기준 사다리(ADR-014)** 이며, 이는 **전략 태그가 없는 로트에만 적용되는 근사**다. 콜드 스타트 포트의 체결은 자기 체결가를 알고 있으므로 `체결가×(1+체결일 Grid)` 한 줄이어야 한다.
+- 제품 코드는 정상임을 신규 테스트로 확인: 주문표 '체결 등록' 형태(strategy_kind·plan_grid·plan_regime)로 넣은 콜드 스타트 체결은 **체결가 기준 익절 한 줄**을 내고 종가 기준 사다리 가격이 나오지 않는다(`test_cold_start_fills_keep_their_own_take_profit_not_the_close_anchored_ladder`).
+- 따라서 해당 포트의 로트는 태그가 없다. 원인 후보: ① 전략 태그 기능(0027)이 2026-09-12 배포라 **그 이전 체결은 태그 없음** ② 주문표 '체결 등록'이 아닌 임의 거래 입력으로 등록(설계상 태그 없음) ③ 증권사 체결 가져오기에서 주문 짝을 못 찾음(HTS 직접 주문 등). 조치는 `scripts/retag_legacy_lots.py` — 2026-09-13 의 "이미 지나간 익절가는 core 로" 가드가 들어가 있어 청산을 일으키지 않는다.
+- 테스트 결과: `pytest -q tests/` → **362 passed**(신규 1).
+- Git commit: test: cold-start fills keep their own take-profit, not the ladder

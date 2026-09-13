@@ -459,3 +459,55 @@ def test_retag_never_assigns_a_take_profit_that_is_already_passed():
         row = s.scalars(_select(_Tx).where(_Tx.portfolio_id == pid, _Tx.kind == "buy")).one()
         assert row.lot_kind == "core" and row.tp_price is None  # 익절가 없이 보유 — 청산을 일으키지 않는다
     assert cheap_px * 1.03 < last_close                         # 전제 확인: 원가 기준 익절가가 최근 종가 아래
+
+
+@needs_db
+@pytest.mark.integration
+def test_cold_start_fills_keep_their_own_take_profit_not_the_close_anchored_ladder():
+    """콜드 스타트 포트의 체결은 **자기 체결가 기준** 익절가를 갖는다 — 종가 기준 사다리(ADR-014)는 근거 없는 로트 전용.
+
+    2026-09-14 사용자 질문: 보유 없이 시작한 포트인데 익절이 사다리 3줄로 나왔다. 사다리가 나온다는 것은
+    그 로트에 전략 태그가 없다는 뜻이다. 태그가 있으면 로트마다 체결가×(1+체결일 Grid) 한 줄이어야 한다.
+    """
+    from datetime import timedelta as _td
+
+    from sqlalchemy import select as _select
+
+    from app.models import Instrument as _Inst
+    from app.models import OhlcvDaily as _Bar
+    from app.models import TradePortfolio, User
+    from app.signals import _portfolio_orders, freeze_at, _next_exec_day
+    from tests.test_backtest_api import seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+        rows = s.execute(_select(_Bar.trade_date, _Bar.close_raw).join(_Inst, _Inst.id == _Bar.instrument_id)
+                         .where(_Inst.code == "069500").order_by(_Bar.trade_date)).all()
+    base_day, last_close = rows[-1][0], int(rows[-1][1])
+    fill_day, fill_px, fill_grid = rows[-3][0], int(rows[-3][1]), 0.02
+
+    c, h = _client()
+    with SessionLocal() as s:
+        uid = s.scalar(_select(User.id).order_by(User.id.desc()))
+    pid = c.post("/portfolios", json={"name": "콜드", "market": "KR", "code_200": "069500"}, headers=h).json()["id"]
+    c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 50_000_000,
+                               "executed_at": f"{fill_day}T09:00:00+09:00"}, headers=h)
+    # 주문표 '체결 등록' 과 같은 형태 — 전략 태그를 함께 보낸다
+    assert c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 31,
+                                      "price": fill_px, "executed_at": f"{fill_day}T09:05:00+09:00",
+                                      "strategy_kind": "grid1", "plan_grid": fill_grid,
+                                      "plan_regime": "NEUTRAL"}, headers=h).status_code == 201
+
+    exec_day = _next_exec_day(base_day, None)
+    with SessionLocal() as s:
+        out = _portfolio_orders(s, pid, uid, now=freeze_at(exec_day) - _td(hours=1))
+    tp = [o for o in out["orders"] if o["kind"] == "tp"]
+    if not tp:
+        return                                            # 상승장이면 익절 없음 — 이 검증의 대상이 아니다
+    want = round_tick(fill_px * (1 + fill_grid), P.tick, up=True)
+    assert len(tp) == 1, tp                                # 로트가 하나면 한 줄 (사다리 아님)
+    assert tp[0]["price"] == want and tp[0]["qty"] == 31
+    # 종가 기준 사다리 가격이 아니어야 한다
+    for k in (1, 2, 3):
+        assert tp[0]["price"] != round_tick(last_close * (1 + 0.025 * k), P.tick, up=True)
