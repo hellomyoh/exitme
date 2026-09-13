@@ -72,6 +72,43 @@ def make_plan(mults=None, weights=None, start_index=None):
     return wrapped
 
 
+def make_capped(mode: str):
+    """익절 총량에 상한을 건다 — 현행은 available 전량(사다리 3단 합계 = 보유).
+
+    mode:
+      target   목표 초과분까지만  (보유 ≤ 목표면 익절 0)         — '미달이면 팔지 않는다'
+      half     보유의 50% 까지만
+      keephalf 익절 뒤 잔여가 목표의 50% 이상 남도록
+    """
+    def wrapped(i, m200, mlev, prev_regime, pf, params, days_since_start=None):
+        p = _REAL_PLAN(i, m200, mlev, prev_regime, pf, params, days_since_start=days_since_start)
+        if p.status != "OK":
+            return p
+        tp = [o for o in p.orders if o.instrument == K200 and o.side == "sell" and o.kind == "tp"]
+        if not tp:
+            return p
+        close = p.indicators["close"]
+        equity = p.indicators["equity"]
+        held = sum(l.qty for l in pf.lots if l.instrument == K200)
+        target_qty = (p.w_200 * equity) / close if close > 0 else 0
+        if mode == "target":
+            cap = max(0, int(held - target_qty))
+        elif mode == "half":
+            cap = int(held * 0.5)
+        else:                                    # keephalf
+            cap = max(0, int(held - target_qty * 0.5))
+        out = [o for o in p.orders if o not in tp]
+        left = cap
+        for o in sorted(tp, key=lambda x: x.price):          # 가까운 단부터 채운다
+            q = min(o.qty, left)
+            if q <= 0:
+                break
+            left -= q
+            out.append(Order(K200, "sell", "limit", q, o.price, "tp", lot_id=o.lot_id))
+        return p.__class__(**{**p.__dict__, "orders": tuple(out)})
+    return wrapped
+
+
 def make_legacy_single():
     """ADR-014 채택 전 동작 재현 — core 로트 익절을 **한 가격·전량** 한 줄로 되돌린다."""
     def wrapped(i, m200, mlev, prev_regime, pf, params, days_since_start=None):
@@ -150,8 +187,9 @@ def make_fixed_plan(mults, weights, hold_qty, reprice=False):
 
 
 def run_case(b200, blev, params, start, hold_qty, hold_px, mults=None, weights=None, fixed=False, reprice=False,
-             legacy=False):
-    bt.plan = (make_legacy_single() if legacy
+             legacy=False, cap=None):
+    bt.plan = (make_capped(cap) if cap
+               else make_legacy_single() if legacy
                else make_fixed_plan(mults, weights, hold_qty, reprice) if fixed
                else make_plan(mults, weights, start))
     try:
@@ -259,6 +297,21 @@ def main() -> None:
             d.append(b.equity[-1] / base_v - a.equity[-1] / base_v)
         share = ws2[0] / sum(ws2)
         print(f"{nm:<22}{share:>9.0%}{mean(d):>+10.3%}{median(d):>+9.3%}{min(d):>+9.3%}{max(d):>+9.3%}"
+              f"{sum(1 for x in d if x > 1e-9):>6}{sum(1 for x in d if x < -1e-9):>5}{sum(1 for x in d if abs(x) <= 1e-9):>6}")
+
+    print("\n[2-2] 익절 총량 상한 — 전량을 파는 것이 맞는가 (현행 = 상한 없음)")
+    print(f"{'상한':<26}{'평균 차이':>10}{'중앙':>9}{'최악':>9}{'최선':>9}{'이김':>6}{'짐':>5}{'동일':>6}")
+    for nm, mode in (("목표 초과분만 (미달이면 0)", "target"), ("보유의 50% 까지", "half"),
+                     ("목표의 50% 는 남긴다", "keephalf")):
+        d = []
+        for st_ in starts:
+            hold_px = closes[st_]
+            hold_qty = int(CAP * HOLD_FRAC // hold_px)
+            base_v = CAP * (1 - HOLD_FRAC) + hold_qty * hold_px
+            a = run_case(b200[:st_ + H], blev[:st_ + H], P, st_, hold_qty, hold_px)
+            b = run_case(b200[:st_ + H], blev[:st_ + H], P, st_, hold_qty, hold_px, cap=mode)
+            d.append(b.equity[-1] / base_v - a.equity[-1] / base_v)
+        print(f"{nm:<26}{mean(d):>+10.3%}{median(d):>+9.3%}{min(d):>+9.3%}{max(d):>+9.3%}"
               f"{sum(1 for x in d if x > 1e-9):>6}{sum(1 for x in d if x < -1e-9):>5}{sum(1 for x in d if abs(x) <= 1e-9):>6}")
 
     print("\n[3] 왜 그런가 — 익절가가 한 번에 닿는 빈도 (현행 모델, 전 구간)")
