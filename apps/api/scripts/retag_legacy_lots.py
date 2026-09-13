@@ -13,6 +13,10 @@
     상승장 계획이면 core(익절 없음), 아니면 grid + 익절가 = **체결가**×(1+계획일 Grid).
   · 레버리지는 `lev_strat` 로 명시한다. 수동 로트에는 전술 진입의 근거가 없고, 전략으로 두는 쪽이
     현재 폴백과 같은 동작이라 이 스크립트로 매매가 바뀌지 않는다(추측으로 전술 태그를 달면 의도치 않은 매도가 난다).
+  · **이미 지나간 익절가는 붙이지 않는다** (2026-09-13): 재생한 익절가가 최근 종가 이하면 그 태그는
+    "다음 계획에서 전량 시장가 매도"를 뜻한다(지정가 매도는 시장가 위에 있으면 즉시 체결). 메타데이터 소급이
+    청산을 일으켜서는 안 되므로 그런 로트는 `core`(익절가 없음)로 둔다 — 태그 전 폴백과 같은 동작이다.
+    2026-08-28·09-03 검토가 지적한 "평단 역계산 → 즉시 전량 매도" 함정과 같은 것이다.
   · 매도 행은 증권사 주문 기록이 있을 때만 태그한다. 없으면 종전대로 순수 FIFO 로 소진된다.
 
 사용:
@@ -47,7 +51,7 @@ def retag_portfolio(session, pf: TradePortfolio, dry_run: bool) -> dict:
 
     stat = {"portfolio_id": pf.id, "name": pf.name, "market": pf.market,
             "buys": 0, "tagged_order": 0, "tagged_replay": 0, "lev": 0, "sells": 0,
-            "no_bar": 0, "unsupported": 0, "samples": []}
+            "no_bar": 0, "unsupported": 0, "passed_tp": 0, "samples": []}
     txs = session.scalars(select(TradeTransaction)
                           .where(TradeTransaction.portfolio_id == pf.id,
                                  TradeTransaction.kind.in_(("buy", "sell")))
@@ -58,6 +62,7 @@ def retag_portfolio(session, pf: TradePortfolio, dry_run: bool) -> dict:
 
     ctx = market_context(session, pf, pf.user_id)
     params = ctx["params"]
+    last_close = float(ctx["m200"].closes[-1])     # 이미 지나간 익절가 판정 기준
     dates = [b["date"] for b in ctx["bars_200"]]
     reg_by_date = dict(zip(ctx["result"].dates, ctx["result"].regimes))
     code_of = {}
@@ -101,6 +106,10 @@ def retag_portfolio(session, pf: TradePortfolio, dry_run: bool) -> dict:
             if kind is None:
                 stat["no_bar"] += 1
                 continue
+            if kind == "grid" and tp is not None and tp <= last_close:
+                # 이미 지나간 익절가 → 붙이면 다음 계획에서 전량 매도가 된다. 익절 없는 core 로 (폴백과 동일)
+                kind, tp = "core", None
+                stat["passed_tp"] += 1
             stat["buys"] += 1
             if len(stat["samples"]) < 5:
                 stat["samples"].append({"date": day.isoformat(), "code": code, "qty": t.qty, "price": t.price,
@@ -113,7 +122,7 @@ def retag_portfolio(session, pf: TradePortfolio, dry_run: bool) -> dict:
 
 def run(portfolio_id: int | None = None, dry_run: bool = False) -> dict:
     out: dict = {"portfolios": [], "totals": {"buys": 0, "sells": 0, "tagged_order": 0, "tagged_replay": 0,
-                                              "lev": 0, "no_bar": 0, "unsupported": 0}}
+                                              "lev": 0, "no_bar": 0, "unsupported": 0, "passed_tp": 0}}
     with SessionLocal() as s:
         q = select(TradePortfolio).order_by(TradePortfolio.id)
         if portfolio_id:
@@ -125,7 +134,7 @@ def run(portfolio_id: int | None = None, dry_run: bool = False) -> dict:
                 out["portfolios"].append({"portfolio_id": pf.id, "name": pf.name, "error": str(exc)[:160]})
                 s.rollback()
                 continue
-            if st["buys"] or st["sells"] or st["no_bar"] or st["unsupported"]:
+            if st["buys"] or st["sells"] or st["no_bar"] or st["unsupported"] or st["passed_tp"]:
                 out["portfolios"].append(st)
                 for k in out["totals"]:
                     out["totals"][k] += st[k]
@@ -148,7 +157,8 @@ if __name__ == "__main__":
             continue
         print(f"  #{p['portfolio_id']} {p['name']} ({p['market']}): 매수 {p['buys']}"
               f"(주문기록 {p['tagged_order']} · 재생 {p['tagged_replay']} · 레버리지 {p['lev']})"
-              f" · 매도 {p['sells']} · 봉없음 {p['no_bar']} · 대상외 {p['unsupported']}")
+              f" · 매도 {p['sells']} · 봉없음 {p['no_bar']} · 대상외 {p['unsupported']}"
+              f" · 익절가 지나감→core {p['passed_tp']}")
         for smp in p["samples"]:
             tp = f"{smp['tp_price']:,}원({smp['tp_vs_cost']:+.2%})" if smp["tp_price"] else "익절없음"
             print(f"      {smp['date']} {smp['code']} {smp['qty']}주 @{smp['price']:,} · {smp['regime']} → {smp['kind']} · {tp}")

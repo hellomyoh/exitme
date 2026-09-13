@@ -400,3 +400,46 @@ def test_retag_legacy_buys_from_the_plan_day_context_and_leaves_unknowns_alone()
 
     # 두 번 돌려도 더 바꿀 것이 없다 (이미 태그된 행은 건너뛴다)
     assert retag(portfolio_id=pid, dry_run=False)["totals"]["buys"] == 0
+
+
+@needs_db
+@pytest.mark.integration
+def test_retag_never_assigns_a_take_profit_that_is_already_passed():
+    """소급 태깅은 **메타데이터 복원**이지 청산 지시가 아니다 (2026-09-13).
+
+    재생한 익절가가 최근 종가 이하이면 그 태그는 "다음 계획에서 전량 매도"를 뜻한다(지정가 매도가 시장가 아래면
+    즉시 체결). 2026-08-28·09-03 검토가 지적한 '평단 역계산 → 즉시 전량 매도' 함정과 같으므로, 그런 로트는
+    익절가 없는 core 로 둔다(태그 전 폴백과 같은 동작).
+    """
+    from sqlalchemy import select as _select
+
+    from app.models import Instrument as _Inst
+    from app.models import OhlcvDaily as _Bar
+    from app.models import TradeTransaction as _Tx
+    from scripts.retag_legacy_lots import run as retag
+    from tests.test_backtest_api import seed_synthetic
+
+    with SessionLocal() as s:
+        seed_synthetic(s, "069500", "KODEX 200")
+        seed_synthetic(s, "122630", "KODEX 레버리지", start=20000.0, seed=9)
+        rows = s.execute(_select(_Bar.trade_date, _Bar.close_raw).join(_Inst, _Inst.id == _Bar.instrument_id)
+                         .where(_Inst.code == "069500").order_by(_Bar.trade_date)).all()
+    last_day, last_close = rows[-1][0], int(rows[-1][1])
+    # 최근 종가보다 **훨씬 싼** 값에 취득한 과거 보유분 — 원가 기준 익절가는 이미 지나갔다
+    cheap_day, cheap_px = rows[len(rows) // 2][0], int(last_close * 0.5)
+
+    c, h = _client()
+    pid = c.post("/portfolios", json={"name": "지나간익절", "market": "KR", "code_200": "069500"}, headers=h).json()["id"]
+    c.post("/positions", json={"portfolio_id": pid, "kind": "deposit", "amount": 50_000_000,
+                               "executed_at": cheap_day.isoformat() + "T15:30:00+09:00"}, headers=h)
+    assert c.post("/positions", json={"portfolio_id": pid, "kind": "buy", "code": "069500", "qty": 10,
+                                      "price": cheap_px,
+                                      "executed_at": cheap_day.isoformat() + "T15:30:00+09:00"},
+                  headers=h).status_code in (200, 201)
+
+    out = retag(portfolio_id=pid, dry_run=False)
+    assert out["totals"]["passed_tp"] >= 1                     # 가드가 실제로 걸렸다
+    with SessionLocal() as s:
+        row = s.scalars(_select(_Tx).where(_Tx.portfolio_id == pid, _Tx.kind == "buy")).one()
+        assert row.lot_kind == "core" and row.tp_price is None  # 익절가 없이 보유 — 청산을 일으키지 않는다
+    assert cheap_px * 1.03 < last_close                         # 전제 확인: 원가 기준 익절가가 최근 종가 아래
