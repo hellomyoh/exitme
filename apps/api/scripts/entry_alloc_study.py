@@ -151,7 +151,8 @@ def rebuild_buys(p: Plan, i, m200, mlev, pf, params: Params, days_since_start,
 
     fee_budget = sum(o.qty * (o.price if o.price else lev_close) * (1 + params.commission) for o in buys)
     diag = {"cash0": cash0, "cash_left": cash_left, "sigma20": sigma20, "force_liq": force_liq,
-            "fee_budget": fee_budget, "cash_avail": pf.cash + reduce_qty * close, "equity": equity}
+            "fee_budget": fee_budget, "cash_avail": pf.cash + reduce_qty * close, "equity": equity,
+            "n_buys": len(buys)}
     return buys, cap, diag
 
 
@@ -173,8 +174,15 @@ def make_plan(clip_rung=False, lev_first=False, log: list | None = None, base_lo
         buys, cap, diag = rebuild_buys(p, i, m200, mlev, pf, params, days_since_start, clip_rung, lev_first)
         kept = [o for o in p.orders if not _is_buy_or_cap(o)]
         orders = tuple(kept + buys + cap)
-        if budget_log is not None and diag["fee_budget"] > diag["cash_avail"] + 1e-6:
-            budget_log.append((i, diag["fee_budget"] - diag["cash_avail"]))
+        if budget_log is not None:
+            # 느슨한 기준: 수수료 포함 매수 ≤ 현금 + 축소 매도대금 (현금 자체를 넘는가)
+            if diag["fee_budget"] > diag["cash_avail"] + 1e-6:
+                budget_log.append(("cash", i, diag["fee_budget"] - diag["cash_avail"]))
+            # 엄격 기준: 그 위에 현금버퍼(0.5%)까지 보존하는가 — 플래너는 예약에서 **수수료를 빼지 않으므로**
+            # 주문이 여럿이면 그 수수료 합만큼 버퍼를 잠식할 수 있다 (현행도 같은 성질, 2026-09-13 반론 ②).
+            # 매수가 없는 날(cash0 ≤ 0 이라 애초에 낼 수 없는 날)은 대상이 아니다.
+            if diag["n_buys"] > 0 and diag["fee_budget"] > max(diag["cash0"], 0.0) + 1e-6:
+                budget_log.append(("buffer", i, diag["fee_budget"] - max(diag["cash0"], 0.0)))
         if log is not None:
             mine = sorted(_key(o) for o in buys + cap)
             theirs = sorted(_key(o) for o in p.orders if _is_buy_or_cap(o))
@@ -249,6 +257,16 @@ def paired_block_bootstrap(eq_base, eq_var, block=21, reps=2000, seed=20260913):
             "share_pos": sum(1 for x in sums if x > 0) / reps}
 
 
+def fill_mix(r) -> dict:
+    """체결 구성 — 어느 단·트랙에서 몇 건이 체결됐나 (배분 정책 변화를 드러낸다)."""
+    out: dict = {}
+    for f in r.fills:
+        if f.side != "buy":
+            continue
+        out[f.kind] = out.get(f.kind, 0) + 1
+    return out
+
+
 def main(quick: bool = False) -> None:
     from app.backtests import load_aligned_bars
     from app.db import SessionLocal
@@ -280,8 +298,12 @@ def main(quick: bool = False) -> None:
         r = run_variant(b200, blev, P, W, log=log, budget_log=blog, **kw)
         hi = sum(1 for m in log if m["sigma20"] is not None and m["sigma20"] > P.sigma20_liquidate)
         results[nm] = (r, kw, log, blog)
+        cash_v = [x for x in blog if x[0] == "cash"]
+        buf_v = [x for x in blog if x[0] == "buffer"]
         print(f"{nm:<24}{r.kpi['total_return']:>9.2%}{r.kpi['cagr']:>8.2%}{mdd_of(r.equity):>9.2%}"
-              f"{r.kpi['sharpe']:>7.3f}{len(r.fills):>6}{len(log):>7}{len(blog):>9}{hi:>13}")
+              f"{r.kpi['sharpe']:>7.3f}{len(r.fills):>6}{len(log):>7}{len(cash_v):>9}{hi:>13}")
+        print(f"    예산 — 현금 초과 {len(cash_v)}일 · 버퍼 잠식 {len(buf_v)}일"
+              + (f" (최대 {max(x[2] for x in buf_v):,.0f}원)" if buf_v else ""))
         bs = paired_block_bootstrap(base.equity, r.equity)
         print(f"    누적 차이(로그) 관측 {bs['obs']:+.4f} · 짝 부트스트랩 5%/50%/95% {bs['p05']:+.4f}/{bs['p50']:+.4f}/{bs['p95']:+.4f}"
               f" · 양(+)일 확률 {bs['share_pos']:.0%}")
@@ -290,6 +312,37 @@ def main(quick: bool = False) -> None:
                   f"  플래너 {[(k[5], k[3]) for k in m['planner']]} → 변형 {[(k[5], k[3]) for k in m['variant']]}")
         if len(log) > 6:
             print(f"    … 외 {len(log) - 6}일")
+
+    # 기준선도 같은 잣대로 — 버퍼 잠식이 A1 이 만든 것인지 현행이 이미 가진 성질인지
+    base_blog: list = []
+    run_variant(b200, blev, P, W, budget_log=base_blog)
+    bcash = [x for x in base_blog if x[0] == "cash"]
+    bbuf = [x for x in base_blog if x[0] == "buffer"]
+    print(f"{'현행(같은 잣대)':<24}{'':>9}{'':>8}{'':>9}{'':>7}{'':>6}{'':>7}{len(bcash):>9}")
+    print(f"    예산 — 현금 초과 {len(bcash)}일 · 버퍼 잠식 {len(bbuf)}일"
+          + (f" (최대 {max(x[2] for x in bbuf):,.0f}원)" if bbuf else ""))
+
+    print("\n[2-1] 매수 체결 구성 — 배분 정책이 어떻게 바뀌나")
+    mixes = {"현행": fill_mix(base)} | {nm: fill_mix(r) for nm, (r, _, _, _) in results.items()}
+    kinds = sorted({k for m in mixes.values() for k in m})
+    print(f"{'변형':<24}" + "".join(f"{k:>10}" for k in kinds))
+    for nm, m in mixes.items():
+        print(f"{nm:<24}" + "".join(f"{m.get(k, 0):>10}" for k in kinds))
+
+    print("\n[2-2] 블록 길이 민감도 (A1 vs 현행) — 21일 선택에 의존하는가")
+    print(f"{'블록':>6}{'5%':>10}{'50%':>10}{'95%':>10}{'양(+) 비율':>12}")
+    a1 = results["A1 생략→축소"][0]
+    for blk in (5, 21, 63, 126, 252):
+        bs = paired_block_bootstrap(base.equity, a1.equity, block=blk)
+        print(f"{blk:>6}{bs['p05']:>+10.4f}{bs['p50']:>+10.4f}{bs['p95']:>+10.4f}{bs['share_pos']:>12.1%}")
+
+    print("\n[2-3] 변형 간 짝 비교 — A13 이 A1 보다 나은가 (기준선이 아니라 서로)")
+    a13 = results["A13 레버리지 우선 + 축소"][0]
+    a3 = results["A3 레버리지 우선"][0]
+    for nm, eq in (("A13 − A1", a13.equity), ("A3 − A1", a3.equity)):
+        bs = paired_block_bootstrap(a1.equity, eq)
+        print(f"  {nm:<10} 관측 {bs['obs']:+.4f} · 5%/50%/95% {bs['p05']:+.4f}/{bs['p50']:+.4f}/{bs['p95']:+.4f}"
+              f" · 양(+) 비율 {bs['share_pos']:.1%}")
 
     if quick:
         return
