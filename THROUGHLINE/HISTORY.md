@@ -1330,3 +1330,15 @@
 - 데이터 보수: `load_aligned_bars` 가 2026-09-03 에서 409 로 멈춰, 어제 복구 때 빠뜨린 **122630 의 2026-09-03 봉 1건**을 KIS 에서 채웠다. 이후 정상(2,375일).
 - 테스트 결과: `pytest -q tests/` → **366 passed, 0 failed**. 제품 코드 불변 — 검토 문서와 재현 스크립트만.
 - Git commit: docs: both regime reports hold up, with a narrower blast radius
+
+## [2026-09-15] fix | 레짐 전수조사 + 시뮬레이터 워밍업·주문표 하루 어긋남 수정 (사용자 지시) · v0.33.1
+
+- 지시: "① 레짐 관련 코드를 전수조사해 어긋남이 다른 부분에도 영향을 주는지 분석 ② 둘다 구현." [검토·조사](docs/regime-timing-defects-review-20260915.md) §5·§6.
+- **전수조사**: 레짐 원천은 셋뿐이고, 어긋남은 **국내 포트 주문표 한 경로**(`signals.py:239` 의 플래너 입력)에서만 샜다. 그 한 값이 화면 3곳(응답 `regime`·`regime_detail`·일자별 일지)과 체결 태그 3경로(`autoexec` 09:01·예약주문·화면 체결 등록 → `lot_tag`)로 퍼졌다. **맞는 곳**: 공용 모델 일일 스냅샷(`last_plan.regime`)·**미국(TF) 경로(이미 `lp.regime` 사용)**·백테스트 시계열·소급 스크립트(`plan_day_context`)·플래너 입력. 같은 화면에서 **모델 기준은 맞고 포트 기준만 틀린** 상태였다(`signals.py:609~614` 이 `snap.regime` 을 덮어씀).
+- `regime_detail` 은 **기준일 지표로 전날 레짐을 설명**하던 자기모순이었다.
+- **② 워밍업 구현**: `backtest.warm_regime()` 추가, `regime = Regime.NEUTRAL` 대체. `plan()` 의 워밍업 가드와 같은 조건이라 전체 이력을 처음부터 돌린 것과 같은 상태가 나온다. 재측정 — 첫날 레짐이 전체 이력과 다른 시작점 **12개 → 0개**.
+- **① 어긋남 구현**: `plan_regime = p.regime if p.status == "OK" else regime` 을 응답·`regime_detail`·`payload` 에 실었다. 플래너 입력은 이전 레짐 그대로. `rebuild_lots` 는 **손대지 않았다** — 전환 재생이 `i < last` 에서 멈추는 것은 백테스트(`plan(i)` → `apply_regime_conversion`)와 맞추기 위한 의도이며, 함께 당기면 새로 어긋난다. 그 이유를 독스트링에 적었고 미사용 `regime_now` 인자도 명시했다.
+- 테스트 결과: `pytest -q tests/` → **368 passed, 0 failed**. 신규 `test_backtest_started_midway_warms_the_regime_state_like_the_full_run`(**앞을** 잘라내는 동일성 — 기존 R2 는 끝만 검사해 못 잡았다. 수정을 되돌리면 "시작 300: 첫날 레짐이 다르다"로 실제 실패하는 것을 확인), `test_the_regime_frozen_on_the_plan_is_the_one_the_tag_sources_use`(**plan.regime == reg_by_date[실행일] == plan_day_context(실행일)** 항등식, 전환 0회면 실패), `test_signals` 에 포트 기준·모델 기준 레짐 일치 단언 추가.
+- `npx tsc --noEmit` 무오류. 헤드리스: 주문표 정상 렌더(NEUTRAL·2026-09-10), 콘솔 오류 없음.
+- 남은 것(별건): 이미 저장된 `BrokerOrder.plan_regime`·과거 `PortfolioPlan.payload` 의 소급 교정. 이 계좌는 9월에 전환이 없어 영향 없음.
+- Git commit: fix: warm the regime state and stop freezing yesterday's regime

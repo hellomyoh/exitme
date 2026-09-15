@@ -35,6 +35,28 @@ def test_truncated_backtest_final_plan_equals_full_run_plan():
         assert final_plan.gap_cancel_below == reference.gap_cancel_below
 
 
+# ── R3: **앞을** 잘라낸 실행의 레짐 = 전체 실행의 같은 날 레짐 (2026-09-15 지시)
+def test_backtest_started_midway_warms_the_regime_state_like_the_full_run():
+    """시뮬레이터가 중간 날짜에서 시작해도 레짐이 실전(전체 이력)과 같아야 한다.
+
+    종전에는 지표만 이전 봉으로 준비하고 레짐 상태 기계는 시작일에 NEUTRAL 에서 새로 출발했다. 판정에 완충이 있어
+    시작일이 그 안이면 값이 갈렸다 — 시작점 94개 중 12개(13%)가 첫날부터 달랐다(중앙 7거래일 만에 수렴).
+    R2 는 **끝을** 잘라내는 경우만 봐서 이걸 잡지 못했다.
+    """
+    from tests.test_strategy_backtest import make_bars
+
+    b200, blev = make_bars(n=900), make_bars(n=900, ratio=0.3)
+    full = run_backtest(b200, blev, 100_000_000, Params())
+    truth = dict(zip(full.dates, full.regimes))
+
+    for start in (300, 420, 560, 700):
+        part = run_backtest(b200, blev, 100_000_000, Params(), start_index=start)
+        got = list(zip(part.dates, part.regimes))
+        assert got[0][1] == truth[got[0][0]], f"시작 {start}: 첫날 레짐이 전체 실행과 다르다"
+        # 첫날만이 아니라 구간 전체가 같아야 한다 — 레짐은 가격만의 함수다
+        assert all(truth[d] == r for d, r in got), f"시작 {start}: 구간 안에서 레짐이 갈린다"
+
+
 pytestmark_db = [pytest.mark.integration, pytest.mark.skipif(not DB_UP, reason="database not reachable")]
 
 
@@ -134,6 +156,9 @@ def test_portfolio_basis_orders_respect_holdings():
     # 모델 기준과 다른 주문 구성이어야 함 (보유 반영)
     model = client.get("/signals/daily", headers=h).json()
     assert body["orders"] != model["orders"]
+    # 레짐은 가격만의 함수라 포트 기준과 공용 모델 기준이 **같은 실행일에 대해 같아야** 한다.
+    # 종전에는 포트 경로만 플래너 입력(하루 늦은 값)을 실어 전환일에 둘이 갈렸다 (2026-09-15 지시)
+    assert body["regime"] == model["regime"]
     # 신호 이력 엔드포인트
     j = client.get("/signals/journal?days=10", headers=h).json()
     assert len(j["items"]) > 0 and {"date", "planned", "fills", "day_pnl"} <= set(j["items"][0])

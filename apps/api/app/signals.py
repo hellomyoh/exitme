@@ -308,6 +308,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
     from app.lots import rebuild_lots
     lots = rebuild_lots(lot_rows, leg_by_inst.__getitem__, [b["date"] for b in bars_200],
                         dict(zip(result.dates, result.regimes)), m200, params, last, regime.value)
+    # ↑ 마지막 인자(regime_now)는 `rebuild_lots` 가 쓰지 않는다. 전환 재생은 reg_by_date(체결일 키)로만 한다.
 
     user_pf = Portfolio(cash=float(cash), lots=lots)
     # 소량 진입 부트스트랩 (ADR-010): 시작일 = max(포트 생성일, 첫 거래일) — 시작 패널이 입금을 직전 영업일로 소급 기록해도 생성일이 잡아 준다.
@@ -324,6 +325,11 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
         if not started_with_holdings:
             days_since_start = sum(1 for b in bars_200 if start_day < date.fromisoformat(b["date"]) <= base_day)
     p = plan(last, m200, mlev, regime, user_pf, params, days_since_start=days_since_start)
+    # 주문을 만든 레짐 = 기준일 종가로 정한 값(`p.regime`). 위 `regime` 은 플래너 **입력**(기준일 전날 종가로 정한 값)이라
+    # 그대로 화면·스냅샷·`plan_regime` 에 실으면 전환일에 하루 늦은 값이 나가고, 체결 태그가 백테스트와 반대로 붙는다
+    # (2026-09-15 지시, docs/regime-timing-defects-review-20260915.md §1). 미국(TF) 경로는 이미 `lp.regime` 을 쓴다.
+    # 워밍업 미달이면 `p.regime` 이 의미 없는 NEUTRAL 이므로 마지막으로 알려진 상태를 쓴다.
+    plan_regime = p.regime if p.status == "OK" else regime
     # 계획 vs 등록 체결 대조 (2026-09-05 지시) — 실패해도 주문표는 떠야 하므로 방어적으로
     from app.broker import reconcile_for_portfolio
     try:
@@ -364,11 +370,11 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
         # 다음 거래일 주문표 미작성 구간 안내 (2026-09-07 지시)
         "pending": _plan_pending(exec_day)[0], "pending_note": _plan_pending(exec_day)[1],
         # 배치 스냅샷이 없어도 화면이 그릴 수 있게 레짐·노출·기준일·지표를 함께 준다 (2026-09-05: 챗봇과 화면 불일치)
-        "signal_date": base_day.isoformat(), "regime": regime.value, "e_target": p.e_target,
+        "signal_date": base_day.isoformat(), "regime": plan_regime.value, "e_target": p.e_target,
         "w_200": p.w_200, "w_lev": p.w_lev, "trade_date": base_day.isoformat(),   # 같은 계획에서 (감사 A12) — 공용 모델 값 덮어씀
         "indicators": {k: v for k, v in (p.indicators or {}).items() if v is not None},
         # 표시 전용 레짐 상세 (2026-09-13, 제안 1·3): 중립 세분화 라벨 + 레버리지 차단 사유. 판정·주문 규칙 불변
-        "regime_detail": regime_view.detail(regime.value, p.indicators, p.e_target, params),
+        "regime_detail": regime_view.detail(plan_regime.value, p.indicators, p.e_target, params),
         # 어떤 공식으로 계산했는지 표시용 (2026-09-05): portfolio = 전환 시 동결 변수, settings = 설정 추종
         "algo_source": algo_source, "algo_overrides": algo, "algo_detail": algo_detail,
         "reconcile": reconcile,  # 계획 vs 등록 체결 대조 경고 (2026-09-05 지시) — 표시만
@@ -394,7 +400,7 @@ def _portfolio_orders(session: Session, pid: int, user_id: int, force_freeze: bo
     from app.models import PortfolioPlan
     row = session.scalar(select(PortfolioPlan).where(
         PortfolioPlan.portfolio_id == pid, PortfolioPlan.trade_date == exec_day))
-    payload = {"regime": regime.value, "signal_date": base_day.isoformat(), "grid": grid_today,   # grid: 체결 태그용 (0027)
+    payload = {"regime": plan_regime.value, "signal_date": base_day.isoformat(), "grid": grid_today,   # 체결 태그용 (0027) — 주문을 만든 레짐
                "orders": out["orders"], "gap_cancel_below": p.gap_cancel_below,
                "gap_cancel_exact": p.gap_cancel_exact,  # 무인 실행의 시가 판정은 정확값 (2026-09-06)
                "account": out["account"], "e_target": p.e_target}
