@@ -119,3 +119,60 @@ KIS 에서 받아 1건 채웠고 이후 정상 로드된다(2,375일).
 ```
 docker compose exec -T api python -m scripts.regime_timing_audit
 ```
+
+## 5. 레짐 전수조사 (2026-09-15 지시 1) — 어긋남이 닿는 곳과 닿지 않는 곳
+
+`regime` 을 만들고 쓰는 모든 지점을 훑었다. 원천은 셋뿐이다.
+
+| 원천 | 값의 의미 |
+|---|---|
+| `result.regimes[k]` (`out_dates[k]` 와 짝) | **그 실행일을 지배하는 레짐** = 계획일 종가에 결정 — 정본 |
+| `Plan.regime` | 기준일 종가로 정한 값 = 그 주문표의 실행일 레짐 — 위와 같은 것 |
+| `signals.py:239` `Regime(result.regimes[-1])` | **기준일**을 지배한 레짐 = 플래너 입력 (하루 이르다) |
+
+### 틀린 곳 (전부 세 번째 원천이 샌 자리)
+
+| 위치 | 무엇 | 파급 |
+|---|---|---|
+| `signals.py:367` | 주문표 응답 `regime` | 대시보드·주문표 화면 |
+| `signals.py:371` | `regime_detail` | **기준일 지표로 전날 레짐을 설명**한다 — 자기모순 |
+| `signals.py:397` | `payload["regime"]` (동결) | ↓ 아래 넷의 상류 |
+| `portfolios.py:825` | 일자별 일지 `regime` | 화면 |
+| `autoexec.py:909` | `BrokerOrder.plan_regime` (09:01) | **체결 태그** |
+| `broker.py:850` | 예약주문 `plan_regime` | **체결 태그** |
+| `portfolios.py:199` | 화면 체결 등록(`body.plan_regime`) | **체결 태그** |
+| `signals.py:609~614` | 포트 응답이 `snap.regime` 을 덮어씀 | 같은 화면에서 **모델 기준은 맞고 포트 기준만 틀림** |
+
+`broker.py:421` 이 `lot_tag(…, bo.plan_regime, …)` 로 로트를 정하므로, 위 셋이 전환 다음 날 코어/그리드를 뒤집는다.
+
+### 맞는 곳 (건드리지 않는다)
+
+- `signals.py:149` 공용 모델 일일 스냅샷 — `last_plan.regime.value` 로 **이미 옳다**
+- `signals.py:492·524·565` **미국(TF) 경로 — 이미 `lp.regime` 을 쓴다.** 국내 포트 경로만 어긋나 있었다
+- `signals.py:460·654`, `backtests.py:313·364`, `worker.py:333` 백테스트 시계열 — 정본 그대로
+- `signals.py:326` 플래너 입력 — 이전 레짐이 **맞다**
+- `lots.py` `plan_day_context` (소급 스크립트) · `rebuild_lots` 의 전환 재생과 끝점 — §1.3
+- `signals.py:310` 이 넘기는 `regime_now` — `rebuild_lots` 가 **읽지 않는다**(문서화함)
+- `settings.py:30` 은 `regime_buffer` 파라미터 이름일 뿐 무관
+
+**결론: 어긋남은 국내 포트 주문표 한 경로에서만 새어 나왔고, 그 한 값이 화면 3곳과 체결 태그 3경로로 퍼졌다.**
+다른 계산(백테스트·모델 스냅샷·미국 경로·소급 스크립트)은 처음부터 옳았다.
+
+## 6. 구현 (2026-09-15 지시 2)
+
+**② 워밍업** — `backtest.warm_regime(m200, params, upto)` 를 추가하고 `regime = Regime.NEUTRAL` 을 대체했다.
+`plan()` 의 워밍업 가드와 **같은 조건**을 쓰므로 전체 이력을 처음부터 돌린 것과 같은 상태가 나온다.
+재측정: 첫날 레짐이 다른 시작점 **12개 → 0개**.
+
+**① 하루 어긋남** — `plan_regime = p.regime if p.status == "OK" else regime` 을 두고 응답·`regime_detail`·
+`payload` 세 곳에 실었다. 플래너 입력은 그대로 이전 레짐이다. `rebuild_lots` 는 **손대지 않았다**(§1.3).
+
+**테스트**
+- `test_backtest_started_midway_warms_the_regime_state_like_the_full_run` — 앞을 잘라낸 실행의 레짐이 전체 실행과
+  같은지. 기존 R2 는 **끝만** 잘라 봐서 못 잡았다. 수정을 되돌리면 실제로 실패하는 것을 확인했다("시작 300: 첫날 레짐이 다르다").
+- `test_the_regime_frozen_on_the_plan_is_the_one_the_tag_sources_use` — **plan.regime == reg_by_date[실행일]
+  == plan_day_context(실행일)** 항등식. 전환이 0회면 실패하도록 해 테스트가 무의미해지지 않게 했다.
+- `test_signals` 포트 기준 응답의 `regime` 이 공용 모델 기준과 같은지 — 같은 실행일을 가리키므로 같아야 한다.
+
+**남은 것**: 이미 저장된 `BrokerOrder.plan_regime` 과 과거 `PortfolioPlan.payload` 의 소급 교정은 별건이다.
+이 계좌는 9월에 전환이 없어 영향이 없다.

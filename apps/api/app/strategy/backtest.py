@@ -23,7 +23,7 @@ from app.strategy.planner import (
     plan,
     prepare,
 )
-from app.strategy.regime import Regime
+from app.strategy.regime import Regime, next_regime
 
 
 @dataclass
@@ -74,6 +74,30 @@ def _fee(value: float, annual_rate: float, days: float) -> float:
 
 def _fill_market(open_px: float, side: str, slippage: float) -> float:
     return open_px * (1 + slippage) if side == "buy" else open_px * (1 - slippage)
+
+
+def warm_regime(m200: Market, params: Params, upto: int) -> Regime:
+    """워밍업 구간의 레짐 상태 기계를 돌려 `upto` 시점의 상태를 낸다 (2026-09-15 지시).
+
+    종전에는 `start_index` 로 중간부터 시작하면 지표만 이전 봉으로 준비되고 **레짐은 NEUTRAL 에서 새로 출발**했다.
+    레짐 판정에 완충(히스테리시스)이 있어 시작일이 그 안이면 전체 이력을 돌린 실전과 값이 갈린다 —
+    시작점 94개 중 12개(13%)가 첫날부터 달랐고 같아질 때까지 중앙 7거래일·최대 18거래일이 걸렸다
+    (docs/regime-timing-defects-review-20260915.md §2). 시뮬레이터 기본 기간이 최근 1년이라 이게 기본 상태였다.
+
+    `plan()` 의 워밍업 가드와 **같은 조건**을 쓴다 — 가드에 걸리는 봉에서는 본 루프도 NEUTRAL 로 되돌리므로
+    (아래 `regime = Regime.NEUTRAL`), 전체 이력을 처음부터 돌린 것과 같은 상태가 나온다.
+    레짐은 가격만의 함수라 포트 상태와 무관하고 비용은 봉당 `next_regime` 한 번이다.
+    """
+    regime = Regime.NEUTRAL
+    for w in range(upto):
+        if (w + 1 < params.min_history or m200.ma200[w] is None or m200.sigma_ref[w] is None
+                or m200.ma20[w] is None or m200.ma60[w] is None):
+            regime = Regime.NEUTRAL       # plan() 이 INSUFFICIENT_HISTORY 를 내는 구간
+            continue
+        ma60_prev = m200.ma60[w - params.slope_lookback_v1] if w >= params.slope_lookback_v1 else None
+        regime = next_regime(regime, m200.closes[w], m200.ma20[w], m200.ma60[w], m200.ma200[w],
+                             params, ma60_prev_slope=ma60_prev)
+    return regime
 
 
 def _fill_limit_buy(limit: int, open_px: float, low: float) -> float | None:
@@ -161,8 +185,9 @@ def run_backtest(bars_200: list[dict], bars_lev: list[dict], capital: float,
     # 현금만 분모로 쓰면 보유 평가액이 통째로 수익으로 잡힘 (2026-09-02 결함: +153% 사례)
     base_capital = capital + sum(int(h["qty"]) * float(h["price"]) for h in (initial_lots or []))
     ledger = _Ledger(params)
-    regime = Regime.NEUTRAL
     first = start_index if start_index is not None else 0
+    # 중간부터 시작해도 레짐 상태는 워밍업 구간을 돌려 실전(전체 이력)과 같은 값에서 출발한다 (2026-09-15 지시)
+    regime = warm_regime(m200, params, first)
 
     equity_curve: list[float] = []
     bench_curve: list[float] = []

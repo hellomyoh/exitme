@@ -515,3 +515,47 @@ def test_cold_start_fills_keep_their_own_take_profit_not_the_close_anchored_ladd
     # 종가 기준 사다리 가격이 아니어야 한다
     for k in (1, 2, 3):
         assert tp[0]["price"] != round_tick(last_close * (1 + 0.025 * k), P.tick, up=True)
+
+
+def test_the_regime_frozen_on_the_plan_is_the_one_the_tag_sources_use():
+    """주문표가 동결하는 레짐 = 백테스트·소급 스크립트가 태그에 쓰는 레짐 (2026-09-15 지시).
+
+    종전에는 `signals.py` 가 플래너 **입력**(기준일 전날 종가로 정한 값)을 `payload["regime"]` 에 실었다.
+    그 값이 `BrokerOrder.plan_regime` → `lot_tag` 로 이어져, 전환 다음 날 체결의 코어/그리드 분류가
+    백테스트와 **반대로** 붙었다 — 10년에서 K200 매수 243건 중 6건.
+    소급 스크립트는 `plan_day_context`(체결일 키)를 써서 백테스트와 같으므로 두 태그 원천이 갈렸다.
+
+    여기서 못박는 항등식: **plan.regime(=이제 payload 에 싣는 값) == reg_by_date[실행일] == plan_day_context(실행일)**
+    """
+    from datetime import date as _date
+
+    from app.lots import plan_day_context
+    from tests.test_strategy_backtest import make_bars
+
+    P2 = Params()
+    b200, blev = make_bars(n=900), make_bars(n=900, ratio=0.3)
+    full = run_backtest(b200, blev, 100_000_000, P2, collect_plans=True)
+    dates = [b["date"] for b in b200]
+    reg_by_date = dict(zip(full.dates, full.regimes))
+    m200 = prepare([float(b["open"]) for b in b200], [float(b["high"]) for b in b200],
+                   [float(b["low"]) for b in b200], [float(b["close"]) for b in b200], P2)
+
+    first = len(dates) - 1 - len(full.plans)
+    checked = transitions = 0
+    prev = None
+    for j, p in enumerate(full.plans):
+        i = first + j
+        if i + 1 >= len(dates) or p.status != "OK":
+            prev = None
+            continue
+        exec_day = dates[i + 1]
+        assert p.regime.value == reg_by_date[exec_day], f"{exec_day}: 동결 레짐이 백테스트 원천과 다르다"
+        reg, _g = plan_day_context(dates, reg_by_date, m200, P2, _date.fromisoformat(exec_day))
+        assert reg == p.regime.value, f"{exec_day}: 소급 스크립트 원천과 다르다"
+        if prev is not None and prev != p.regime.value:
+            transitions += 1
+        prev = p.regime.value
+        checked += 1
+
+    assert checked > 300, f"검사한 날이 너무 적다 ({checked})"
+    assert transitions > 0, "전환이 한 번도 없어 이 테스트가 결함을 잡을 수 없다"

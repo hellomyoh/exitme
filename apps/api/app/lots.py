@@ -97,6 +97,10 @@ def rebuild_lots(lot_rows: list[dict], leg_of, dates: list[str], reg_by_date: di
       그러면 플래너가 그날 종가 기준 **사다리**로 익절을 낸다 (ADR-014). 종전에는 비상승장에서 `grid` + 근사 익절가
       한 개를 붙여, 사다리가 적용되지 않고 전량이 한 줄로 나갔다 (2026-09-13 실사용 주문표에서 발견).
     leg_of(instrument_id) → "K200" | "LEV". approx_tp 는 더 쓰지 않는다(하위 호환으로만 받는다).
+    **regime_now 도 쓰지 않는다** — 전환 재생은 reg_by_date(체결일 키 = 계획일 종가에 결정된 값)로만 한다.
+    재생이 `i < last` 에서 멈추는 것도 의도다: 백테스트가 `plan(i)` 를 먼저 부르고 그 뒤에
+    `apply_regime_conversion` 을 적용하므로(backtest.py) **전환일 주문은 전환 전 로트로** 만들어진다.
+    여기를 기준일까지 당기면 백테스트와 새로 어긋난다 (2026-09-15 검토 §1.3).
     """
     out: list[Lot] = []
     for row in lot_rows:
