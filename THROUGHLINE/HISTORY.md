@@ -1315,3 +1315,18 @@
 - 테스트 결과: `pytest -q tests/` → **366 passed, 0 failed**. 신규 `test_samples_are_persisted_so_accuracy_can_be_measured_later`(같은 분 중복 1행·09:00 전후 kind 구분·시각 보존), `test_token_warm_failure_reaches_the_user_instead_of_only_the_log`. 기존 `test_poll_records_expected_before_open_and_actual_open_after` 는 응답에 `stored` 가 늘어 정확일치 단언을 관심 필드 비교로 바꿨고, 이 파일이 실코드(102110·069500)로 남기는 표본을 지우는 autouse fixture 를 넣었다.
 - 마이그레이션은 개발·CI DB 에 실제 적용해 `alembic_version = 0029`·`preopen_samples` 생성 확인. 배포는 `deploy.sh` 가 이미지 안에서 alembic 을 돌린다.
 - Git commit: feat: keep the pre-open samples and say when the token warm fails
+
+## [2026-09-15] audit | 제출 결함 보고 2건 검토 — 주문표 레짐 하루 어긋남 · 시뮬레이터 레짐 미워밍업
+
+- 지시: "아래 2개 검토 내용 분석하고 검토하세요." [보고서](docs/regime-timing-defects-review-20260915.md), 재현 `scripts/regime_timing_audit.py`.
+- **판정: 둘 다 사실.** 경로를 코드로 확인하고 10년 실봉(2,375일, fingerprint `3b65f62ef5b0`)으로 재현했다.
+- ① 주문표 레짐: `plan()` 이 기준일 종가로 새 레짐을 정해 주문을 만들고 `Plan.regime` 에 담아 주는데 `signals.py` 는 **입력한 이전 레짐**을 응답·`regime_detail`·동결 스냅샷·`payload["regime"]` 에 싣는다. 그 값이 `BrokerOrder.plan_regime` → `lot_tag` 로 이어져 전환 다음 날 체결의 코어/그리드 분류가 백테스트와 반대로 붙는다. 소급 스크립트는 `plan_day_context`(체결일 키 = 계획일 종가 레짐)를 쓰므로 백테스트와 같다 — 두 태그 원천이 갈린다는 지적도 맞다.
+- ① **보고서보다 좁은 점**: `rebuild_lots` 의 `regime_now` 인자는 **선언만 있고 본문에서 미사용**이다. 하루 늦은 레짐이 로트 재구성에는 닿지 않으므로 고칠 표면은 표시 3곳 + `plan_regime` 1곳이다. 주문 내용 자체는 달라지지 않아 보고서의 "주문표가 백테스트와 다른 날 9일"은 재현하지 못했다(정의 차이로 보임).
+- ① **고칠 때 건드리면 안 되는 지점**: `rebuild_lots` 의 `while i < last` (기준일 종가 전환 미재생)는 **맞다**. 백테스트도 `plan(i)` 를 먼저 부르고 그 뒤에 `apply_regime_conversion` 을 적용한다(`backtest.py:191→206`) — 전환일 주문은 전환 전 로트로 만들어진다. 여기를 함께 당기면 새로 어긋난다.
+- ① 재현: 레짐 전환 **41회**(보고서와 일치), 태그가 뒤집히는 날 24일, 오분류 K200 매수 체결 **243건 중 6건**(보고서 244 중 7) — 2019-02-15·2019-03-25(2)·2019-09-27·2020-06-17·2023-01-30.
+- ② 시뮬레이터: `backtest.py:164` 가 `regime = Regime.NEUTRAL` 로 시작해 상태 기계만 워밍업을 건너뛴다. 재현 — 시작점 94개 중 **12개(13%)** 가 첫날 레짐이 전체 이력과 다르고, 수렴까지 중앙 **7거래일**·최대 **18거래일**, 1년 수익률 차이(콜드−워밍) 중앙 **−0.6%p**·범위 **−5.2 ~ +2.5%p**. 갈리는 사례는 전부 완충 구간.
+- ② **판정 근거는 수익률이 아니라 재현성**이다 — 차이는 노이즈 밴드 안이고 부호도 양쪽이다. 시뮬레이터가 실전과 다른 레짐으로 답하는 것이 문제이며, 기본 기간이 최근 1년이라 이 경우가 기본 상태다.
+- 권고: 순서는 **② 먼저, ① 다음**. ②는 지표가 채워진 첫 봉부터 상태 기계를 돌리고 **앞을 잘라내는** 동일성 테스트를 추가(기존 재현성 테스트는 끝만 검사해 못 잡았다). ①은 표시·`plan_regime` 만 `p.regime` 으로 바꾸고 플래너 입력은 그대로. 구현 지시 대기.
+- 데이터 보수: `load_aligned_bars` 가 2026-09-03 에서 409 로 멈춰, 어제 복구 때 빠뜨린 **122630 의 2026-09-03 봉 1건**을 KIS 에서 채웠다. 이후 정상(2,375일).
+- 테스트 결과: `pytest -q tests/` → **366 passed, 0 failed**. 제품 코드 불변 — 검토 문서와 재현 스크립트만.
+- Git commit: docs: both regime reports hold up, with a narrower blast radius
