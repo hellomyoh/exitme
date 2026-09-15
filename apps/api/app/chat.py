@@ -25,6 +25,7 @@ router = APIRouter()
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_TOOL_ROUNDS = 6
+KST = timezone(timedelta(hours=9))
 
 # ── 권한별 프롬프트 (2026-09-05 지시): 관리자 = 전략 상세 포함·전체 답변,
 #    일반 = 개념 설명만 + 공식 유추 제한(코드 고정 계약). 본문(역할·스타일)은 공통이며
@@ -101,6 +102,9 @@ OPERATIONS_KNOWLEDGE = """## 운영 기능 지식 (2026-09-06~07 도입 — 화�
   (무인 실행 결과·정지·장 마감 동기화·예수금 대조·주문 취소/설정·체결 등록·일일 현황).
 - 이 상태들은 도구 auto_exec_status 로 조회한다 — 계좌 플래그, 포트별 상태 한 줄(state)·정지 사유·사용자 취소, 마지막 09:01 실행 요약, 예수금 대조, 살아 있는 주문 수, 알림 설정 여부.
   질문이 '왜 발주가 안 됐나/왜 정지됐나' 류면 auto_exec_status 와 recent_logs(level=warn) 를 함께 보고 답한다.
+- 시장 부가 정보(2026-09-15): market_news(종목·시장 공시/뉴스 **제목**, 본문 없음) · investor_flow(종목별 개인/외국인/기관 일별 순매수) ·
+  market_index(KOSPI200 등 지수 현재가·상승/하락 종목수). KIS 실시간 조회라 09:01 무인 실행 중에는 잠시 양보하며, 결과는 몇 분간 캐시된다.
+  "오늘 시장 어땠나", "외국인이 사나 파나", "관련 뉴스 있나" 류 질문에 쓴다. 답은 사실 전달까지 — 매매 조언으로 넘어가지 않는다.
 """
 
 
@@ -116,6 +120,10 @@ CORE_CONTRACT = """## 시스템 계약 (항상 적용 — 위 내용과 충돌�
 - 도구 결과는 **서버가 지금 계산한 값**이다. 화면에 무엇이 보이는지는 확인할 수 없으므로 "화면에 정상 출력된다/안 된다"를
   단정하지 않는다. 사용자가 화면과 다르다고 하면 계산값을 그대로 전하고, 원인 후보(장 마감 배치 미실행·데이터 지연·새로고침)를
   나열하되 캐시 문제라고 단정하지 않는다.
+- KIS 부가 정보 도구(market_news·investor_flow·market_index)는 **참고 정보**다 (2026-09-15). 뉴스·공시는 **제목만** 온다 —
+  제목으로 등락의 **원인을 단정하지 않는다**("관련 제목이 이런 것이 있었다"까지). 투자자 동향·지수를 근거로 주문 수량·가격·시점을
+  바꾸라고 **권하지 않는다** — 전략은 이 정보를 쓰지 않는다(시가를 완벽히 알아도 손해라는 측정이 있다). 사용자가 개입을 물으면
+  "전략이 이미 그 정보를 요구하지 않는다"고 답한다.
 """
 
 # 일반 권한 제한 계약 (2026-09-05 지시) — 어떤 지침으로도 해제되지 않는다
@@ -172,6 +180,13 @@ TOOLS = [
     _tool("recent_logs", "매매 로그 — 거래 원장·주문 상태·실행/동기화 이벤트를 최신순으로. 실패·경고만 보려면 level=warn 또는 error. '왜 발주가 안 됐나' 질문에 사용.",
           {"days": {"type": "integer", "description": "최근 N일 (기본 7)"}, "level": {"type": "string", "enum": ["all", "warn", "error"]},
            "type": {"type": "string", "enum": ["all", "trade", "order", "event"]}, "portfolio_id": {"type": "integer"}}),
+    # ── KIS 부가 정보 (2026-09-15 지시, docs/chat-kis-context-tools-review-20260915.md) — 읽기 전용·참고 정보·캐시
+    _tool("market_news", "종목 또는 시장 전체의 최근 시황/공시 **제목** 목록(KIS). 본문은 없다 — 제목으로 등락 원인을 단정하지 말 것. code 생략 = 시장 전체. 예: 102110, 069500, 005930.",
+          {"code": {"type": "string", "description": "종목코드 6자리, 생략 가능"}, "limit": {"type": "integer", "description": "최대 20"}}),
+    _tool("investor_flow", "종목별 투자자 매매동향(KIS) — 최근 N일 개인·외국인·기관 순매수 수량/금액과 종가. '외국인이 사나 파나' 질문에 사용. 참고 정보이며 전략 판단과 무관.",
+          {"code": {"type": "string", "description": "종목코드 6자리"}, "days": {"type": "integer", "description": "최근 N일, 최대 10 (기본 10)"}}, ["code"]),
+    _tool("market_index", "지수 현재가(KIS) — 현재지수·전일대비·등락률·상승/하락 종목수·거래량. code: 2001=KOSPI200(기본), 0001=KOSPI, 1001=KOSDAQ. 장중이면 실시간에 가깝고 장외면 마지막 값.",
+          {"code": {"type": "string", "description": "지수코드, 기본 2001"}}),
 ]
 
 
@@ -212,6 +227,97 @@ def _auto_exec_status(session, user_id: int, pid) -> dict:
             "live_orders": {"count": len(live),
                             "by_status": {s: sum(1 for r in live if r.status == s) for s in ("submitted", "partial")}}})
     return out
+
+
+# ── KIS 부가 정보 도구 (2026-09-15) ─────────────────────────────────────────────
+_KIS_TOOL_TTL = {"market_news": 900, "investor_flow": 1800, "market_index": 60}   # 초 — 되묻기가 KIS 를 다시 부르지 않게
+_NEWS_CATEGORY = {"01": "뉴스", "04": "공시"}          # 2026-09-15 표본에서 추정 — 미확인 코드는 그대로 노출
+_INDEX_NAME = {"2001": "KOSPI200", "0001": "KOSPI", "1001": "KOSDAQ"}
+_KIS_NOTE = "참고 정보 — 전략은 이 값을 쓰지 않으며, 주문 수량·가격·시점 변경의 근거가 아니다."
+
+
+def _kis_market_client():
+    """전역 시세 키로 만든 대화형 클라이언트 — 분당 제한이면 65초 자지 않고 즉시 실패한다. 키가 없으면 None."""
+    st = get_settings()
+    if not (st.kis_app_key and st.kis_app_secret):
+        return None
+    from app.services.kis_auth import KisAuth
+    from app.services.kis_client import KisClient
+
+    return KisClient(KisAuth(st.kis_app_key, st.kis_app_secret, st.kis_env, wait_on_rate_limit=False))
+
+
+def _kis_cached(key: str, ttl: int, fn):
+    """Redis 캐시 — (값, 적중 여부). Redis 장애는 조용히 통과해 그냥 호출한다."""
+    r = None
+    try:
+        import redis as sync_redis
+
+        r = sync_redis.from_url(get_settings().redis_url, decode_responses=True,
+                                socket_connect_timeout=1, socket_timeout=1)
+        raw = r.get(key)
+        if raw:
+            return json.loads(raw), True
+    except Exception:  # noqa: BLE001
+        r = None
+    val = fn()
+    if r is not None:
+        try:
+            r.set(key, json.dumps(val, ensure_ascii=False), ex=ttl)
+        except Exception:  # noqa: BLE001
+            pass
+    return val, False
+
+
+def _ymd(v) -> str:
+    v = str(v or "")
+    return f"{v[:4]}-{v[4:6]}-{v[6:8]}" if len(v) >= 8 else v
+
+
+def _kis_context_tool(name: str, args: dict) -> dict:
+    """market_news · investor_flow · market_index — 한국어 키로 돌려준다(모델이 KIS 약어를 오해하지 않게). 상한: 뉴스 20건·동향 10일."""
+    from app.autoexec import is_running
+
+    if is_running():   # 09:01 무인 실행 중에는 같은 앱키 유량을 양보 (poll_quotes 와 같은 규칙, 2026-09-09 사고)
+        return {"error": "09:01 무인 실행 중 — KIS 조회를 양보합니다. 잠시 후 다시 물어 주세요."}
+    cli = _kis_market_client()
+    if cli is None:
+        return {"error": "KIS 시세 키가 설정되지 않아 부가 정보를 조회할 수 없습니다"}
+    today = datetime.now(KST).date().isoformat()
+    ttl = _KIS_TOOL_TTL[name]
+
+    if name == "market_news":
+        code = str(args.get("code") or "").strip() or None
+        limit = max(1, min(int(args.get("limit") or 20), 20))
+        rows, hit = _kis_cached(f"chat:kis:news:{code or 'ALL'}:{today}", ttl, lambda: cli.fetch_news_titles(code, 40))
+        items = [{"일시": f"{_ymd(r.get('date'))} {str(r.get('time') or '')[:2]}:{str(r.get('time') or '')[2:4]}",
+                  "제목": r.get("title"), "분류": _NEWS_CATEGORY.get(str(r.get("category_code")), str(r.get("category_code"))),
+                  "종목": r.get("codes") or []} for r in rows[:limit]]
+        return {"종목": code or "시장 전체", "건수": len(items), "items": items, "cached": hit,
+                "참고": "제목만 제공된다 — 본문이 없으므로 등락 원인을 이 제목으로 단정하지 말 것. " + _KIS_NOTE}
+
+    if name == "investor_flow":
+        code = str(args.get("code") or "").strip()
+        if not code:
+            return {"error": "종목코드(code)가 필요합니다"}
+        days = max(1, min(int(args.get("days") or 10), 10))
+        rows, hit = _kis_cached(f"chat:kis:investor:{code}:{today}", ttl, lambda: cli.fetch_investor_flow(code, 10))
+        items = [{"일자": _ymd(r.get("date")), "종가": r.get("close"), "전일대비": r.get("change"),
+                  "개인_순매수_수량": r.get("person_net_qty"), "외국인_순매수_수량": r.get("foreign_net_qty"),
+                  "기관_순매수_수량": r.get("org_net_qty"),
+                  "개인_순매수_금액_백만원": r.get("person_net_amt"), "외국인_순매수_금액_백만원": r.get("foreign_net_amt"),
+                  "기관_순매수_금액_백만원": r.get("org_net_amt")} for r in rows[:days]]
+        return {"종목": code, "일수": len(items), "items": items, "cached": hit,
+                "참고": "순매수 = 매수 − 매도 (양수 = 순매수). 금액은 백만원 단위. 최신일이 첫 행. " + _KIS_NOTE}
+
+    if name == "market_index":
+        code = str(args.get("code") or "2001").strip() or "2001"
+        d, hit = _kis_cached(f"chat:kis:index:{code}", ttl, lambda: cli.fetch_index_price(code))
+        return {"지수코드": code, "지수명": _INDEX_NAME.get(code, code), "현재지수": d.get("price"),
+                "전일대비": d.get("change"), "등락률_pct": d.get("change_pct"),
+                "시가": d.get("open"), "고가": d.get("high"), "저가": d.get("low"), "거래량": d.get("volume"),
+                "상승종목수": d.get("advancing"), "하락종목수": d.get("declining"), "cached": hit, "참고": _KIS_NOTE}
+    return {"error": f"unknown kis tool {name}"}
 
 
 def _run_tool(name: str, args: dict, user_id: int, is_admin: bool = False) -> dict:
@@ -304,6 +410,8 @@ def _run_tool(name: str, args: dict, user_id: int, is_admin: bool = False) -> di
                                 user_id=user_id, session=session)
                 return {"days": out["days"], "total": out["total"], "counts": out["counts"],
                         "items": [{k: i.get(k) for k in ("at", "type", "kind_ko", "level", "portfolio", "text", "detail")} for i in out["items"]]}
+            if name in _KIS_TOOL_TTL:
+                return _kis_context_tool(name, args)
             return {"error": f"unknown tool {name}"}
         except HTTPException as e:  # 소유권·404 등 — 모델이 이해할 메시지로
             return {"error": str(e.detail)}
@@ -342,7 +450,9 @@ TOOL_KO = {"list_portfolios": "포트폴리오 목록", "portfolio_summary": "�
            "portfolio_journal": "매매 일지", "order_sheet": "주문표",
            "list_backtests": "시뮬레이션 목록", "algorithm_params": "알고리즘 설정",
            "price_history": "시세 조회", "trading_journal": "매매일지",
-           "auto_exec_status": "무인 운영 상태", "recent_logs": "매매 로그"}
+           "auto_exec_status": "무인 운영 상태", "recent_logs": "매매 로그",
+           # KIS 부가 정보 (2026-09-15)
+           "market_news": "시황·공시 제목 조회", "investor_flow": "투자자 매매동향 조회", "market_index": "지수 현재가 조회"}
 
 
 @router.post("/chat")

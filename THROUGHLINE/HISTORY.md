@@ -1352,3 +1352,14 @@
 - 범위 밖으로 둔 것: VKOSPI 등 미확인 API, 체결 도달 빈도(우리 분봉 데이터 — 1차 33.3%·2차 13.5%·3차 3.7%), 뉴스 본문(KIS 미제공).
 - 판정: **채택 권고**, 마이너(0.34.0). 구현 지시 대기. 제품 코드 불변 — 문서만.
 - Git commit: docs: three KIS context tools for the chatbot are worth adding
+
+## [2026-09-15] feat | 챗봇 KIS 부가 정보 도구 3개 (사용자 지시) · v0.34.0
+
+- 지시: "도구 3개 모두 구현 · 완료 후 머지, 태그." 설계는 [검토](docs/chat-kis-context-tools-review-20260915.md) 그대로.
+- `KisClient` 정식 메서드 3개 — `fetch_news_titles`(FHKST01011800, **제목만**) · `fetch_investor_flow`(FHKST01010900) · `fetch_index_price`(FHPUP02100000). 응답 필드는 2026-09-15 실호출 프로브 기준. `_to_float` 헬퍼 추가.
+- `chat.py` 도구 3개 `market_news` · `investor_flow` · `market_index` — 전역 시세 키, 대화형 `wait_on_rate_limit=False`(65초 대기 없음), Redis 캐시 15분/30분/60초(`chat:kis:*`, 장애 시 조용히 통과), 09:01 실행 중 `is_running()` 양보, **한국어 키**로 반환(뉴스 ≤20건·동향 ≤10일), `TOOL_KO` 표시명. 일반 권한에도 노출(공식 유추 소재 아님).
+- 계약 2줄 추가(`CORE_CONTRACT`): 뉴스는 **제목만** — 원인 단정 금지 · 부가 정보는 **참고** — 주문 변경 권고 금지. `OPERATIONS_KNOWLEDGE` 에 도구 안내 1줄.
+- 실 스모크(전역 키, 기존 토큰 캐시 → 새 발급 없음): KOSPI200 1042.46(−0.80%, 상승 49/하락 149) · TIGER 200 09-15 외국인 +231,504주 · 공시 제목 2건. **재호출 cached=True 확인.** 스모크에서 투자자 **금액이 백만원 단위**임을 발견해 키에 `_백만원` 을 박았다(개인 6,214 ↔ 59,373주 × 약 10.5만원).
+- 테스트 결과: `pytest -q tests/` → **377 passed, 0 failed**. 신규 `tests/test_chat_kis_tools.py` 9건 — 한국어 키·상한·분류 매핑(미상 코드 통과) · 캐시 적중 시 KIS 미호출 · 실행 중 양보 · `KisError` → `{"error"}` · 키 없음 안내 · 일반 계정에 도구 노출 + 모델 루프 1건. 기존 `test_chat_ops` 레지스트리 검사에 걸려 `TOOL_KO` 를 채웠다.
+- 웹 변경 없음. 마이그레이션 없음. 새 동작이라 **마이너 0.34.0**.
+- Git commit: feat: let the chatbot read KIS news titles, investor flow and the index
