@@ -534,3 +534,21 @@ class ActivityLog(Base):
     level: Mapped[str] = mapped_column(Text, nullable=False, default="info")
     text: Mapped[str] = mapped_column(Text, nullable=False)
     data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class PreopenSample(Base):
+    """장 시작 전 예상체결가 표본 (0029, 2026-09-15 지시) — 정확도를 나중에 재기 위한 원천.
+
+    `preopen_watch` 가 08:30~09:10 매 분 남기는 값. Redis 는 TTL 12시간이라 표시용이고, 이 표가 영구 기록이다.
+    **판정에 쓰지 않는다** — 발주는 09:01 확정 시가로 판정한다(ADR-009). 급락일이 연 4~5회라
+    "예상가가 실제 시가와 얼마나 맞나"를 답하려면 표본이 쌓일 시간이 필요하다
+    (docs/preopen-order-timing-review-20260915.md §4).
+    """
+
+    __tablename__ = "preopen_samples"
+
+    code: Mapped[str] = mapped_column(Text, primary_key=True)
+    trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    price: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)   # expected | open | current
