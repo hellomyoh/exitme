@@ -57,6 +57,11 @@ class DailyBar:
     volume: int
 
 
+# 챗봇 부가 정보 (2026-09-15 지시, docs/chat-kis-context-tools-review-20260915.md) — 셋 다 전역 시세 키로 부르는 공개 시세 계열 TR.
+NEWS_PATH, NEWS_TR = "/uapi/domestic-stock/v1/quotations/news-title", "FHKST01011800"          # 종합 시황/공시 **제목**
+INVESTOR_PATH, INVESTOR_TR = "/uapi/domestic-stock/v1/quotations/inquire-investor", "FHKST01010900"  # 투자자별 매매동향(일별)
+INDEX_PATH, INDEX_TR = "/uapi/domestic-stock/v1/quotations/inquire-index-price", "FHPUP02100000"     # 업종/지수 현재가
+
 class KisError(RuntimeError):
     pass
 
@@ -299,6 +304,47 @@ class KisClient:
                 "expected_qty": _to_int(_first(out2, "antc_cnqn", "ANTC_CNQN")),
                 "time": _first(out2, "aspr_acpt_hour", "ASPR_ACPT_HOUR"), "raw": out2}
 
+    # ── 챗봇 부가 정보 (2026-09-15) — 읽기 전용, 전역 시세 키. 응답 필드는 2026-09-15 실호출 프로브로 확인했다.
+    def fetch_news_titles(self, code: str | None = None, limit: int = 20) -> list[dict]:
+        """종합 시황/공시 **제목** (FHKST01011800). code 생략 = 시장 전체. **본문은 오지 않는다** — 원인 설명 재료가 아니다.
+
+        분류코드 news_lrdv_code 는 표본상 01=뉴스·04=공시로 보이나 문서 대조 전이라 코드 그대로 함께 돌려준다.
+        """
+        body = self._get(NEWS_PATH, NEWS_TR, {
+            "FID_NEWS_OFER_ENTP_CODE": "", "FID_COND_MRKT_CLS_CODE": "", "FID_INPUT_ISCD": code or "",
+            "FID_TITL_CNTT": "", "FID_INPUT_DATE_1": "", "FID_INPUT_HOUR_1": "", "FID_RANK_SORT_CLS_CODE": "",
+            "FID_INPUT_SRNO": ""})
+        out = body.get("output") or []
+        rows = out if isinstance(out, list) else [out]
+        return [{"date": r.get("data_dt"), "time": r.get("data_tm"), "title": r.get("hts_pbnt_titl_cntt"),
+                 "category_code": r.get("news_lrdv_code"), "provider_code": r.get("news_ofer_entp_code"),
+                 "codes": [r.get(f"iscd{i}") for i in range(1, 11) if r.get(f"iscd{i}")]}
+                for r in rows[:max(1, min(int(limit), 40))]]
+
+    def fetch_investor_flow(self, code: str, days: int = 10) -> list[dict]:
+        """투자자별 매매동향 (FHKST01010900) — 일별 개인·외국인·기관 순매수 수량/금액 + 종가. 최신일이 첫 행."""
+        body = self._get(INVESTOR_PATH, INVESTOR_TR, {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
+        out = body.get("output") or []
+        rows = out if isinstance(out, list) else [out]
+        return [{"date": r.get("stck_bsop_date"), "close": _to_int(r.get("stck_clpr")), "change": _to_int(r.get("prdy_vrss")),
+                 "person_net_qty": _to_int(r.get("prsn_ntby_qty")), "foreign_net_qty": _to_int(r.get("frgn_ntby_qty")),
+                 "org_net_qty": _to_int(r.get("orgn_ntby_qty")),
+                 "person_net_amt": _to_int(r.get("prsn_ntby_tr_pbmn")), "foreign_net_amt": _to_int(r.get("frgn_ntby_tr_pbmn")),
+                 "org_net_amt": _to_int(r.get("orgn_ntby_tr_pbmn"))}
+                for r in rows[:max(1, min(int(days), 30))]]
+
+    def fetch_index_price(self, code: str = "2001") -> dict:
+        """업종/지수 현재가 (FHPUP02100000). 2001=KOSPI200 · 0001=KOSPI · 1001=KOSDAQ."""
+        body = self._get(INDEX_PATH, INDEX_TR, {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": code})
+        o = body.get("output") or {}
+        if isinstance(o, list):
+            o = o[0] if o else {}
+        return {"code": code, "price": _to_float(o.get("bstp_nmix_prpr")), "change": _to_float(o.get("bstp_nmix_prdy_vrss")),
+                "change_pct": _to_float(o.get("bstp_nmix_prdy_ctrt")), "open": _to_float(o.get("bstp_nmix_oprc")),
+                "high": _to_float(o.get("bstp_nmix_hgpr")), "low": _to_float(o.get("bstp_nmix_lwpr")),
+                "volume": _to_int(o.get("acml_vol")), "advancing": _to_int(o.get("ascn_issu_cnt")),
+                "declining": _to_int(o.get("down_issu_cnt"))}
+
     def fetch_minutes_day(self, code: str, day: date) -> list["MinuteBar"]:
         """특정 일자의 1분봉 전체 — 15:30 부터 시간 커서를 뒤로 옮기며 페이지네이션.
 
@@ -374,6 +420,13 @@ def _first(row: dict, *keys: str, default: str = "") -> str:
         if v not in (None, ""):
             return str(v).strip()
     return default
+
+
+def _to_float(v) -> float | None:
+    try:
+        return float(str(v).replace(",", "")) if v not in (None, "") else None
+    except ValueError:
+        return None
 
 
 def _to_int(v: str) -> int:
