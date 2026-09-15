@@ -1292,3 +1292,15 @@
 - 테스트 결과: `pytest -q tests/` → **363 passed, 1 failed**. 실패는 `test_chat.py::test_price_history_tool_success_path` 로 **기존 실패**(2026-09-03/04 하드코딩 + `days=5` 상대창, main 에서도 동일). 신규 `test_token_warm_covers_every_app_key_in_use_and_issues_each_only_once`(일지 전용 계좌·전역 env 키 포함, 같은 앱키 2계좌에 발급 1회), `test_refresh_cookie_lives_one_day`(TTL·`Max-Age=86400`·JWT exp−iat).
 - `npx tsc --noEmit` 무오류. 헤드리스: refresh 쿠키 수명 **24.00시간**(httpOnly, SameSite=Strict), 설정 화면 "마지막 활동 후 24시간", 콘솔 오류 없음.
 - Git commit: fix: warm every KIS app key in use so the token is issued once a day
+
+## [2026-09-15] fix | 시간 폭탄 테스트 정리 — 전체 스위트 364 passed (사용자 지시)
+
+- 지시: "테스트 실패건도 정리하세요." 원인은 한 가지 유형이었다 — **고정 날짜 씨앗 + 오늘 기준 상대 조회창**. 코드가 `today − N일` 을 읽는데 봉을 2026-09-0x 에 심어 두면 시간이 지나 창 밖으로 밀린다. 하루 차이로 실패 대상이 바뀌던 이유다(09-14 `test_mjournal`, 09-15 `test_chat`).
+- `test_chat.py::test_price_history_tool_success_path` — 도구가 `today − days×2` 부터 읽는다. 씨앗을 `today−2`·`today−1` 로, 기대값도 같은 변수로. (09-15 기준 IndexError 로 실패하던 건)
+- `test_mjournal.py::test_valuation_price_coverage_and_backfill` — 평가 경로의 `end − 20일`·`entries[0] − 10일` 창. `_fake_bar_days()` 헬퍼(진입일 `today−4`, 봉일 `today−1`, 평가 코드와 같은 KST 시계)를 두고 씨앗·진입일을 상대값으로. `_clean_bars` 정리 구간도 **같은 헬퍼**로 맞췄다 — 씨앗만 옮기고 정리를 두면 고아 봉이 남는다(실제로 중간 실행에서 남아 다음 실행을 깨뜨렸다).
+- `test_return_series_resolves_code_by_name`·`test_capital_basis_journal_when_not_linked` 도 같은 헬퍼로 전환. 후자는 `_clean_bars` 를 쓰지 않아 **가짜 봉이 공유 DB 에 계속 남던 누수**였다 — fixture 에 편입.
+- 안전한 것으로 확인해 두지 않은 것: `test_day_change_asof`·`test_quotes_series`·`test_preopen_watch`·`test_validators`·`test_lot_tags`·`test_signals`·`test_portfolios`·`test_after_market`·`test_autoexec` 의 고정 날짜는 **명시 인자**로 들어가거나 자기일관 비교라 상대 조회창을 타지 않는다.
+- AGENTS.md §테스트 규칙에 재발 방지 한 줄 추가.
+- 사고와 복구(기록): CI DB 의 고아 봉을 지우면서 **개발 DB(stocklab)의 2026-09-01~04 실봉 10건(102110·069500·005930)도 함께 지웠다.** 테스트 fixture 의 삭제 구간을 개발 DB 에 그대로 적용한 실수다. 즉시 KIS 에서 다시 받아 12건 복구하고 연속성을 확인했다(09-01 108,170 / 09-02 103,655 / 09-03 103,860 / 09-04 105,880 — 102110 기준).
+- 테스트 결과: `pytest -q tests/` → **364 passed, 0 failed** (연속 2회 동일). 제품 코드 변경 없음 — 테스트와 규칙 문서만.
+- Git commit: test: seed bars relative to today so the fixtures stop expiring

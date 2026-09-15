@@ -550,24 +550,37 @@ def test_journal_account_total_only_when_journal_covers_account(monkeypatch):
     assert s2["account_covered"] is False and s2["account_total"] is None
 
 
+def _fake_bar_days():
+    """이 파일의 가짜 일봉·진입일 — **오늘 기준 상대값** (진입일, 봉일).
+
+    고정 날짜(2026-09-01~04)를 쓰면 평가 경로의 상대 조회창(`end − 20일`, `entries[0] − 10일`) 밖으로
+    밀려 시간이 지나면 터진다 — 2026-09-14 전체 스위트에서 실측(`priced_count` 3 → 2).
+    평가 코드와 같은 시계(KST)를 쓴다.
+    """
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    today = _dt.now(_tz(_td(hours=9))).date()
+    return today - _td(days=4), today - _td(days=1)
+
+
 @pytest.fixture
 def _clean_bars():
-    """이 파일의 두 테스트가 공유 CI DB 에 넣는 2026-09-01~04 가짜 일봉(102110·069500·005930)을 끝나면 지운다.
+    """이 파일의 두 테스트가 공유 CI DB 에 넣는 가짜 일봉(102110·069500·005930)을 끝나면 지운다.
 
-    남겨 두면 069500 의 '마지막 일봉'이 2026-09-04·종가 30,000 이 되어 주문표 기준일·전환 평가를 쓰는 다른 테스트
-    (test_signals·test_portfolios) 2건이 깨진다 — 2026-09-07 전체 스위트에서 실측. 실패해도 정리되도록 fixture 로."""
-    from datetime import date as _date
-
+    남겨 두면 069500 의 '마지막 일봉'이 가짜 종가 30,000 이 되어 주문표 기준일·전환 평가를 쓰는 다른 테스트
+    (test_signals·test_portfolios) 2건이 깨진다 — 2026-09-07 전체 스위트에서 실측. 실패해도 정리되도록 fixture 로.
+    지우는 구간은 `_fake_bar_days()` 와 같은 상대값이어야 한다 — 씨앗만 옮기고 정리를 두면 쓰레기가 남는다."""
     from sqlalchemy import delete, select
 
     from app.db import SessionLocal
     from app.models import Instrument, OhlcvDaily
 
+    entry_day, bar_day = _fake_bar_days()
     yield
     with SessionLocal() as s:
         ids = select(Instrument.id).where(Instrument.code.in_(["102110", "069500", "005930"]))
         s.execute(delete(OhlcvDaily).where(OhlcvDaily.instrument_id.in_(ids),
-                                           OhlcvDaily.trade_date.between(_date(2026, 9, 1), _date(2026, 9, 4))))
+                                           OhlcvDaily.trade_date.between(entry_day, bar_day)))
         s.commit()
 
 
@@ -585,12 +598,13 @@ def test_valuation_price_coverage_and_backfill(monkeypatch, _clean_bars):
 
     mj._PRICE_CACHE.clear()
     mj._CLOSE_MISS.clear()
+    entry_day, bar_day = _fake_bar_days()
 
     # ① DB 에 적재된 종목 ② 이름만 아는 종목(코드 미입력) — 둘 다 instruments 에 존재
     with SessionLocal() as s:
         for code, name, close in (("102110", "TIGER 200", 100_000), ("069500", "KODEX 200", 30_000)):
             inst = get_or_create_instrument(s, code, name, "KOSPI")
-            upsert_daily_bars(s, inst.id, [{"trade_date": _date(2026, 9, 4), "open": close, "high": close,
+            upsert_daily_bars(s, inst.id, [{"trade_date": bar_day, "open": close, "high": close,
                                             "low": close, "close": close, "volume": 1}], source="kis")
         s.commit()
 
@@ -599,7 +613,7 @@ def test_valuation_price_coverage_and_backfill(monkeypatch, _clean_bars):
 
     class _Fake:
         def fetch_daily(self, code, a, b, org_price=True):
-            return [DailyBar(_date(2026, 9, 4), 80_000, 80_000, 80_000, 80_000, 1)] if code == "005930" else []
+            return [DailyBar(bar_day, 80_000, 80_000, 80_000, 80_000, 1)] if code == "005930" else []
 
     monkeypatch.setattr(mj, "_kis_for_bars", lambda session, j: _Fake())
 
@@ -608,7 +622,7 @@ def test_valuation_price_coverage_and_backfill(monkeypatch, _clean_bars):
                  headers=h).json()["id"]
     for sym, code, qty, price in (("TIGER 200", "102110", 10, 90_000), ("삼성전자", "005930", 10, 70_000),
                                   ("KODEX 200", None, 10, 25_000), ("듣보종목", None, 10, 50_000)):
-        body = {"side": "buy", "qty": qty, "price": price, "trade_date": "2026-09-01", "symbol": sym}
+        body = {"side": "buy", "qty": qty, "price": price, "trade_date": entry_day.isoformat(), "symbol": sym}
         if code:
             body["code"] = code
         assert c.post(f"/mjournals/{jid}/entries", json=body, headers=h).status_code == 201
@@ -635,14 +649,18 @@ def test_return_series_resolves_code_by_name(monkeypatch, _clean_bars):
     from app.db import SessionLocal
     from app.services.ingest import get_or_create_instrument, upsert_daily_bars
 
+    from datetime import timedelta
+
     mj._PRICE_CACHE.clear()
     mj._CLOSE_MISS.clear()
+    entry_day, _bar_day = _fake_bar_days()
     with SessionLocal() as s:
         inst = get_or_create_instrument(s, "005930", "삼성전자", "KOSPI", type_="STOCK")
-        # high 는 close 이상이어야 검증기를 통과한다 — 종전엔 high < close 로 전부 거부됐고, 앞 테스트가 남긴 09-04 봉에 기대어 통과했었다 (2026-09-07)
-        upsert_daily_bars(s, inst.id, [{"trade_date": _date(2026, 9, d), "open": 80_000, "high": 80_000 + d * 100,
-                                        "low": 80_000, "close": 80_000 + d * 100, "volume": 1}
-                                       for d in (1, 2, 3, 4)], source="kis")
+        # high 는 close 이상이어야 검증기를 통과한다 — 종전엔 high < close 로 전부 거부됐고, 앞 테스트가 남긴 봉에 기대어 통과했었다 (2026-09-07)
+        upsert_daily_bars(s, inst.id, [{"trade_date": entry_day + timedelta(days=k), "open": 80_000,
+                                        "high": 80_000 + (k + 1) * 100, "low": 80_000,
+                                        "close": 80_000 + (k + 1) * 100, "volume": 1}
+                                       for k in range(4)], source="kis")
         s.commit()
     monkeypatch.setattr(mj, "_kis_for_bars", lambda session, j: None)  # DB 만으로 충분
 
@@ -651,7 +669,7 @@ def test_return_series_resolves_code_by_name(monkeypatch, _clean_bars):
                  headers=h).json()["id"]
     # 코드 없이 종목명만 입력
     c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 10, "price": 70_000,
-                                              "trade_date": "2026-09-01"}, headers=h)
+                                              "trade_date": entry_day.isoformat()}, headers=h)
     rs = c.get(f"/mjournals/{jid}/return-series", headers=h).json()
     sym = rs["symbols"].get("삼성전자")
     assert sym and sym["code"] == "005930", "이름 매칭으로 코드가 붙어야 한다"
@@ -676,7 +694,7 @@ def _fake_balance(monkeypatch, rows, deposit):
     monkeypatch.setattr(kis_client, "KisTradingClient", _Fake)
 
 
-def test_capital_basis_journal_when_not_linked(monkeypatch):
+def test_capital_basis_journal_when_not_linked(monkeypatch, _clean_bars):
     """총 자본금 (2026-09-07 지시): 계좌 미연동이면 **일지 기준** — 등록 보유 수량×현재가, 예수금 없음.
 
     회귀 대상: 연동 여부에 따라 카드가 통째로 사라져 두 일지의 화면 구성이 달라지던 문제.
@@ -689,9 +707,10 @@ def test_capital_basis_journal_when_not_linked(monkeypatch):
 
     mj._PRICE_CACHE.clear()
     mj._CLOSE_MISS.clear()
+    entry_day, bar_day = _fake_bar_days()
     with SessionLocal() as s:
         inst = get_or_create_instrument(s, "102110", "TIGER 200", "KOSPI")
-        upsert_daily_bars(s, inst.id, [{"trade_date": _date(2026, 9, 4), "open": 100_000, "high": 100_000,
+        upsert_daily_bars(s, inst.id, [{"trade_date": bar_day, "open": 100_000, "high": 100_000,
                                         "low": 100_000, "close": 120_000, "volume": 1}], source="kis")
         s.commit()
 
@@ -699,7 +718,7 @@ def test_capital_basis_journal_when_not_linked(monkeypatch):
     jid = c.post("/mjournals", json={"name": "미연동", "symbol": "TIGER 200", "fee_rate": 0.0, "tax_rate": 0.0},
                  headers=h).json()["id"]
     c.post(f"/mjournals/{jid}/entries", json={"side": "buy", "qty": 10, "price": 100_000, "code": "102110",
-                                              "trade_date": "2026-09-01"}, headers=h)
+                                              "trade_date": entry_day.isoformat()}, headers=h)
     d = c.get(f"/mjournals/{jid}", headers=h).json()
     s, hold = d["summary"], d["holdings"][0]
     # 시세는 테스트 DB 상태(기존 봉 우선, ON CONFLICT DO NOTHING)에 따라 달라지므로 자기일관으로 검증
