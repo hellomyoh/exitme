@@ -1342,3 +1342,13 @@
 - `npx tsc --noEmit` 무오류. 헤드리스: 주문표 정상 렌더(NEUTRAL·2026-09-10), 콘솔 오류 없음.
 - 남은 것(별건): 이미 저장된 `BrokerOrder.plan_regime`·과거 `PortfolioPlan.payload` 의 소급 교정. 이 계좌는 9월에 전환이 없어 영향 없음.
 - Git commit: fix: warm the regime state and stop freezing yesterday's regime
+
+## [2026-09-15] review | 챗봇 KIS 부가 정보 도구 — 채택 권고 (사용자 지시)
+
+- 지시: "챗봇에 kis 부가 서비스 정보 호출해서 답변하도록 도구 만드는거 검토." [보고서](docs/chat-kis-context-tools-review-20260915.md).
+- KIS 를 실제 호출해 3개 API 를 확인: 종합 시황/공시 **제목**(`FHKST01011800`, 40건 — 본문 없음), 투자자별 매매동향(`FHKST01010900`, 30일), 업종/지수 현재가(`FHPUP02100000`, KOSPI200 1042.46). 전역 시세 키·기존 토큰 캐시 사용, 새 발급 없음.
+- 설계: 도구 3개(`market_news` · `investor_flow` · `market_index`), 전부 읽기 전용, `KisClient` 정식 메서드로, 대화형(`wait_on_rate_limit=False`), Redis 캐시(15분/30분/60초), 09:01 실행 중 `is_running()` 양보, 한국어 키로 반환. 일반 권한에도 공개(공식 유추 소재 아님).
+- 계약 추가 2줄: 뉴스는 **제목만** — 원인 단정 금지 · 부가 정보는 **참고** — 주문 변경 권고 금지(시가 완벽 예지도 47%p 손해라는 측정의 연장).
+- 범위 밖으로 둔 것: VKOSPI 등 미확인 API, 체결 도달 빈도(우리 분봉 데이터 — 1차 33.3%·2차 13.5%·3차 3.7%), 뉴스 본문(KIS 미제공).
+- 판정: **채택 권고**, 마이너(0.34.0). 구현 지시 대기. 제품 코드 불변 — 문서만.
+- Git commit: docs: three KIS context tools for the chatbot are worth adding
