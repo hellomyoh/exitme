@@ -80,9 +80,9 @@ Browser (Next.js SPA)
 
 근거: [ADR-003](adr/003-auth-jwt.md)
 
-- JWT **access(단기, 15분) + refresh(12시간 롤링, 회전)**. access는 메모리 보관, refresh는 httpOnly Secure 쿠키(SameSite=strict).
-  - 마지막 활동 기준 12시간 — 활동 중에는 access 갱신마다 refresh 가 회전하며 만료가 뒤로 밀린다.
-    ADR-003 원안은 14일이었고 실제 코드는 1시간 → 3시간(2026-09-02) → **12시간(2026-09-14 지시)** 로 바뀌었다.
+- JWT **access(단기, 15분) + refresh(24시간 롤링, 회전)**. access는 메모리 보관, refresh는 httpOnly Secure 쿠키(SameSite=strict).
+  - 마지막 활동 기준 24시간 — 활동 중에는 access 갱신마다 refresh 가 회전하며 만료가 뒤로 밀린다.
+    ADR-003 원안은 14일이었고 실제 코드는 1시간 → 3시간(2026-09-02) → 12시간(2026-09-14) → **24시간(2026-09-15 지시)** 로 바뀌었다.
 - 사용자 유형은 **회원 단일 등급**. 모든 리소스는 소유자(`user_id`) 기준 격리 — 쿼리 레벨에서 강제.
 - WS는 접속 핸드셰이크 시 토큰 검증, 만료 시 재연결.
 - 외부 API 키(KIS)는 서버 환경변수로만 보관, 클라이언트·저장소 노출 금지.

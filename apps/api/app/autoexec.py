@@ -734,32 +734,55 @@ def _get_balance(pid: int, now: datetime) -> tuple[dict | None, datetime | None]
 
 def warm_tokens(session: Session, now: datetime | None = None, auth_factory=None,
                 only_credential_ids: set[int] | None = None) -> dict:
-    """장 시작 전 접근토큰 발급 (2026-09-13 지시) — 06:30, 포트에 연결된 계좌마다 한 번.
+    """장 시작 전 접근토큰 발급 (2026-09-13 지시) — 07:00, **쓰는 앱키마다 하루 한 번**.
 
     KIS 토큰은 24시간 유효하고 **발급은 앱키당 분당 1회**다. 장중에 만료되면 그때 발급해야 하고,
     여러 호출이 동시에 만료를 만나면 서로 발급을 시도해 EGW00133 이 난다(`KisAuth._lock` 은 인스턴스 단위라
     계좌마다 새 객체를 만드는 `_client()` 경로를 묶지 못한다). 미리 받아 Redis 공용 캐시에 넣어 두면
     그날의 모든 호출이 캐시를 읽으므로 발급 경쟁이 생기지 않는다 — 09:01 병렬 실행의 선결 조건이기도 하다.
 
-    같은 앱키·시크릿을 쓰는 계좌가 여럿이면 두 번째부터는 캐시를 읽어 발급하지 않는다.
+    **대상 (2026-09-15 지시 "갱신을 1번만 진행하는 게 목적"):** 발급이 하루 한 번으로 끝나려면 *쓰이는 모든*
+    앱키가 데워져야 한다. 종전에는 **포트에 연결된 계좌만** 데워서 두 부류가 빠져 있었고, 이들이 화면을 열 때
+    발급돼 KIS 발급 알림이 그때 날아왔다.
+      · **전역 env 키**(`settings.kis_*`) — 시세 폴링·일봉 수집·거래일 캘린더·예상시가·시세 보충이 쓴다
+      · **매매일지에만 연결된 계좌** — 체결 가져오기·평가 시세가 쓴다(`BrokerCredential` 은 포트·일지 공용, 0026)
+    이제 `BrokerCredential` **전체** + 전역 env 키를 (앱키, 시크릿, env)로 **중복 제거**해 데운다. 같은 키를
+    여럿이 공유하면 한 번만 발급된다(둘째부터는 Redis 캐시 적중).
     """
+    from types import SimpleNamespace
+
+    from app.config import get_settings
     from app.services.kis_auth import KisAuth
 
     now = now or datetime.now(KST)
-    out: dict = {"date": now.date().isoformat(), "ok": [], "failed": []}
-    pids = select(TradePortfolio.broker_credential_id).where(TradePortfolio.broker_credential_id.is_not(None))
-    q = select(BrokerCredential).where(BrokerCredential.id.in_(pids))
+    out: dict = {"date": now.date().isoformat(), "ok": [], "failed": [], "skipped_same_key": 0}
+    make = auth_factory or (lambda c: KisAuth(c.app_key, c.app_secret, c.env, wait_on_rate_limit=True))
+
+    q = select(BrokerCredential)
     if only_credential_ids:
         q = q.where(BrokerCredential.id.in_(list(only_credential_ids)))
-    for cred in session.scalars(q.order_by(BrokerCredential.id)).all():
+    targets: list[tuple[object, object]] = [(c.id, c) for c in session.scalars(q.order_by(BrokerCredential.id)).all()]
+    if not only_credential_ids:
+        st = get_settings()
+        if st.kis_app_key and st.kis_app_secret:
+            # 시세·캘린더가 쓰는 전역 키 — 계좌 표에 없으므로 따로 넣는다 (2026-09-15)
+            targets.append(("env", SimpleNamespace(app_key=st.kis_app_key, app_secret=st.kis_app_secret,
+                                                  env=st.kis_env)))
+
+    seen: set[tuple[str, str, str]] = set()
+    for ident, cred in targets:
+        fp = (cred.app_key, cred.app_secret, cred.env)
+        if fp in seen:                      # 같은 앱키를 여럿이 공유 — 발급은 한 번이면 된다
+            out["skipped_same_key"] += 1
+            continue
+        seen.add(fp)
         try:
             # 배치 경로 — 분당 제한을 만나면 기다렸다 다시 본다(대화형과 반대)
-            auth = (auth_factory or (lambda c: KisAuth(c.app_key, c.app_secret, c.env, wait_on_rate_limit=True)))(cred)
-            auth.access_token()
-            out["ok"].append(cred.id)
+            make(cred).access_token()
+            out["ok"].append(ident)
         except Exception as exc:  # noqa: BLE001 — 실패해도 그날 첫 호출이 발급한다
-            logger.warning("KIS token warm failed cred=%s: %s", cred.id, exc)
-            out["failed"].append({"credential_id": cred.id, "error": str(exc)[:160]})
+            logger.warning("KIS token warm failed cred=%s: %s", ident, exc)
+            out["failed"].append({"credential_id": ident, "error": str(exc)[:160]})
     return out
 
 

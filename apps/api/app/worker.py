@@ -77,10 +77,14 @@ celery_app.conf.update(
             "schedule": crontab(hour=20, minute=20, day_of_week="mon-fri"),
         },
         # 접근토큰 미리 발급 (2026-09-13 지시) — 토큰은 24시간 유효하고 발급은 앱키당 분당 1회라,
-        # 장 시작 전에 받아 Redis 공용 캐시에 넣어 두면 장중 만료·동시 발급(EGW00133)이 생기지 않는다
+        # 장 시작 전에 받아 Redis 공용 캐시에 넣어 두면 장중 만료·동시 발급(EGW00133)이 생기지 않는다.
+        # 07:00 **매일** (2026-09-15 지시 "갱신을 1번만"): ① 미국 정규장 마감은 서머타임 05:00·표준시 06:00 KST 라
+        # 07:00 이면 만료 경계(발급 시각 −10분)가 연중 어느 장과도 겹치지 않는다. 08:45 잔고·09:01 발주까지
+        # 두 시간 여유. ② 주말·휴장일을 건너뛰면 그 사이 화면을 열 때 발급돼 KIS 발급 알림이 그때 날아온다
+        # — 매일 데워야 "하루 한 번"이 성립한다(발급은 앱키당 하루 1회라 주말분도 사실상 공짜).
         "kis-token-warm": {
             "task": "app.worker.kis_token_warm",
-            "schedule": crontab(hour=6, minute=30, day_of_week="mon-fri"),
+            "schedule": crontab(hour=7, minute=0),
         },
         # 사전 잔고 조회 (2026-09-13 지시) — 09:01 에 몰리던 원장 호출에서 잔고 1건을 장 시작 전으로 옮긴다.
         # 08:45: 장전 시간외 종가매매(08:30~08:40)가 끝난 뒤라 개장까지 보유·예수금이 바뀌지 않는다.
@@ -390,16 +394,16 @@ def auto_execute_open() -> dict:
 
 @celery_app.task(name="app.worker.kis_token_warm", max_retries=0)
 def kis_token_warm() -> dict:
-    """06:30 접근토큰 미리 발급 — 그날의 모든 KIS 호출이 캐시를 읽게 한다 (2026-09-13)."""
+    """07:00 접근토큰 미리 발급 — 그날의 모든 KIS 호출이 캐시를 읽게 한다 (2026-09-13).
+
+    휴장일도 건너뛰지 않는다 (2026-09-15 지시 "갱신을 1번만"): 토큰은 거래와 무관하게 24시간마다 죽고,
+    쉬는 날 화면을 열면 그때 발급돼 KIS 발급 알림이 날아온다. 매일 아침 한 번 데우는 쪽이 발급 횟수가 적다.
+    """
     from app.autoexec import warm_tokens
     from app.db import SessionLocal
-    from app.models import TradingCalendar
 
     today = datetime.now(KST).date()
     with SessionLocal() as session:
-        cal = session.get(TradingCalendar, today)
-        if cal is not None and not cal.is_open:
-            return {"skipped": "holiday", "date": today.isoformat()}
         out = warm_tokens(session)
         if out["failed"]:
             logger.warning("KIS token warm: %d failed %s", len(out["failed"]), out["failed"][:3])
