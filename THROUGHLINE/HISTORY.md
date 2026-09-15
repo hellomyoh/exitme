@@ -1270,3 +1270,15 @@
 - 신규 테스트 `test_refresh_cookie_lives_twelve_hours` — `REFRESH_TTL`·쿠키 `Max-Age=43200`·JWT `exp−iat` 를 함께 못박는다(둘 중 하나만 길면 조기 로그아웃이 남는다).
 - `npx tsc --noEmit` 무오류. 헤드리스 확인: 로그인 후 refresh 쿠키 수명 **12.00시간**(httpOnly, SameSite=Strict), 설정 화면 "마지막 활동 후 12시간", 콘솔 오류 없음.
 - Git commit: chore: keep a login session alive for twelve hours
+
+## [2026-09-15] audit | 09:01 발주를 08:30 동시호가로 옮길 것인가 · 예상체결가 판단 — 둘 다 기각
+
+- 지시: "① 09:01 에 주문 넣지 말고 08:30~09:00 사이에 넣는 방안 검토 ② 09:00 폭락 시 시작 전 예상가로 판단 가능한지 검토." [보고서](docs/preopen-order-timing-review-20260915.md).
+- 측정 ①(분봉 251일, `scripts/preopen_timing_study.py`): 비갭일 체결은 **현행 A 59줄 = 제안 B 59줄로 동일**(B만 얻는 13줄은 전부 갭일), 체결 가격은 **현행이 0.183% 싸다**(둘 다 체결되는 21줄, A 가 더 비싼 날 6/21). 제안의 실효는 **갭 취소를 잃는 것 하나**로 수렴.
+- 측정 ②(일봉 2,374일 89창 짝 비교, `scripts/gap_filter_ablation.py`): 갭 취소만 무력화(`gap_atr_mult` 만 조작, 잔여예산 유지) → 수익률 평균 **+0.112%p**·중앙 0.000%p·**이김 17 : 짐 18 : 동일 54**, MDD 평균 −0.001%p. 값은 꼬리에 있다 — **최악 −2.821%p / MDD −3.545%p** 가 2018-02·2020-03 에 몰렸다. 보험형 손익구조로 정본 §12 에 부합.
+- 판정: **① 기각** — 체결 건수 동일·가격 열세·갭 방어 상실·API 유량 악화(예상시가 폴링과 겹침)·ADR-008 이 없앤 "실전과 백테스트가 어긋나는 유일한 지점" 복원. 09:00 쪽으로 더 당기는 것도 이득 0줄.
+- 판정: **② 조건부 기각** — `app/preopen.py` 08:57 사전 갭 취소는 ADR-008 조건 13 으로 채택됐다가 ADR-009 가 삭제했고, 표시용 `expected_open_view().gap_hit` 로 이미 화면에 있다. 정확도를 잴 데이터가 **없다**(Redis TTL 12시간, DB 미적재, KIS 과거 예상체결가 미제공, 분봉은 09:00 부터). 권고는 **표본 DB 적재** 하나 — 쌓인 뒤에도 ①의 판정은 바뀌지 않는다.
+- 부수 발견: `_fill_limit_buy` 가 `open ≤ 지정가 → open 체결`이라 **백테스트는 B(동시호가 참여)를 가정**하면서 갭 취소는 확정 시가(A)로 판정하는 혼합이다. 다만 실제 오차는 현행에 불리하지 않아(체결 동일·가격 우세) 수정하지 않고 기록만 한다.
+- 테스트 결과: `pytest -q tests/` → **362 passed, 1 failed**. 실패는 `test_chat.py::test_price_history_tool_success_path`(IndexError) 로 **이 변경과 무관**하다 — 이 PR 은 연구 스크립트 2개와 문서만 추가하며 어떤 테스트도 `scripts.*` 를 import 하지 않는다. 어제의 `test_mjournal` 실패와 **같은 원인**: 2026-09-03/04 을 하드코딩하고 상대 조회창(days=5)으로 읽어 오늘(09-15) 창 밖으로 밀려났다. 시간 폭탄 테스트로 별건.
+- 제품 코드·전략·설정·실주문 불변. 버전 올리지 않음(런타임 변경 없음).
+- Git commit: docs: moving the order to the opening auction only buys away the gap filter
