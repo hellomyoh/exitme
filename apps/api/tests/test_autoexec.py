@@ -766,3 +766,55 @@ def test_token_warm_issues_once_per_app_key_before_the_session():
     with SessionLocal() as s:   # 실패해도 예외를 올리지 않는다 — 그날 첫 호출이 발급한다
         out = ae.warm_tokens(s, auth_factory=_Broken, only_credential_ids={aid})
     assert out["ok"] == [] and out["failed"][0]["credential_id"] == aid and "EGW00133" in out["failed"][0]["error"]
+
+
+def test_token_warm_covers_every_app_key_in_use_and_issues_each_only_once():
+    """워밍 대상 = **쓰이는 모든 앱키** (2026-09-15 지시 "갱신을 1번만 진행하는 게 목적").
+
+    종전에는 포트에 연결된 계좌만 데워, ① 시세·캘린더가 쓰는 전역 env 키와 ② 매매일지에만 연결된 계좌가
+    빠져 있었다. 그 둘은 사용자가 화면을 열 때 발급돼 KIS 발급 알림이 그때 날아왔다.
+    같은 앱키를 여럿이 공유하면 발급은 한 번이어야 한다.
+    """
+    import app.autoexec as ae
+    from app.config import get_settings
+    from app.models import BrokerCredential
+
+    c, h = _client()
+    today = datetime.now(KST).date()
+    pid, aid = _setup_portfolio(c, h, today)
+    st = get_settings()
+    calls: list[tuple[str, str]] = []
+
+    # CI DB 는 여러 실행이 공유하므로 앱키를 매번 새로 만든다 — 같은 키가 남아 있으면 중복 제거에 걸린다
+    lone_key = f"LONEKEY-{uuid.uuid4().hex[:8]}"
+
+    class _Auth:
+        def __init__(self, cred):
+            self.cred = cred
+
+        def access_token(self):
+            calls.append((self.cred.app_key, self.cred.app_secret, self.cred.env))
+            return "tok"
+
+    with SessionLocal() as s:
+        # 포트에 연결되지 않은 계좌(=매매일지 전용)도 대상이어야 한다
+        mine = s.get(BrokerCredential, aid)
+        def _cred(label):
+            return BrokerCredential(user_id=mine.user_id, label=label,
+                                    app_key=lone_key, app_secret="LONESECRET", env=mine.env,
+                                    account_no=mine.account_no, acnt_prdt_cd=mine.acnt_prdt_cd)
+        lone, twin = _cred("일지전용"), _cred("같은 키 복제")   # 같은 앱키를 쓰는 계좌가 둘
+        s.add_all([lone, twin])
+        s.commit()
+        lone_id, twin_id = lone.id, twin.id
+        out = ae.warm_tokens(s, auth_factory=_Auth)
+
+    keys = [k for k, _s, _e in calls]
+    assert lone_key in keys, "매매일지에만 연결된 계좌가 빠졌다"
+    assert lone_id in out["ok"]
+    if st.kis_app_key and st.kis_app_secret:
+        assert "env" in out["ok"] and st.kis_app_key in keys, "시세가 쓰는 전역 env 키가 빠졌다"
+    # 같은 (앱키, 시크릿, env) 는 두 번 발급하지 않는다 — 구현의 중복 제거 기준과 같게 본다
+    assert len(calls) == len(set(calls)), f"같은 자격으로 여러 번 발급했다: {calls}"
+    assert keys.count(lone_key) == 1, "같은 앱키를 쓰는 계좌 둘에 발급이 두 번 났다"
+    assert twin_id not in out["ok"] and out["skipped_same_key"] >= 1

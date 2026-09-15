@@ -1282,3 +1282,13 @@
 - 테스트 결과: `pytest -q tests/` → **362 passed, 1 failed**. 실패는 `test_chat.py::test_price_history_tool_success_path`(IndexError) 로 **이 변경과 무관**하다 — 이 PR 은 연구 스크립트 2개와 문서만 추가하며 어떤 테스트도 `scripts.*` 를 import 하지 않는다. 어제의 `test_mjournal` 실패와 **같은 원인**: 2026-09-03/04 을 하드코딩하고 상대 조회창(days=5)으로 읽어 오늘(09-15) 창 밖으로 밀려났다. 시간 폭탄 테스트로 별건.
 - 제품 코드·전략·설정·실주문 불변. 버전 올리지 않음(런타임 변경 없음).
 - Git commit: docs: moving the order to the opening auction only buys away the gap filter
+
+## [2026-09-15] fix | 로그인 세션 24시간 · KIS 토큰 발급을 하루 한 번으로 (사용자 지시) · v0.32.0
+
+- 지시 ①: "로그인 세션은 24시간으로 늘리세요." `auth.REFRESH_TTL` 12시간 → **24시간**. access 15분·회전·httpOnly/Secure/SameSite=strict 불변. ARCHITECTURE §6 과 ADR-003 수명 이력표 갱신(1시간 → 3시간 → 12시간 → 24시간).
+- 지시 ②: "사이트 접속할 때 api 가 갱신됐다는 메시지가 날아온다. 갱신을 1번만 진행하는 게 목적." 앱에는 그런 알림이 없다 — **KIS 가 보내는 발급 알림**이므로 원인은 **발급이 하루 한 번으로 끝나지 않는 것**이었다.
+- 원인 2가지: `warm_tokens` 가 **포트에 연결된 계좌만** 데웠다. 빠진 것 — ⓐ **전역 env 키**(`settings.kis_*`, 시세 폴링·일봉 수집·거래일 캘린더·예상시가·시세 보충이 쓴다) ⓑ **매매일지에만 연결된 계좌**(`BrokerCredential` 은 포트·일지 공용, 0026). 둘 다 화면을 열 때 발급된다. 여기에 크론이 `mon-fri` + 휴장일 스킵이라 **주말·휴장일 접속도 발급**을 부른다.
+- 조치: `warm_tokens` 가 `BrokerCredential` **전체 + 전역 env 키**를 `(앱키, 시크릿, env)` 중복 제거해 데운다(같은 키를 여럿이 쓰면 한 번만 발급, `skipped_same_key` 로 집계). 크론은 **07:00 매일**(요일·휴장일 제한 제거) — 미국 정규장 마감이 서머타임 05:00·표준시 06:00 KST 라 만료 경계(발급 −10분)가 연중 어느 장과도 겹치지 않고, 08:45 잔고·09:01 발주까지 두 시간 여유.
+- 테스트 결과: `pytest -q tests/` → **363 passed, 1 failed**. 실패는 `test_chat.py::test_price_history_tool_success_path` 로 **기존 실패**(2026-09-03/04 하드코딩 + `days=5` 상대창, main 에서도 동일). 신규 `test_token_warm_covers_every_app_key_in_use_and_issues_each_only_once`(일지 전용 계좌·전역 env 키 포함, 같은 앱키 2계좌에 발급 1회), `test_refresh_cookie_lives_one_day`(TTL·`Max-Age=86400`·JWT exp−iat).
+- `npx tsc --noEmit` 무오류. 헤드리스: refresh 쿠키 수명 **24.00시간**(httpOnly, SameSite=Strict), 설정 화면 "마지막 활동 후 24시간", 콘솔 오류 없음.
+- Git commit: fix: warm every KIS app key in use so the token is issued once a day

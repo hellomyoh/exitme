@@ -207,7 +207,7 @@ export default function SettingsPage() {
       <Card className="mb-4">
         <CardTitle>세션</CardTitle>
         <p className="mb-3 text-[14px] leading-relaxed text-muted">
-          로그인 세션은 <b className="text-ink">마지막 활동 후 12시간</b> 유지됩니다(활동 시 자동 연장).
+          로그인 세션은 <b className="text-ink">마지막 활동 후 24시간</b> 유지됩니다(활동 시 자동 연장).
           만료되면 로그인 화면으로 안내됩니다.
         </p>
         <button className="btn" onClick={logout}>로그아웃</button>
