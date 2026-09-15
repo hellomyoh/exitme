@@ -399,6 +399,7 @@ def kis_token_warm() -> dict:
     휴장일도 건너뛰지 않는다 (2026-09-15 지시 "갱신을 1번만"): 토큰은 거래와 무관하게 24시간마다 죽고,
     쉬는 날 화면을 열면 그때 발급돼 KIS 발급 알림이 날아온다. 매일 아침 한 번 데우는 쪽이 발급 횟수가 적다.
     """
+    from app.activity import log_event
     from app.autoexec import warm_tokens
     from app.db import SessionLocal
 
@@ -407,6 +408,16 @@ def kis_token_warm() -> dict:
         out = warm_tokens(session)
         if out["failed"]:
             logger.warning("KIS token warm: %d failed %s", len(out["failed"]), out["failed"][:3])
+            # 조용히 실패하면 그날 첫 호출이 발급하고 — 사용자에게 KIS 발급 알림이 낮에 다시 날아간다.
+            # 즉 이 알림은 "하루 한 번" 이 지켜지는지 알려 주는 장치다 (2026-09-15 지시).
+            owners = out.get("owners") or []
+            for f in out["failed"]:
+                who = f.get("label") or f.get("credential_id")
+                text = (f"{today.isoformat()} 07:00 KIS 접근토큰 발급 실패 — {who}: {f['error']}\n"
+                        "그날 첫 호출이 대신 발급하므로 매매는 진행되지만, 그때 증권사 발급 알림이 다시 옵니다.")
+                for uid in ([f["user_id"]] if f.get("user_id") else owners):
+                    log_event(session, uid, "autoexec.error", text, level="error", at=datetime.now(KST))
+            session.commit()
         return out
 
 

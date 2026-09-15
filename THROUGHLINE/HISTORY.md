@@ -1304,3 +1304,14 @@
 - 사고와 복구(기록): CI DB 의 고아 봉을 지우면서 **개발 DB(stocklab)의 2026-09-01~04 실봉 10건(102110·069500·005930)도 함께 지웠다.** 테스트 fixture 의 삭제 구간을 개발 DB 에 그대로 적용한 실수다. 즉시 KIS 에서 다시 받아 12건 복구하고 연속성을 확인했다(09-01 108,170 / 09-02 103,655 / 09-03 103,860 / 09-04 105,880 — 102110 기준).
 - 테스트 결과: `pytest -q tests/` → **364 passed, 0 failed** (연속 2회 동일). 제품 코드 변경 없음 — 테스트와 규칙 문서만.
 - Git commit: test: seed bars relative to today so the fixtures stop expiring
+
+## [2026-09-15] feat | 예상체결가 표본 DB 적재 · KIS 토큰 워밍 실패 알림 (사용자 지시) · v0.33.0
+
+- 지시: "둘다 진행하세요." (preopen_watch 표본 DB 적재 · KIS 토큰 워밍 실패 텔레그램 알림)
+- **표본 적재** — 마이그레이션 `0029` `preopen_samples`(code, trade_date, at, price, kind) + `PreopenSample` 모델. `preopen_watch.persist_sample` 이 매 분 관찰마다 upsert(같은 분 재관찰·중복 발사에도 한 행). Redis(TTL 12시간)는 **표시용** 그대로 두고 DB 는 **분석용**이다. 적재 실패는 관찰을 막지 않는다(로그만) — 부수 기록이므로.
+  - 이유: KIS 가 과거 예상체결가를 주지 않고 분봉도 09:00 부터라 "예상가가 실제 시가와 얼마나 맞나"를 잴 자료가 어디에도 없다([검토](docs/preopen-order-timing-review-20260915.md) §4). **판정에는 쓰지 않는다** — 발주는 09:01 확정 시가 그대로(ADR-009). 재검토는 급락일 표본 10건 이후(연 4~5회이므로 2년 남짓).
+- **워밍 실패 알림** — `warm_tokens` 가 실패 항목에 `user_id`·`label` 을, 결과에 `owners` 를 싣고, `kis_token_warm` 이 실패마다 `log_event(kind="autoexec.error", level="error")` 를 남긴다(→ 텔레그램 카테고리 `autoexec`). 전역 env 키는 주인이 없어 계좌 소유자 전원에게 보낸다.
+  - 이유: 조용히 실패하면 그날 첫 호출이 발급하고 **KIS 발급 알림이 낮에 다시 온다** — 이 알림이 "하루 한 번"이 지켜지는지 알려 주는 장치다. 종전에는 `logger.warning` 뿐이라 09:01 에야 드러났다.
+- 테스트 결과: `pytest -q tests/` → **366 passed, 0 failed**. 신규 `test_samples_are_persisted_so_accuracy_can_be_measured_later`(같은 분 중복 1행·09:00 전후 kind 구분·시각 보존), `test_token_warm_failure_reaches_the_user_instead_of_only_the_log`. 기존 `test_poll_records_expected_before_open_and_actual_open_after` 는 응답에 `stored` 가 늘어 정확일치 단언을 관심 필드 비교로 바꿨고, 이 파일이 실코드(102110·069500)로 남기는 표본을 지우는 autouse fixture 를 넣었다.
+- 마이그레이션은 개발·CI DB 에 실제 적용해 `alembic_version = 0029`·`preopen_samples` 생성 확인. 배포는 `deploy.sh` 가 이미지 안에서 alembic 을 돌린다.
+- Git commit: feat: keep the pre-open samples and say when the token warm fails

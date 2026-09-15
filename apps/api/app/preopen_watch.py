@@ -73,6 +73,32 @@ def expected_open_view(code: str, day: date, gap_cancel_exact: float | None, r=N
             "samples": [{"at": s["at"], "price": s["price"]} for s in (doc.get("samples") or [])[-12:]]}
 
 
+def persist_sample(code: str, day: date, price: int, kind: str, at: datetime) -> bool:
+    """표본을 DB 에 남긴다 (0029, 2026-09-15 지시) — Redis 는 TTL 12시간이라 다음 날이면 사라진다.
+
+    KIS 는 과거 예상체결가를 주지 않으므로 지금 쌓지 않으면 "예상가가 실제 시가와 얼마나 맞나"를 영영 못 잰다
+    (docs/preopen-order-timing-review-20260915.md §4). **판정에는 쓰지 않는다** — 발주는 09:01 확정 시가 그대로.
+    실패해도 관찰을 멈추지 않는다: 이 기능은 표시(Redis)와 무관한 부수 기록이다.
+    """
+    try:
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from app.db import SessionLocal
+        from app.models import PreopenSample
+
+        with SessionLocal() as s:
+            # 같은 분을 두 번 관찰해도 한 행 — 재실행·중복 발사에 안전하게
+            s.execute(pg_insert(PreopenSample)
+                      .values(code=code, trade_date=day, at=at.astimezone(KST).replace(second=0, microsecond=0),
+                              price=int(price), kind=kind)
+                      .on_conflict_do_nothing(index_elements=["code", "trade_date", "at"]))
+            s.commit()
+        return True
+    except Exception as exc:  # noqa: BLE001 — 표본 적재 실패가 관찰을 막지 않는다
+        logger.warning("preopen sample persist failed code=%s: %s", code, exc)
+        return False
+
+
 def poll_expected_open(now: datetime | None = None, client=None, codes: tuple[str, ...] = CODES_200, r=None) -> dict:
     """1분 주기 태스크 본체 — 09:00 전이면 예상체결가, 09:00 이후면 확정 시가(없으면 현재가). 종목별 실패는 기록만."""
     now = now or datetime.now(KST)
@@ -101,8 +127,9 @@ def poll_expected_open(now: datetime | None = None, client=None, codes: tuple[st
                     px = int(str(q.get("stck_prpr") or "0").replace(",", "") or 0)
                     kind = "current"
             if px > 0:
-                record_sample(code, day, px, kind, now, r)
-                out["codes"][code] = {"price": px, "kind": kind}
+                record_sample(code, day, px, kind, now, r)          # 표시용 (Redis, TTL 12시간)
+                stored = persist_sample(code, day, px, kind, now)   # 분석용 (DB, 영구 — 0029)
+                out["codes"][code] = {"price": px, "kind": kind, "stored": stored}
             else:
                 out["codes"][code] = {"price": None, "kind": kind, "note": "0 (아직 예상체결가 없음)"}
         except Exception as exc:  # noqa: BLE001

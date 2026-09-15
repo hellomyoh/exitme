@@ -782,7 +782,11 @@ def warm_tokens(session: Session, now: datetime | None = None, auth_factory=None
             out["ok"].append(ident)
         except Exception as exc:  # noqa: BLE001 — 실패해도 그날 첫 호출이 발급한다
             logger.warning("KIS token warm failed cred=%s: %s", ident, exc)
-            out["failed"].append({"credential_id": ident, "error": str(exc)[:160]})
+            # user_id 는 알림 수신자 — 전역 env 키는 주인이 없어 None (태스크가 계좌 소유자 전원에게 보낸다)
+            out["failed"].append({"credential_id": ident, "error": str(exc)[:160],
+                                  "label": getattr(cred, "label", "") or ("시세 공용 키" if ident == "env" else ""),
+                                  "user_id": getattr(cred, "user_id", None)})
+    out["owners"] = sorted({c.user_id for _i, c in targets if getattr(c, "user_id", None) is not None})
     return out
 
 

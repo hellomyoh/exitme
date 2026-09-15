@@ -818,3 +818,48 @@ def test_token_warm_covers_every_app_key_in_use_and_issues_each_only_once():
     assert len(calls) == len(set(calls)), f"같은 자격으로 여러 번 발급했다: {calls}"
     assert keys.count(lone_key) == 1, "같은 앱키를 쓰는 계좌 둘에 발급이 두 번 났다"
     assert twin_id not in out["ok"] and out["skipped_same_key"] >= 1
+
+
+def test_token_warm_failure_reaches_the_user_instead_of_only_the_log():
+    """워밍 실패 알림 (2026-09-15 지시) — 조용히 실패하면 그날 첫 호출이 발급하고 KIS 발급 알림이 낮에 다시 온다.
+
+    즉 이 알림은 "하루 한 번"이 지켜지는지 알려 주는 장치다. 종전에는 `logger.warning` 뿐이라 09:01 에야 드러났다.
+    """
+    from unittest import mock
+
+    from sqlalchemy import select
+
+    import app.autoexec as ae
+    from app.models import ActivityLog, BrokerCredential
+
+    c, h = _client()
+    today = datetime.now(KST).date()
+    pid, aid = _setup_portfolio(c, h, today)
+
+    class _Broken:
+        def __init__(self, cred):
+            pass
+
+        def access_token(self):
+            raise RuntimeError("EGW00133 토큰 발급이 분당 1회로 제한됩니다")
+
+    with SessionLocal() as s:
+        out = ae.warm_tokens(s, auth_factory=_Broken, only_credential_ids={aid})
+        uid = s.get(BrokerCredential, aid).user_id
+    assert out["failed"] and out["failed"][0]["user_id"] == uid, "실패 항목에 수신자가 붙어야 한다"
+
+    from app.worker import kis_token_warm
+
+    with mock.patch("app.autoexec.warm_tokens", return_value={
+            "date": today.isoformat(), "ok": [], "skipped_same_key": 0, "owners": [uid],
+            "failed": [{"credential_id": aid, "error": "EGW00133 분당 1회 제한",
+                        "label": "내 계좌", "user_id": uid}]}):
+        kis_token_warm()
+
+    with SessionLocal() as s:
+        rows = s.scalars(select(ActivityLog).where(ActivityLog.user_id == uid,
+                                                   ActivityLog.kind == "autoexec.error")
+                         .order_by(ActivityLog.id.desc()).limit(3)).all()
+    hit = [r for r in rows if "접근토큰 발급 실패" in r.text]
+    assert hit and hit[0].level == "error", f"알림용 로그가 남지 않았다: {[r.text[:40] for r in rows]}"
+    assert "내 계좌" in hit[0].text and "EGW00133" in hit[0].text
