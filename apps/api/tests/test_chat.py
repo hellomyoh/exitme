@@ -228,23 +228,29 @@ def test_chat_tools_cannot_read_other_users_data(monkeypatch):
 
 
 def test_price_history_tool_success_path():
-    """price_history 성공 경로 — OhlcvDaily 컬럼명(raw) 회귀 방지 (2026-09-05 결함: AttributeError)."""
-    from datetime import date
+    """price_history 성공 경로 — OhlcvDaily 컬럼명(raw) 회귀 방지 (2026-09-05 결함: AttributeError).
+
+    봉 날짜는 **오늘 기준 상대값**이다: 도구가 `today − days×2` 부터 읽으므로 고정 날짜를 심으면
+    시간이 지나 창 밖으로 밀려 터진다 (2026-09-15: 2026-09-03/04 씨앗이 09-15 에 IndexError).
+    """
+    from datetime import date, timedelta
 
     from app.chat import _run_tool
     from app.db import SessionLocal
     from app.services.ingest import get_or_create_instrument, upsert_daily_bars
 
+    today = date.today()                      # 도구와 같은 시계(`date.today()`)를 쓴다
+    d1, d2 = today - timedelta(days=2), today - timedelta(days=1)
     with SessionLocal() as s:
         inst = get_or_create_instrument(s, "CHAT01", "챗 테스트 ETF", "KOSPI")
         upsert_daily_bars(s, inst.id, [
-            {"trade_date": date(2026, 9, 3), "open": 100, "high": 110, "low": 95, "close": 105, "volume": 1000},
-            {"trade_date": date(2026, 9, 4), "open": 105, "high": 112, "low": 101, "close": 108, "volume": 1200},
+            {"trade_date": d1, "open": 100, "high": 110, "low": 95, "close": 105, "volume": 1000},
+            {"trade_date": d2, "open": 105, "high": 112, "low": 101, "close": 108, "volume": 1200},
         ], source="pykrx")
         s.commit()
     out = _run_tool("price_history", {"code": "CHAT01", "days": 5}, 1)
     assert "error" not in out, out
-    assert out["items"][-1] == {"date": "2026-09-04", "open": 105, "high": 112,
+    assert out["items"][-1] == {"date": d2.isoformat(), "open": 105, "high": 112,
                                 "low": 101, "close": 108, "volume": 1200}
 
 
